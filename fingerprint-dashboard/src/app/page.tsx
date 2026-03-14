@@ -19,6 +19,7 @@ export interface Profile {
   ua?: string;
   seed?: string;
   isMobile?: boolean;
+  groupId?: string;
 }
 
 declare global {
@@ -86,18 +87,68 @@ export default function Home() {
     { id: '1', host: '45.12.33.1', port: '8080', type: 'HTTP', status: '在线', delay: '120ms', city: '洛杉矶' },
     { id: '2', host: '103.4.1.22', port: '1080', type: 'SOCKS5', status: '在线', delay: '240ms', city: '伦敦' }
   ])
-  const [groups, setGroups] = useState([
-    { name: 'Facebook 业务组', count: 8, color: 'bg-blue-500/10 text-blue-400 border-blue-500/20' },
-    { name: 'Amazon 运营组', count: 12, color: 'bg-orange-500/10 text-orange-400 border-orange-500/20' },
-    { name: '默认分组', count: 3, color: 'bg-slate-500/10 text-slate-400 border-slate-500/20' }
-  ])
+  const [groups, setGroups] = useState<any[]>([])
+  
+  const [showGroupModal, setShowGroupModal] = useState(false);
+  const [editingGroup, setEditingGroup] = useState<any>(null);
+  const [groupInput, setGroupInput] = useState('');
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+
+  const handleSaveGroup = async () => {
+    if (!groupInput.trim()) return;
+    let upG: any[];
+    if (editingGroup) {
+      upG = groups.map(g => g.id === editingGroup.id ? { ...g, name: groupInput } : g);
+    } else {
+      const colors = [
+        'bg-green-500/10 text-green-400 border-green-500/20',
+        'bg-purple-500/10 text-purple-400 border-purple-500/20',
+        'bg-pink-500/10 text-pink-400 border-pink-500/20',
+        'bg-yellow-500/10 text-yellow-400 border-yellow-500/20',
+      ];
+      upG = [...groups, { 
+        id: `group-${Date.now()}`, 
+        name: groupInput, 
+        color: colors[Math.floor(Math.random() * colors.length)] 
+      }];
+    }
+    setGroups(upG);
+    await fetch('/api/groups', { method: 'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(upG) });
+    setShowGroupModal(false);
+    setGroupInput('');
+    setEditingGroup(null);
+  };
+  
+  const handleDeleteGroup = async (id: string, e: any) => {
+    e.stopPropagation();
+    if(confirm('确定要删除这个分组吗？环境将被移至默认分组。')) {
+      const upG = groups.filter(g => g.id !== id);
+      setGroups(upG);
+      await fetch('/api/groups', { method: 'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(upG) });
+    }
+  };
+
+  const openGroupModal = (group?: any) => {
+    if (group) {
+      setEditingGroup(group);
+      setGroupInput(group.name);
+    } else {
+      setEditingGroup(null);
+      setGroupInput('');
+    }
+    setShowGroupModal(true);
+  };
 
   const fetchProfiles = async () => {
     try {
-      const res = await fetch('/api/profiles')
-      if (res.ok) setProfiles(await res.json())
+      const [resP, resG] = await Promise.all([
+        fetch('/api/profiles'),
+        fetch('/api/groups')
+      ]);
+      if (resP.ok) setProfiles(await resP.json())
+      if (resG.ok) setGroups(await resG.json())
     } catch (err) {
-      console.error('获取环境列表失败', err)
+      console.error('获取数据失败', err)
     } finally {
       setLoading(false)
     }
@@ -105,7 +156,7 @@ export default function Home() {
 
   useEffect(() => { fetchProfiles() }, [])
 
-  const handleCreateProfile = async (isMobile = false) => {
+  const handleCreateProfile = async (isMobile = false, targetGroupId?: string) => {
     try {
       const isMob = activeTab === '手机环境' || isMobile;
       const res = await fetch('/api/profiles', {
@@ -113,7 +164,8 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           name: isMob ? `手机环境 ${profiles.filter(p => p.isMobile).length + 1}` : `桌面环境 ${profiles.filter(p => !p.isMobile).length + 1}`,
-          isMobile: isMob
+          isMobile: isMob,
+          groupId: targetGroupId
         })
       })
       if (res.ok) fetchProfiles()
@@ -559,36 +611,136 @@ export default function Home() {
           {/* ─── 团队分组 ─── */}
           {activeTab === '团队分组' && (
             <div className="animate-in fade-in duration-300 space-y-5">
-              <div className="flex justify-between items-center">
-                <div>
-                  <h3 className="text-base font-bold">团队分组管理</h3>
-                  <p className="text-xs text-slate-500 mt-0.5">将环境按业务归类，批量管理更高效</p>
-                </div>
-                <button onClick={() => handleMockAction('新建分组')} className="flex items-center space-x-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-xs font-bold transition-colors active:scale-95 shadow-lg shadow-blue-500/20">
-                  <Plus size={13} /><span>新建分组</span>
-                </button>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {groups.map(g => (
-                  <div key={g.name} className="glass rounded-xl p-5 hover:border-slate-600 cursor-pointer transition-all hover:shadow-lg group">
-                    <div className="flex items-start justify-between mb-4">
-                      <div className={`p-2 rounded-lg border ${g.color}`}>
-                        <Users size={16} />
-                      </div>
-                      <ChevronRight size={14} className="text-slate-600 group-hover:text-slate-400 transition-colors" />
+              {!selectedGroupId ? (
+                <>
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <h3 className="text-base font-bold">团队分组管理</h3>
+                      <p className="text-xs text-slate-500 mt-0.5">将环境按业务归类，批量管理更高效</p>
                     </div>
-                    <p className="font-bold text-sm">{g.name}</p>
-                    <p className="text-xs text-slate-500 mt-1">{g.count} 个环境</p>
+                    <button onClick={() => openGroupModal()} className="flex items-center space-x-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-xs font-bold transition-colors active:scale-95 shadow-lg shadow-blue-500/20">
+                      <Plus size={13} /><span>新建分组</span>
+                    </button>
                   </div>
-                ))}
-                <button
-                  onClick={() => handleMockAction('新建分组')}
-                  className="glass rounded-xl p-5 border-2 border-dashed border-slate-700 text-slate-500 hover:text-slate-300 hover:border-slate-500 transition-all flex flex-col items-center justify-center space-y-2 min-h-[110px]"
-                >
-                  <Plus size={20} strokeWidth={1.5} />
-                  <span className="text-xs font-medium">新建分组</span>
-                </button>
-              </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {groups.map(g => (
+                      <div key={g.id} onClick={() => setSelectedGroupId(g.id)} className="glass rounded-xl p-5 hover:border-slate-500 cursor-pointer transition-all hover:shadow-lg group relative">
+                        <div className="flex items-start justify-between mb-4">
+                          <div className={`p-2 rounded-lg border ${g.color}`}>
+                            <Users size={16} />
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <button onClick={(e) => { e.stopPropagation(); openGroupModal(g); }} className="opacity-0 group-hover:opacity-100 p-1 text-slate-500 hover:text-blue-400 hover:bg-blue-500/10 rounded transition-all">
+                              <Pencil size={13} />
+                            </button>
+                            <button onClick={(e) => handleDeleteGroup(g.id, e)} className="opacity-0 group-hover:opacity-100 p-1 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded transition-all">
+                              <Trash2 size={13} />
+                            </button>
+                            <ChevronRight size={14} className="text-slate-600 group-hover:text-slate-400 transition-colors" />
+                          </div>
+                        </div>
+                        <p className="font-bold text-sm">{g.name}</p>
+                        <p className="text-xs text-slate-500 mt-1">{profiles.filter(p => p.groupId === g.id).length} 个环境</p>
+                      </div>
+                    ))}
+                    <button
+                      onClick={() => openGroupModal()}
+                      className="glass rounded-xl p-5 border-2 border-dashed border-slate-700 text-slate-500 hover:text-slate-300 hover:border-slate-500 transition-all flex flex-col items-center justify-center space-y-2 min-h-[110px]"
+                    >
+                      <Plus size={20} strokeWidth={1.5} />
+                      <span className="text-xs font-medium">新建自定义分组</span>
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div className="animate-in slide-in-from-right-2 duration-300">
+                  <div className="flex justify-between items-center mb-5">
+                    <div className="flex items-center space-x-3">
+                      <button onClick={() => setSelectedGroupId(null)} className="flex items-center justify-center w-8 h-8 bg-slate-800/80 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-slate-200 transition-colors">
+                        <ChevronRight className="rotate-180" size={16} strokeWidth={2.5}/>
+                      </button>
+                      <div>
+                        <div className="flex items-center space-x-2">
+                          <h3 className="text-base font-bold">{groups.find(g => g.id === selectedGroupId)?.name}</h3>
+                          <span className="px-2 py-0.5 bg-blue-500/10 text-blue-400 border border-blue-500/20 rounded-md text-[10px] font-bold">分组视图</span>
+                        </div>
+                        <p className="text-xs text-slate-500 mt-0.5">管理该分组下的所有隔离环境</p>
+                      </div>
+                    </div>
+                    <button onClick={() => handleCreateProfile(false, selectedGroupId || undefined)} className="flex items-center space-x-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-xs font-bold transition-colors shadow-lg shadow-blue-500/20">
+                      <Plus size={13} /><span>新建环境入组</span>
+                    </button>
+                  </div>
+                  <Card>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-sm">
+                        <thead className="text-slate-500 border-b border-slate-800">
+                          <tr>
+                            <th className="pb-3 font-semibold text-xs">识别 ID</th>
+                            <th className="pb-3 font-semibold text-xs">环境名称</th>
+                            <th className="pb-3 font-semibold text-xs">代理节点</th>
+                            <th className="pb-3 font-semibold text-xs">指纹种子</th>
+                            <th className="pb-3 font-semibold text-xs">状态</th>
+                            <th className="pb-3 font-semibold text-xs text-right">操作</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/50">
+                          {loading ? (
+                            <tr><td colSpan={6} className="py-12 text-center">
+                              <Loader2 size={20} className="animate-spin text-slate-500 mx-auto" />
+                            </td></tr>
+                          ) : profiles.filter(p => p.groupId === selectedGroupId).length === 0 ? (
+                            <tr><td colSpan={6}>
+                              <EmptyState icon={Globe} title="该分组下暂无环境" desc="点击右上角「新建环境入组」开始分配。" />
+                            </td></tr>
+                          ) : profiles.filter(p => p.groupId === selectedGroupId).map((p) => (
+                            <tr key={p.id} className="group hover:bg-slate-800/20 transition-colors">
+                              <td className="py-3.5 font-mono text-xs text-slate-500">{p.id.split('-')[0]}</td>
+                              <td className="py-3.5 font-medium text-sm flex items-center space-x-2">
+                                 {p.isMobile ? <Smartphone size={13} className="text-purple-400" /> : <MonitorSmartphone size={13} className="text-slate-500" />}
+                                 <span className={p.isMobile ? "text-purple-100" : ""}>{p.name}</span>
+                              </td>
+                              <td className="py-3.5">
+                                <div className="flex items-center space-x-1.5">
+                                  {p.proxy
+                                    ? <><Wifi size={11} className="text-blue-400" /><span className="font-mono text-xs text-blue-400">{p.proxy}</span></>
+                                    : <><WifiOff size={11} className="text-slate-500" /><span className="text-xs text-slate-500">本机直连</span></>
+                                  }
+                                </div>
+                              </td>
+                              <td className="py-3.5 text-xs text-slate-400 font-mono">{p.seed ? p.seed.slice(0, 8) : '—'}</td>
+                              <td className="py-3.5">
+                                <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold ${p.status === 'Running' ? (p.isMobile ? 'bg-purple-500/15 text-purple-400':'bg-green-500/15 text-green-400') : 'bg-slate-700/50 text-slate-400'}`}>
+                                  {p.status === 'Ready' ? '就绪' : p.status}
+                                </span>
+                              </td>
+                              <td className="py-3.5 text-right flex justify-end space-x-1">
+                                <button
+                                  onClick={async () => {
+                                    try {
+                                      const res = await fetch('/api/launch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profileId: p.id }) });
+                                      if (!res.ok) throw new Error('启动失败');
+                                    } catch (err) { alert("启动浏览器失败。"); }
+                                  }}
+                                  className="flex items-center space-x-1 px-2.5 py-1.5 bg-blue-600/80 hover:bg-blue-600 rounded-md text-xs font-bold transition-colors shadow-sm active:scale-95"
+                                >
+                                  <Play size={10} /><span>{p.isMobile ? '唤醒真机' : '打开'}</span>
+                                </button>
+                                <button onClick={() => setEditingProfile(p)} className="p-1.5 rounded-md text-slate-400 hover:text-slate-200 hover:bg-slate-700 transition-colors">
+                                  <Pencil size={13} />
+                                </button>
+                                <button onClick={() => handleDeleteProfile(p.id)} className="p-1.5 rounded-md text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-colors">
+                                  <Trash2 size={13} />
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </Card>
+                </div>
+              )}
             </div>
           )}
 
@@ -770,14 +922,29 @@ export default function Home() {
                 />
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-400 mb-1.5">指纹种子 (Seed)</label>
-                <input
-                  type="text"
-                  value={editingProfile.seed || ''}
-                  onChange={e => setEditingProfile({ ...editingProfile, seed: e.target.value })}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm font-mono focus:outline-none focus:border-blue-500 transition-colors"
-                />
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 mb-1.5">所属团队分组</label>
+                  <select
+                    value={editingProfile.groupId || ''}
+                    onChange={e => setEditingProfile({ ...editingProfile, groupId: e.target.value || undefined })}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors text-slate-200"
+                  >
+                    <option value="">(无分组)</option>
+                    {groups.map(g => (
+                      <option key={g.id} value={g.id}>{g.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 mb-1.5">指纹种子 (Seed)</label>
+                  <input
+                    type="text"
+                    value={editingProfile.seed || ''}
+                    onChange={e => setEditingProfile({ ...editingProfile, seed: e.target.value })}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm font-mono focus:outline-none focus:border-blue-500 transition-colors"
+                  />
+                </div>
               </div>
 
               <div className="flex justify-end space-x-2 pt-2">
@@ -833,6 +1000,48 @@ export default function Home() {
                 >
                   <CheckCircle size={14} />
                   <span>自动解析并导入</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Group Edit Modal */}
+      {showGroupModal && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
+          <div className="bg-[#141720] border border-slate-700/50 rounded-2xl shadow-2xl w-[400px] overflow-hidden animate-in zoom-in duration-200">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800">
+              <div className="flex items-center space-x-2">
+                <Users size={15} className="text-blue-400" />
+                <h2 className="text-sm font-bold">{editingGroup ? '编辑分组' : '新建自定义分组'}</h2>
+              </div>
+              <button onClick={() => setShowGroupModal(false)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors">
+                <X size={15} />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-400 mb-1.5">分组名称</label>
+                <input
+                  type="text"
+                  autoFocus
+                  value={groupInput}
+                  onChange={e => setGroupInput(e.target.value)}
+                  placeholder="例如: 东南亚 TikTok 矩阵区"
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors text-slate-200"
+                />
+              </div>
+              <div className="flex justify-end space-x-2 pt-4">
+                <button onClick={() => setShowGroupModal(false)} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm font-bold border border-slate-700 transition-colors">
+                  取消
+                </button>
+                <button 
+                  onClick={handleSaveGroup}
+                  className="flex items-center space-x-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-bold shadow-lg shadow-blue-500/20 transition-colors"
+                >
+                  <CheckCircle size={14} />
+                  <span>保存</span>
                 </button>
               </div>
             </div>

@@ -23,6 +23,7 @@ export async function POST(req: Request) {
       ua: body.ua || '',
       seed: body.seed || crypto.randomUUID().substring(0, 8),
       isMobile: body.isMobile || false,
+      groupId: body.groupId || undefined,
     };
 
     db.profiles.push(newProfile);
