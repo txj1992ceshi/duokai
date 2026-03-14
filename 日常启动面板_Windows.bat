@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 setlocal enabledelayedexpansion
 cd /d %~dp0
 
@@ -8,10 +9,11 @@ if not exist "fingerprint-dashboard\node_modules" (
     exit
 )
 
-echo 🚀 正在唤醒服务端 (后台进程)...
+echo 🚀 启动中... 正在唤醒后台服务端...
+:: 在后台静默启动
 start "Fingerprint-Server" /d "fingerprint-dashboard" /min cmd /c "npm run dev"
 
-echo ⏳ 正在等待服务端开门 (智能探测 3000 端口)...
+echo ⏳ 正在等待服务端开门 (3000端口)...
 :check_port
 netstat -ano | findstr :3000 | findstr LISTENING >nul
 if %errorlevel% neq 0 (
@@ -21,7 +23,7 @@ if %errorlevel% neq 0 (
 )
 
 echo.
-echo ✅ 服务端已就绪！正在寻找 Chrome 启动程序模式...
+echo ✅ 服务端已就绪！正在以程序模式启动 UI 界面...
 
 set "CHROME_BIN="
 if exist "C:\Program Files\Google\Chrome\Application\chrome.exe" set "CHROME_BIN=C:\Program Files\Google\Chrome\Application\chrome.exe"
@@ -35,8 +37,8 @@ if defined CHROME_BIN (
 )
 
 echo ------------------------------------------------
-echo ✅ 启动成功！
-echo [提示] 面板已弹出，请不要关闭后台运行的黑色 Node 窗口。
+echo ✅ 全部启动成功！请尽情使用。
+echo [提示] 窗口已弹出，后台窗口已自动隐藏至任务栏。
 echo ------------------------------------------------
 timeout /t 5
 exit
