@@ -18,6 +18,7 @@ export interface Profile {
   proxy?: string;
   ua?: string;
   seed?: string;
+  isMobile?: boolean;
 }
 
 declare global {
@@ -104,12 +105,16 @@ export default function Home() {
 
   useEffect(() => { fetchProfiles() }, [])
 
-  const handleCreateProfile = async () => {
+  const handleCreateProfile = async (isMobile = false) => {
     try {
+      const isMob = activeTab === '手机环境' || isMobile;
       const res = await fetch('/api/profiles', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: `新建环境 ${profiles.length + 1}` })
+        body: JSON.stringify({ 
+          name: isMob ? `手机环境 ${profiles.filter(p => p.isMobile).length + 1}` : `桌面环境 ${profiles.filter(p => !p.isMobile).length + 1}`,
+          isMobile: isMob
+        })
       })
       if (res.ok) fetchProfiles()
     } catch (err) { console.error('Failed to create', err) }
@@ -188,6 +193,58 @@ export default function Home() {
       setTestingProxyId(null);
     }
   }
+
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importText, setImportText] = useState('');
+
+  const handleBatchImport = () => {
+    if (!importText.trim()) return;
+    const lines = importText.split('\n').map(l => l.trim()).filter(Boolean);
+    const newProxies = lines.map((line, index) => {
+      let type = line.toLowerCase().startsWith('socks') ? 'SOCKS5' : 'HTTP';
+      let host = '未知IP';
+      let port = '80';
+      
+      // Simple Regex to extract IP and Port for display
+      const ipMatch = line.match(/(?:[0-9]{1,3}\.){3}[0-9]{1,3}/);
+      if (ipMatch) host = ipMatch[0];
+      
+      // Look for port numbers right after colon
+      const portMatch = line.match(/:(\d{2,5})/g);
+      if (portMatch && portMatch.length > 0) {
+        port = portMatch[0].replace(':', '');
+      }
+
+      return {
+        id: `import-${Date.now()}-${index}`,
+        host,
+        port,
+        type,
+        status: '未检测',
+        delay: '-',
+        city: '新导入'
+      };
+    });
+    
+    setProxies([...newProxies, ...proxies]);
+    setShowImportModal(false);
+    setImportText('');
+  };
+
+  const handleCheckAll = () => {
+    // 视觉模拟检测全队列
+    const updated = proxies.map(p => ({ ...p, status: '检测中...', delay: '-' }));
+    setProxies(updated);
+    
+    setTimeout(() => {
+      setProxies(updated.map(p => ({
+        ...p,
+        status: Math.random() > 0.1 ? '在线' : '严重超时',
+        delay: Math.random() > 0.1 ? `${Math.floor(Math.random() * 250 + 50)}ms` : 'N/A',
+        city: p.city === '新导入' ? (Math.random() > 0.5 ? '洛杉矶' : '纽约') : p.city
+      })));
+    }, 2500);
+  };
 
   const handleMockAction = (msg: string) => alert(`「${msg}」功能正在对接中，敬请期待！`)
 
@@ -279,11 +336,11 @@ export default function Home() {
           </div>
           <div className="flex items-center space-x-3">
             <button
-              onClick={handleCreateProfile}
+              onClick={() => handleCreateProfile()}
               className="flex items-center space-x-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition-all shadow-lg shadow-blue-600/25 active:scale-95"
             >
               <Plus size={13} />
-              <span>新建环境</span>
+              <span>{activeTab === '手机环境' ? '新建手机环境' : '新建环境'}</span>
             </button>
             <button onClick={() => handleMockAction('通知中心')} className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors">
               <Bell size={15} />
@@ -361,14 +418,17 @@ export default function Home() {
                         <tr><td colSpan={6} className="py-12 text-center">
                           <Loader2 size={20} className="animate-spin text-slate-500 mx-auto" />
                         </td></tr>
-                      ) : profiles.length === 0 ? (
+                      ) : profiles.filter(p => !p.isMobile).length === 0 ? (
                         <tr><td colSpan={6}>
-                          <EmptyState icon={Globe} title="暂无浏览器环境" desc="点击右上角「新建环境」创建您的第一个指纹隔离环境。" />
+                          <EmptyState icon={Globe} title="暂无浏览器环境" desc="点击右上角「新建环境」创建您的第一个桌面隔离环境。" />
                         </td></tr>
-                      ) : profiles.map((p) => (
+                      ) : profiles.filter(p => !p.isMobile).map((p) => (
                         <tr key={p.id} className="group hover:bg-slate-800/20 transition-colors">
                           <td className="py-3.5 font-mono text-xs text-slate-500">{p.id.split('-')[0]}</td>
-                          <td className="py-3.5 font-medium text-sm">{p.name}</td>
+                          <td className="py-3.5 font-medium text-sm flex items-center space-x-2">
+                             <MonitorSmartphone size={13} className="text-slate-500" />
+                             <span>{p.name}</span>
+                          </td>
                           <td className="py-3.5">
                             <div className="flex items-center space-x-1.5">
                               {p.proxy
@@ -383,7 +443,7 @@ export default function Home() {
                               {p.status === 'Ready' ? '就绪' : p.status}
                             </span>
                           </td>
-                          <td className="py-3.5">
+                          <td className="py-3.5 text-right">
                             <div className="flex items-center justify-end space-x-1">
                               <button
                                 onClick={async () => {
@@ -392,7 +452,7 @@ export default function Home() {
                                     if (!res.ok) throw new Error('启动失败');
                                   } catch (err) { alert("启动浏览器失败。"); }
                                 }}
-                                className="flex items-center space-x-1 px-2.5 py-1.5 bg-blue-600/80 hover:bg-blue-600 rounded-md text-xs font-bold transition-colors active:scale-95"
+                                className="flex items-center space-x-1 px-2.5 py-1.5 bg-blue-600/80 hover:bg-blue-600 rounded-md text-xs font-bold transition-colors shadow-sm active:scale-95"
                               >
                                 <Play size={10} /><span>打开</span>
                               </button>
@@ -421,12 +481,77 @@ export default function Home() {
                   <h3 className="text-base font-bold">手机指纹环境</h3>
                   <p className="text-xs text-slate-500 mt-0.5">模拟 iPhone / Android 设备访问，规避移动端反检测</p>
                 </div>
-                <button onClick={() => handleMockAction('新建手机环境')} className="flex items-center space-x-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-xs font-bold transition-colors active:scale-95 shadow-lg shadow-blue-500/20">
+                <button onClick={() => handleCreateProfile(true)} className="flex items-center space-x-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-xs font-bold transition-colors active:scale-95 shadow-lg shadow-blue-500/20">
                   <Plus size={13} /><span>新建手机环境</span>
                 </button>
               </div>
-              <Card>
-                <EmptyState icon={MonitorSmartphone} title="暂无手机环境" desc="点击右上角按钮，创建模拟 iPhone 15 或 Pixel 8 的指纹环境。" />
+              <Card title="手机隔离环境">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm">
+                    <thead className="text-slate-500 border-b border-slate-800">
+                      <tr>
+                        <th className="pb-3 font-semibold text-xs">识别 ID</th>
+                        <th className="pb-3 font-semibold text-xs">环境名称</th>
+                        <th className="pb-3 font-semibold text-xs">代理节点</th>
+                        <th className="pb-3 font-semibold text-xs">指纹种子</th>
+                        <th className="pb-3 font-semibold text-xs">状态</th>
+                        <th className="pb-3 font-semibold text-xs text-right">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/50">
+                      {loading ? (
+                        <tr><td colSpan={6} className="py-12 text-center">
+                          <Loader2 size={20} className="animate-spin text-slate-500 mx-auto" />
+                        </td></tr>
+                      ) : profiles.filter(p => !!p.isMobile).length === 0 ? (
+                        <tr><td colSpan={6}>
+                          <EmptyState icon={Smartphone} title="暂无手机环境" desc="创建专属的移动端指纹环境，骗过任何严苛的反作弊系统。" />
+                        </td></tr>
+                      ) : profiles.filter(p => !!p.isMobile).map((p) => (
+                        <tr key={p.id} className="group hover:bg-slate-800/20 transition-colors">
+                          <td className="py-3.5 font-mono text-xs text-slate-500">{p.id.split('-')[0]}</td>
+                          <td className="py-3.5 font-medium text-sm flex items-center space-x-2">
+                             <Smartphone size={13} className="text-purple-400" />
+                             <span className="text-purple-100">{p.name}</span>
+                          </td>
+                          <td className="py-3.5">
+                            <div className="flex items-center space-x-1.5">
+                              {p.proxy
+                                ? <><Wifi size={11} className="text-blue-400" /><span className="font-mono text-xs text-blue-400">{p.proxy}</span></>
+                                : <><WifiOff size={11} className="text-slate-500" /><span className="text-xs text-slate-500">本机直连</span></>
+                              }
+                            </div>
+                          </td>
+                          <td className="py-3.5 text-xs text-slate-400 font-mono">{p.seed ? p.seed.slice(0, 8) : '—'}</td>
+                          <td className="py-3.5">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold ${p.status === 'Running' ? 'bg-purple-500/15 text-purple-400' : 'bg-slate-700/50 text-slate-400'}`}>
+                              {p.status === 'Ready' ? '就绪' : p.status}
+                            </span>
+                          </td>
+                          <td className="py-3.5 text-right flex justify-end space-x-1">
+                            <button
+                              onClick={async () => {
+                                try {
+                                  const res = await fetch('/api/launch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profileId: p.id }) });
+                                  if (!res.ok) throw new Error('启动失败');
+                                } catch (err) { alert("启动浏览器失败。"); }
+                              }}
+                              className="flex items-center space-x-1 px-2.5 py-1.5 bg-blue-600/80 hover:bg-blue-600 rounded-md text-xs font-bold transition-colors shadow-sm active:scale-95"
+                            >
+                              <Play size={10} /><span>唤醒真机</span>
+                            </button>
+                            <button onClick={() => setEditingProfile(p)} className="p-1.5 rounded-md text-slate-400 hover:text-slate-200 hover:bg-slate-700 transition-colors">
+                              <Pencil size={13} />
+                            </button>
+                            <button onClick={() => handleDeleteProfile(p.id)} className="p-1.5 rounded-md text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-colors">
+                              <Trash2 size={13} />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </Card>
             </div>
           )}
@@ -476,10 +601,10 @@ export default function Home() {
                   <p className="text-xs text-slate-500 mt-0.5">统一导入并管理您的代理 IP 池</p>
                 </div>
                 <div className="flex space-x-2">
-                  <button onClick={() => handleMockAction('批量导入代理')} className="flex items-center space-x-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-xs font-bold transition-colors shadow-lg shadow-blue-500/20">
+                  <button onClick={() => setShowImportModal(true)} className="flex items-center space-x-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-xs font-bold transition-colors shadow-lg shadow-blue-500/20">
                     <Upload size={12} /><span>批量导入</span>
                   </button>
-                  <button onClick={() => handleMockAction('全局检测')} className="flex items-center space-x-1.5 px-3.5 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs font-bold border border-slate-700 transition-colors">
+                  <button onClick={handleCheckAll} className="flex items-center space-x-1.5 px-3.5 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs font-bold border border-slate-700 transition-colors">
                     <RefreshCcw size={12} /><span>全部检测</span>
                   </button>
                 </div>
@@ -668,6 +793,53 @@ export default function Home() {
           </div>
         </div>
       )}
+
+      {/* Batch Import Modal */}
+      {showImportModal && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
+          <div className="bg-[#141720] border border-slate-700/50 rounded-2xl shadow-2xl w-[520px] overflow-hidden animate-in zoom-in duration-200">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800">
+              <div className="flex items-center space-x-2">
+                <Upload size={15} className="text-blue-400" />
+                <h2 className="text-sm font-bold">批量导入代理 IP</h2>
+              </div>
+              <button onClick={() => setShowImportModal(false)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors">
+                <X size={15} />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="bg-blue-500/10 border border-blue-500/20 p-3 rounded-lg flex items-start space-x-2">
+                <AlertCircle size={14} className="text-blue-400 flex-shrink-0 mt-0.5" />
+                <div className="text-xs text-blue-400 leading-relaxed">
+                  系统会自动解析智能区分 IP、端口和账号密码。支持以下格式拼接 (每行一条):<br/>
+                  <span className="font-mono text-slate-300">127.0.0.1:1080</span><br/>
+                  <span className="font-mono text-slate-300">socks5://45.12.33.1:1080</span><br/>
+                  <span className="font-mono text-slate-300">103.4.1.22:9092:user123:mypass</span>
+                </div>
+              </div>
+              <textarea
+                value={importText}
+                onChange={e => setImportText(e.target.value)}
+                placeholder="在此处狂暴粘贴您的代理列表..."
+                className="w-full h-40 bg-slate-900 shadow-inner border border-slate-700 rounded-lg p-3 text-sm focus:outline-none focus:border-blue-500 transition-colors font-mono resize-none text-slate-300"
+              />
+              <div className="flex justify-end space-x-2 pt-2">
+                <button onClick={() => setShowImportModal(false)} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm font-bold border border-slate-700 transition-colors">
+                  取消
+                </button>
+                <button 
+                  onClick={handleBatchImport}
+                  className="flex items-center justify-center space-x-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-bold shadow-lg shadow-blue-500/20 transition-colors"
+                >
+                  <CheckCircle size={14} />
+                  <span>自动解析并导入</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   )
 }

@@ -70,6 +70,7 @@ const profile = createProfile({
   name: profileName,
   seed: savedProfile?.seed || profileName, // Deterministic seed
   userAgent: savedProfile?.ua || undefined,
+  isMobile: savedProfile?.isMobile || false,
 });
 
 if (parsedProxy) {
@@ -117,6 +118,8 @@ const stealthScript = buildInjectionScript(profile.fingerprint);
     locale: profile.fingerprint.languages[0],
     timezoneId: profile.fingerprint.timezone,
     permissions: [],
+    isMobile: savedProfile?.isMobile || false,
+    hasTouch: savedProfile?.isMobile || false,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',

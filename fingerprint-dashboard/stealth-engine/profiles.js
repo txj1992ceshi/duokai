@@ -28,12 +28,24 @@ const UA_PRESETS = [
   { ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0', platform: 'Win32', vendor: '' },
 ];
 
+const MOBILE_UA_PRESETS = [
+  { ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Mobile/15E148 Safari/604.1', platform: 'iPhone', vendor: 'Apple Computer, Inc.' },
+  { ua: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36', platform: 'Linux armv8l', vendor: 'Google Inc.' },
+  { ua: 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36', platform: 'Linux aarch64', vendor: 'Google Inc.' }
+];
+
 const SCREEN_PRESETS = [
   { width: 1920, height: 1080, colorDepth: 24 },
   { width: 1366, height: 768,  colorDepth: 24 },
   { width: 2560, height: 1440, colorDepth: 24 },
   { width: 1440, height: 900,  colorDepth: 24 },
   { width: 1280, height: 800,  colorDepth: 24 },
+];
+
+const MOBILE_SCREEN_PRESETS = [
+  { width: 393, height: 852, colorDepth: 32 },  // iPhone 14 Pro
+  { width: 430, height: 932, colorDepth: 32 },  // iPhone 14 Pro Max
+  { width: 412, height: 915, colorDepth: 24 },  // Pixel 8
 ];
 
 const TIMEZONES = [
@@ -56,13 +68,13 @@ const LANGUAGE_PRESETS = [
  * Creates a deterministic profile fingerprint from a seed value.
  * Same seed = same fingerprint every time (required for cookie persistence).
  */
-function generateFingerprint(seed) {
+function generateFingerprint(seed, isMobile = false) {
   const rng = mulberry32(seed);
   const pick = (arr) => arr[Math.floor(rng() * arr.length)];
 
   const gpu    = pick(GPU_PRESETS);
-  const ua     = pick(UA_PRESETS);
-  const screen = pick(SCREEN_PRESETS);
+  const ua     = pick(isMobile ? MOBILE_UA_PRESETS : UA_PRESETS);
+  const screen = pick(isMobile ? MOBILE_SCREEN_PRESETS : SCREEN_PRESETS);
 
   return {
     userAgent:          ua.ua,
@@ -95,9 +107,9 @@ function mulberry32(seed) {
 /**
  * Creates a new Profile object.
  */
-function createProfile({ name, proxy = null, seed = null }) {
+function createProfile({ name, proxy = null, seed = null, isMobile = false }) {
   seed = seed ?? Math.floor(Math.random() * 0xFFFFFFFF);
-  const fingerprint = generateFingerprint(seed);
+  const fingerprint = generateFingerprint(seed, isMobile);
   return {
     id: crypto.randomUUID(),
     name,

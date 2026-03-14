@@ -11,6 +11,7 @@ export interface Profile {
   proxy?: string; // Optional HTTP/SOCKS5 proxy string
   ua?: string; // Optional Custom User Agent
   seed?: string; // Seed for deterministic fingerprint generation
+  isMobile?: boolean; // Mobile phone profile flag
 }
 
 export interface DbSchema {
