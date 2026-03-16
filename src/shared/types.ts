@@ -1,0 +1,440 @@
+export type ProfileStatus = 'queued' | 'starting' | 'running' | 'idle' | 'stopped' | 'error'
+
+export type ProxyType = 'http' | 'https' | 'socks5'
+
+export type LogLevel = 'info' | 'warn' | 'error'
+
+export type LogCategory = 'profile' | 'proxy' | 'runtime' | 'system' | 'cloud-phone'
+
+export type WebRtcMode = 'default' | 'disabled'
+
+export type ProxyMode = 'direct' | 'custom' | 'manager' | 'api'
+export type BrowserPageMode = 'local' | 'hidden'
+export type ToggleMode = 'enabled' | 'disabled'
+export type PermissionMode = 'ask' | 'allow' | 'block'
+export type DeviceMode = 'desktop' | 'android' | 'ios'
+export type BrowserKernel = 'chrome' | 'system-default'
+export type CanvasMode = 'random' | 'off' | 'custom'
+export type WebglMode = 'random' | 'off' | 'custom'
+export type SimpleFingerprintMode = 'random' | 'off' | 'custom'
+export type CpuMode = 'system' | 'custom'
+export type ResolutionMode = 'system' | 'custom' | 'random'
+export type FontMode = 'system' | 'random'
+
+export interface ProfileBasicSettings {
+  platform: string
+  customPlatformName: string
+  customPlatformUrl: string
+  platformUsername: string
+  platformPassword: string
+  validateByUsername: boolean
+  multiOpenMode: 'allow' | 'deny'
+  twoFactorSecret: string
+  cookieSeed: string
+}
+
+export interface ProfileProxySettings {
+  proxyMode: ProxyMode
+  ipLookupChannel: string
+  proxyType: ProxyType
+  ipProtocol: 'ipv4' | 'ipv6'
+  host: string
+  port: number
+  username: string
+  password: string
+  udpEnabled: boolean
+}
+
+export interface ProfileCommonSettings {
+  pageMode: BrowserPageMode
+  blockImages: boolean
+  blockImagesAboveKb: number
+  syncTabs: boolean
+  syncCookies: boolean
+  clearCacheOnLaunch: boolean
+  randomizeFingerprintOnLaunch: boolean
+  allowChromeLogin: boolean
+  hardwareAcceleration: boolean
+  memorySaver: boolean
+}
+
+export interface ProfileAdvancedFingerprintSettings {
+  browserKernel: BrowserKernel
+  browserKernelVersion: string
+  deviceMode: DeviceMode
+  operatingSystem: string
+  operatingSystemVersion: string
+  browserVersion: string
+  autoLanguageFromIp: boolean
+  autoInterfaceLanguageFromIp: boolean
+  interfaceLanguage: string
+  autoTimezoneFromIp: boolean
+  autoGeolocationFromIp: boolean
+  geolocationPermission: PermissionMode
+  geolocation: string
+  windowWidth: number
+  windowHeight: number
+  resolutionMode: ResolutionMode
+  fontMode: FontMode
+  canvasMode: CanvasMode
+  webglImageMode: WebglMode
+  webglMetadataMode: WebglMode
+  webglVendor: string
+  webglRenderer: string
+  audioContextMode: SimpleFingerprintMode
+  mediaDevicesMode: SimpleFingerprintMode
+  speechVoicesMode: SimpleFingerprintMode
+  doNotTrackEnabled: boolean
+  clientRectsMode: SimpleFingerprintMode
+  deviceInfoMode: 'custom' | 'off'
+  deviceName: string
+  hostIp: string
+  macAddress: string
+  portScanProtection: boolean
+  portScanAllowlist: string
+  sslFingerprintMode: ToggleMode
+  customPluginFingerprint: ToggleMode
+  cpuMode: CpuMode
+  cpuCores: number
+  memoryGb: number
+  launchArgs: string
+}
+
+export interface ProfileRuntimeMetadata {
+  lastResolvedIp: string
+  lastResolvedCountry: string
+  lastResolvedRegion: string
+  lastResolvedCity: string
+  lastResolvedTimezone: string
+  lastResolvedLanguage: string
+  lastResolvedGeolocation: string
+  lastResolvedAt: string
+  lastProxyCheckAt: string
+  lastProxyCheckSuccess: boolean | null
+  lastProxyCheckMessage: string
+  lastValidationLevel: 'unknown' | 'pass' | 'warn' | 'block'
+  lastValidationMessages: string[]
+  launchRetryCount: number
+  injectedFeatures: string[]
+}
+
+export interface FingerprintConfig {
+  userAgent: string
+  language: string
+  timezone: string
+  resolution: string
+  webrtcMode: WebRtcMode
+  basicSettings: ProfileBasicSettings
+  proxySettings: ProfileProxySettings
+  commonSettings: ProfileCommonSettings
+  advanced: ProfileAdvancedFingerprintSettings
+  runtimeMetadata: ProfileRuntimeMetadata
+}
+
+export interface ProfileRecord {
+  id: string
+  name: string
+  proxyId: string | null
+  groupName: string
+  tags: string[]
+  notes: string
+  fingerprintConfig: FingerprintConfig
+  status: ProfileStatus
+  lastStartedAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface TemplateRecord {
+  id: string
+  name: string
+  proxyId: string | null
+  groupName: string
+  tags: string[]
+  notes: string
+  fingerprintConfig: FingerprintConfig
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ProxyRecord {
+  id: string
+  name: string
+  type: ProxyType
+  host: string
+  port: number
+  username: string
+  password: string
+  status: 'unknown' | 'online' | 'offline'
+  lastCheckedAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface LogEntry {
+  id: string
+  level: LogLevel
+  category: LogCategory
+  message: string
+  profileId: string | null
+  createdAt: string
+}
+
+export interface AppSetting {
+  key: string
+  value: string
+}
+
+export interface DashboardSummary {
+  totalProfiles: number
+  runningProfiles: number
+  totalProxies: number
+  onlineProxies: number
+  totalCloudPhones: number
+  runningCloudPhones: number
+  cloudPhoneErrors: number
+  logCount: number
+}
+
+export interface RuntimeStatus {
+  runningProfileIds: string[]
+  queuedProfileIds: string[]
+  startingProfileIds: string[]
+  retryCounts: Record<string, number>
+}
+
+export interface ProxyTestResult {
+  success: boolean
+  message: string
+  checkedAt: string
+}
+
+export type CloudPhoneStatus =
+  | 'draft'
+  | 'provisioned'
+  | 'starting'
+  | 'running'
+  | 'stopping'
+  | 'stopped'
+  | 'error'
+
+export type CloudPhoneComputeType = 'basic' | 'standard' | 'pro'
+
+export type CloudPhoneProxyType = 'http' | 'https' | 'socks5'
+
+export type CloudPhoneIpProtocol = 'ipv4' | 'ipv6'
+
+export type CloudPhoneProviderKind =
+  | 'self-hosted'
+  | 'third-party'
+  | 'local-emulator'
+  | 'mock'
+
+export type CloudPhoneProviderCapability =
+  | 'proxyTest'
+  | 'startStop'
+  | 'remoteUrl'
+  | 'adbBridge'
+
+export interface CloudPhoneFingerprintSettings {
+  autoLanguage: boolean
+  language: string | null
+  autoTimezone: boolean
+  timezone: string | null
+  autoGeolocation: boolean
+  geolocation: string | null
+}
+
+export interface CloudPhoneRecord {
+  id: string
+  name: string
+  groupName: string
+  tags: string[]
+  notes: string
+  platform: 'android'
+  providerKey: string
+  providerKind: CloudPhoneProviderKind
+  providerConfig: CloudPhoneProviderConfig
+  providerInstanceId: string | null
+  computeType: CloudPhoneComputeType
+  status: CloudPhoneStatus
+  lastSyncedAt: string | null
+  ipLookupChannel: string
+  proxyType: CloudPhoneProxyType
+  ipProtocol: CloudPhoneIpProtocol
+  proxyHost: string
+  proxyPort: number
+  proxyUsername: string
+  proxyPassword: string
+  udpEnabled: boolean
+  fingerprintSettings: CloudPhoneFingerprintSettings
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CloudPhoneProxyTestResult {
+  success: boolean
+  message: string
+  checkedAt: string
+}
+
+export interface CloudPhoneDetails {
+  providerKey: string
+  providerKind: CloudPhoneProviderKind
+  providerInstanceId: string | null
+  platform: 'android'
+  status: CloudPhoneStatus
+  computeType: CloudPhoneComputeType
+  endpointUrl: string | null
+  message: string
+  lastSyncedAt: string | null
+  providerLabel?: string
+  connectionLabel?: string
+}
+
+export interface CloudPhoneProviderConfig {
+  baseUrl?: string
+  apiKey?: string
+  clusterId?: string
+  poolId?: string
+  vendorKey?: string
+  token?: string
+  projectId?: string
+  adbSerial?: string
+  emulatorName?: string
+  adbPath?: string
+}
+
+export interface CloudPhoneProviderSummary {
+  key: string
+  label: string
+  kind: CloudPhoneProviderKind
+  capabilities: CloudPhoneProviderCapability[]
+}
+
+export interface CloudPhoneProviderHealth {
+  key: string
+  label: string
+  kind: CloudPhoneProviderKind
+  available: boolean
+  message: string
+  checkedAt: string
+}
+
+export interface DetectedLocalEmulator {
+  serial: string
+  name: string
+  state: string
+  source: 'adb'
+}
+
+export interface CreateProfileInput {
+  name: string
+  proxyId: string | null
+  groupName: string
+  tags: string[]
+  notes: string
+  fingerprintConfig: FingerprintConfig
+}
+
+export interface UpdateProfileInput extends CreateProfileInput {
+  id: string
+}
+
+export interface CreateTemplateInput {
+  name: string
+  proxyId: string | null
+  groupName: string
+  tags: string[]
+  notes: string
+  fingerprintConfig: FingerprintConfig
+}
+
+export interface UpdateTemplateInput extends CreateTemplateInput {
+  id: string
+}
+
+export interface CreateProxyInput {
+  name: string
+  type: ProxyType
+  host: string
+  port: number
+  username: string
+  password: string
+}
+
+export interface UpdateProxyInput extends CreateProxyInput {
+  id: string
+}
+
+export interface CreateCloudPhoneInput {
+  name: string
+  groupName: string
+  tags: string[]
+  notes: string
+  platform: 'android'
+  providerKey: string
+  providerKind: CloudPhoneProviderKind
+  providerConfig: CloudPhoneProviderConfig
+  providerInstanceId?: string | null
+  computeType: CloudPhoneComputeType
+  ipLookupChannel: string
+  proxyType: CloudPhoneProxyType
+  ipProtocol: CloudPhoneIpProtocol
+  proxyHost: string
+  proxyPort: number
+  proxyUsername: string
+  proxyPassword: string
+  udpEnabled: boolean
+  fingerprintSettings: CloudPhoneFingerprintSettings
+}
+
+export interface UpdateCloudPhoneInput extends CreateCloudPhoneInput {
+  id: string
+}
+
+export interface ProfileBulkActionPayload {
+  profileIds: string[]
+  groupName?: string
+}
+
+export interface CloudPhoneBulkActionPayload {
+  cloudPhoneIds: string[]
+  groupName?: string
+}
+
+export interface SettingsPayload {
+  [key: string]: string
+}
+
+export interface ProfileDirectoryInfo {
+  appDataDir: string
+  profilesDir: string
+  chromiumExecutable?: string
+}
+
+export interface ExportBundle {
+  version: number
+  exportedAt: string
+  profiles: ProfileRecord[]
+  proxies: ProxyRecord[]
+  templates: TemplateRecord[]
+  cloudPhones: CloudPhoneRecord[]
+}
+
+export interface ImportResult {
+  profilesImported: number
+  proxiesImported: number
+  templatesImported: number
+  cloudPhonesImported: number
+  warnings: string[]
+}
+
+export interface DesktopRuntimeInfo {
+  mode: 'development' | 'production'
+  appVersion: string
+  mainVersion: string
+  preloadVersion: string
+  rendererVersion: string
+  capabilities: string[]
+}
