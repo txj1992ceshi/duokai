@@ -2,7 +2,7 @@
   "name": "bitbrowser-clone",
   "private": true,
   "version": "0.0.0",
-  "description": "Desktop browser operations MVP with local profiles, proxies, runtime control, and logs.",
+  "description": "Duokai2 desktop app for local browser profile management and multi-environment testing.",
   "author": "jj",
   "type": "module",
   "main": "dist-electron/main.js",
@@ -42,8 +42,8 @@
     "vite-plugin-electron-renderer": "^0.14.6"
   },
   "build": {
-    "appId": "com.jj.browserstudio",
-    "productName": "Browser Studio",
+    "appId": "com.jj.duokai2",
+    "productName": "Duokai2",
     "directories": {
       "output": "release"
     },
