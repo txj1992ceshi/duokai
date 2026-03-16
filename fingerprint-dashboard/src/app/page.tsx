@@ -114,6 +114,10 @@ export default function Home() {
   const [newBehaviorName, setNewBehaviorName] = useState('');
   const [newBehaviorDesc, setNewBehaviorDesc] = useState('');
   const [runtimeOnline, setRuntimeOnline] = useState<boolean | null>(null);
+  const [selectedBehavior, setSelectedBehavior] = useState<Behavior | null>(null);
+  const [executingBehaviorId, setExecutingBehaviorId] = useState<string | null>(null);
+  const [execLogs, setExecLogs] = useState<string[]>([]);
+  const [targetSessionId, setTargetSessionId] = useState<string>('');
 
   const handleSaveGroup = async () => {
     if (!groupInput.trim()) return;
@@ -189,17 +193,37 @@ export default function Home() {
         if (res.ok) {
           const data = await res.json();
           setRuntimeOnline(data.online === true);
+          
+          if (data.online && data.sessions) {
+            // Synchronize profile statuses with actual runtime sessions
+            const activeProfileIds = data.sessions.map((s: any) => s.profileId);
+            setProfiles(prev => prev.map(p => {
+              const isActuallyRunning = activeProfileIds.includes(p.id);
+              if (isActuallyRunning && p.status !== 'Running') {
+                return { ...p, status: 'Running' };
+              }
+              if (!isActuallyRunning && p.status === 'Running') {
+                return { ...p, status: 'Ready' };
+              }
+              return p;
+            }));
+          } else {
+            // Runtime offline or no sessions: ensure none are 'Running'
+            setProfiles(prev => prev.map(p => p.status === 'Running' ? { ...p, status: 'Ready' } : p));
+          }
         } else {
           setRuntimeOnline(false);
+          setProfiles(prev => prev.map(p => p.status === 'Running' ? { ...p, status: 'Ready' } : p));
         }
       } catch {
         setRuntimeOnline(false);
+        setProfiles(prev => prev.map(p => p.status === 'Running' ? { ...p, status: 'Ready' } : p));
       }
     };
     checkRuntime();
     const interval = setInterval(checkRuntime, 5000);
     return () => clearInterval(interval);
-  }, [])
+  }, [profiles.length])
 
   const handleCreateProfile = async (isMobile = false, targetGroupId?: string) => {
     try {
@@ -276,22 +300,7 @@ export default function Home() {
     }
   }
 
-  const handleCreateBehavior = async () => {
-    if (!newBehaviorName.trim()) return;
-    try {
-      const res = await fetch('/api/behaviors', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newBehaviorName, description: newBehaviorDesc, actions: [] })
-      });
-      if (res.ok) {
-        setShowBehaviorModal(false);
-        setNewBehaviorName('');
-        setNewBehaviorDesc('');
-        fetchProfiles();
-      }
-    } catch (err) { console.error(err) }
-  }
+
 
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -424,6 +433,66 @@ export default function Home() {
   };
 
   const handleMockAction = (msg: string) => alert(`「${msg}」功能正在对接中，敬请期待！`)
+
+  const handleCreateBehavior = async () => {
+    const name = newBehaviorName.trim() || '未命名流程';
+    const newB: Behavior = {
+      id: `bh-${Date.now()}`,
+      name,
+      description: newBehaviorDesc,
+      actions: [
+        { type: 'goto', url: 'https://www.google.com' }
+      ]
+    };
+    const upB = [...behaviors, newB];
+    setBehaviors(upB);
+    await fetch('/api/behaviors', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(upB) });
+    setShowBehaviorModal(false);
+    setNewBehaviorName('');
+    setNewBehaviorDesc('');
+    setSelectedBehavior(newB);
+  };
+
+  const handleDeleteBehavior = async (id: string) => {
+    if (!confirm('确定删除该流程吗？')) return;
+    const upB = behaviors.filter(b => b.id !== id);
+    setBehaviors(upB);
+    await fetch('/api/behaviors', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(upB) });
+    if (selectedBehavior?.id === id) setSelectedBehavior(null);
+  };
+
+  const handleUpdateBehaviorActions = async (actions: any[]) => {
+    if (!selectedBehavior) return;
+    const upB = behaviors.map(b => b.id === selectedBehavior.id ? { ...b, actions } : b);
+    setBehaviors(upB);
+    setSelectedBehavior({ ...selectedBehavior, actions });
+    await fetch('/api/behaviors', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(upB) });
+  };
+
+  const addLog = (msg: string) => setExecLogs(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev.slice(0, 49)]);
+
+  const handleRunBehavior = async () => {
+    if (!selectedBehavior || !targetSessionId) {
+      alert('请先选择一个流程和运行中的环境');
+      return;
+    }
+    setExecutingBehaviorId(selectedBehavior.id);
+    setExecLogs(['--- 启动自动化流程 ---']);
+    
+    try {
+      for (const action of selectedBehavior.actions) {
+        addLog(`执行: ${action.type}${action.url ? ` (${action.url})` : ''}${action.selector ? ` [${action.selector}]` : ''}`);
+        await runtime.doSessionAction(targetSessionId, action);
+        // Random pause between steps
+        await new Promise(r => setTimeout(r, 800 + Math.random() * 1200));
+      }
+      addLog('✅ 流程执行完成');
+    } catch (err: any) {
+      addLog(`❌ 出错: ${err.message || JSON.stringify(err)}`);
+    } finally {
+      setExecutingBehaviorId(null);
+    }
+  };
 
   // --- Dynamic Stats Calculations ---
   const activeProfilesCount = profiles.filter(p => p.status === 'Running').length;
@@ -940,83 +1009,7 @@ export default function Home() {
             </div>
           )}
 
-          {/* ─── 自动化流程 ─── */}
-          {activeTab === '自动化流程' && (
-            <div className="animate-in fade-in duration-300 space-y-5">
-              <div className="flex justify-between items-center">
-                <div>
-                  <h3 className="text-base font-bold">行为模板库</h3>
-                  <p className="text-xs text-slate-500 mt-0.5">预设鼠标轨迹、输入序列，通过 Runtime 自动执行</p>
-                </div>
-                <button onClick={() => setShowBehaviorModal(true)} className="flex items-center space-x-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-xs font-bold transition-colors shadow-lg shadow-blue-500/20">
-                  <Plus size={13} /><span>新建模板</span>
-                </button>
-              </div>
-              
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {behaviors.length === 0 ? (
-                  <div className="col-span-full">
-                    <Card>
-                      <EmptyState icon={Workflow} title="暂无行为模板" desc="创建一个模板，定义如何自动完成社交平台登录或养号动作。" />
-                    </Card>
-                  </div>
-                ) : behaviors.map(b => (
-                  <Card key={b.id} className="hover:border-slate-600 cursor-pointer transition-all group">
-                    <div className="flex items-start justify-between mb-4">
-                      <div className="p-2 rounded-lg bg-orange-500/10 text-orange-400 border border-orange-500/20">
-                        <Command size={16} />
-                      </div>
-                      <span className="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400 font-mono italic">#{b.id.slice(-4)}</span>
-                    </div>
-                    <p className="font-bold text-sm tracking-tight">{b.name}</p>
-                    <p className="text-xs text-slate-500 mt-1 line-clamp-2 leading-relaxed">{b.description || '暂无详细描述'}</p>
-                    <div className="mt-4 pt-4 border-t border-slate-800 flex justify-between items-center">
-                      <span className="text-[10px] text-slate-600 font-bold uppercase tracking-widest">{b.actions.length} 个步骤</span>
-                      <button className="text-xs text-blue-400 hover:text-blue-300 font-bold">配置步骤</button>
-                    </div>
-                  </Card>
-                ))}
-              </div>
 
-              {showBehaviorModal && (
-                <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
-                  <div className="bg-[#141720] border border-slate-700/50 rounded-2xl shadow-2xl w-[400px] overflow-hidden animate-in zoom-in duration-200">
-                    <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800">
-                      <h2 className="text-sm font-bold">新建行为模板</h2>
-                      <button onClick={() => setShowBehaviorModal(false)} className="text-slate-400 hover:text-slate-200 transition-colors">
-                        <X size={15} />
-                      </button>
-                    </div>
-                    <div className="p-6 space-y-4">
-                      <div>
-                        <label className="block text-xs font-bold text-slate-400 mb-1.5">模板名称</label>
-                        <input
-                          type="text"
-                          autoFocus
-                          value={newBehaviorName}
-                          onChange={e => setNewBehaviorName(e.target.value)}
-                          placeholder="例如: Facebook 养号序列"
-                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-bold text-slate-400 mb-1.5">描述 (可选)</label>
-                        <textarea
-                          value={newBehaviorDesc}
-                          onChange={e => setNewBehaviorDesc(e.target.value)}
-                          placeholder="输入模板的主要功能描述..."
-                          className="w-full h-24 bg-slate-900 border border-slate-700 rounded-lg p-3 text-sm focus:outline-none focus:border-blue-500 transition-colors resize-none"
-                        />
-                      </div>
-                      <div className="flex justify-end pt-2">
-                        <button onClick={handleCreateBehavior} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-bold">创建模板</button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
           {activeTab === '代理 IP' && (
             <div className="animate-in fade-in duration-300 space-y-4">
               <div className="flex items-center justify-between">
@@ -1097,16 +1090,160 @@ export default function Home() {
 
           {/* ─── 自动化流程 / 扩展程序 ─── */}
           {activeTab === '自动化流程' && (
-            <div className="animate-in fade-in duration-300">
-              <div className="flex justify-between items-center mb-5">
+            <div className="animate-in fade-in slide-in-from-bottom-2 duration-300 h-full flex flex-col">
+              <div className="flex justify-between items-center mb-5 shrink-0">
                 <div>
                   <h3 className="text-base font-bold">自动化流程 (RPA)</h3>
                   <p className="text-xs text-slate-500 mt-0.5">托管点击、填表、登录等自动化脚本</p>
                 </div>
+                <button 
+                  onClick={() => setShowBehaviorModal(true)}
+                  className="flex items-center space-x-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded-lg text-xs font-bold transition-all shadow-lg shadow-blue-500/20"
+                >
+                  <Plus size={14} />
+                  <span>新建流程</span>
+                </button>
               </div>
-              <Card>
-                <EmptyState icon={Workflow} title="暂无自动化流程" desc="该功能将支持录制和回放浏览器操作，实现批量自动化，即将上线。" />
-              </Card>
+
+              <div className="flex-1 flex space-x-5 overflow-hidden min-h-0">
+                {/* Behavior List Sidebar */}
+                <div className="w-64 flex flex-col space-y-3 shrink-0">
+                  <div className="flex-1 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+                    {behaviors.length === 0 ? (
+                      <div className="text-center py-10 bg-slate-900/40 rounded-xl border border-dashed border-slate-800">
+                        <p className="text-xs text-slate-500">暂无流程</p>
+                      </div>
+                    ) : (
+                      behaviors.map(b => (
+                        <div 
+                          key={b.id}
+                          onClick={() => setSelectedBehavior(b)}
+                          className={`group p-3 rounded-xl border cursor-pointer transition-all ${
+                            selectedBehavior?.id === b.id 
+                            ? 'bg-blue-600/10 border-blue-500/40' 
+                            : 'bg-slate-900/40 border-slate-800 hover:border-slate-700'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between mb-1">
+                            <div className="flex items-center space-x-2">
+                              <Workflow size={14} className={selectedBehavior?.id === b.id ? 'text-blue-400' : 'text-slate-500'} />
+                              <span className="text-xs font-bold truncate max-w-[120px]">{b.name}</span>
+                            </div>
+                            <button 
+                              onClick={(e) => { e.stopPropagation(); handleDeleteBehavior(b.id); }}
+                              className="opacity-0 group-hover:opacity-100 p-1 hover:text-red-400 hover:bg-red-500/10 rounded transition-all"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                          <p className="text-[10px] text-slate-500 line-clamp-1">{b.description || '无描述'}</p>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                {/* Editor Content */}
+                <div className="flex-1 overflow-hidden flex flex-col min-w-0">
+                  {selectedBehavior ? (
+                    <div className="h-full flex flex-col space-y-4 overflow-hidden">
+                      {/* Control Panel */}
+                      <Card className="p-4 shrink-0 bg-slate-900/20">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center space-x-4">
+                            <div className="flex items-center space-x-2">
+                              <span className="text-xs text-slate-400">运行目标:</span>
+                              <select 
+                                value={targetSessionId}
+                                onChange={e => setTargetSessionId(e.target.value)}
+                                className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs focus:ring-1 focus:ring-blue-500 outline-none w-48"
+                              >
+                                <option value="">选择运行中的环境...</option>
+                                {profiles.filter(p => p.status === 'Running').map(p => (
+                                  <option key={p.id} value={p.runtimeSessionId}>{p.name}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <button 
+                              onClick={handleRunBehavior}
+                              disabled={!targetSessionId || !!executingBehaviorId}
+                              className={`flex items-center space-x-2 px-4 py-1.5 rounded-lg text-xs font-bold shadow-lg transition-all ${
+                                !targetSessionId || !!executingBehaviorId 
+                                ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700' 
+                                : 'bg-green-600 hover:bg-green-500 text-white shadow-green-500/20'
+                              }`}
+                            >
+                              {executingBehaviorId ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} fill="currentColor" />}
+                              <span>{executingBehaviorId ? '正在运行...' : '立即启动'}</span>
+                            </button>
+                          </div>
+                        </div>
+                      </Card>
+
+                      <div className="flex-1 flex space-x-4 min-h-0 overflow-hidden">
+                        {/* Step Editor */}
+                        <div className="flex-1 flex flex-col font-mono text-[11px] bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-inner shadow-black">
+                          <div className="flex items-center justify-between px-3 py-2 bg-slate-900/80 border-b border-slate-800 shrink-0">
+                            <span className="text-slate-400 font-sans font-bold">脚本配置 (JSON)</span>
+                            <div className="flex space-x-1">
+                              <div className="w-2.5 h-2.5 rounded-full bg-red-500/20" />
+                              <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/20" />
+                              <div className="w-2.5 h-2.5 rounded-full bg-green-500/20" />
+                            </div>
+                          </div>
+                          <textarea 
+                            value={JSON.stringify(selectedBehavior.actions, null, 2)}
+                            onChange={(e) => {
+                              try { 
+                                const val = JSON.parse(e.target.value);
+                                if(Array.isArray(val)) handleUpdateBehaviorActions(val);
+                              } catch(e) {}
+                            }}
+                            className="flex-1 bg-transparent p-4 outline-none resize-none text-blue-400 custom-scrollbar leading-relaxed"
+                            spellCheck={false}
+                          />
+                        </div>
+
+                        {/* Logs */}
+                        <div className="w-72 flex flex-col bg-slate-900/40 border border-slate-800 rounded-xl overflow-hidden shrink-0">
+                          <div className="px-3 py-2 bg-slate-800/50 border-b border-slate-800 font-bold text-[10px] text-slate-400 tracking-wider uppercase shrink-0">
+                            执行日志
+                          </div>
+                          <div className="flex-1 overflow-y-auto p-3 space-y-1.5 font-mono text-[10px] custom-scrollbar">
+                            {execLogs.length === 0 ? (
+                              <div className="text-slate-600 italic">等待任务运行...</div>
+                            ) : (
+                              execLogs.map((log, i) => (
+                                <div key={i} className={`break-words ${log.includes('❌') ? 'text-red-400' : log.includes('✅') ? 'text-green-400' : 'text-slate-500'}`}>
+                                  {log}
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <Card className="h-full flex items-center justify-center border-dashed">
+                      <div className="text-center space-y-3">
+                        <div className="w-12 h-12 bg-slate-900 rounded-2xl flex items-center justify-center mx-auto border border-slate-800">
+                          <Workflow size={20} className="text-slate-600" />
+                        </div>
+                        <div>
+                          <p className="text-sm font-bold text-slate-400">选择或创建一个流程以开始</p>
+                          <p className="text-[11px] text-slate-600 mt-1 max-w-[240px]">通过编写简单的脚本步骤，您可以自动化完成重复性的浏览器操作。</p>
+                        </div>
+                        <button 
+                          onClick={() => setShowBehaviorModal(true)}
+                          className="px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-xs font-bold transition-all"
+                        >
+                          创建第一个流程
+                        </button>
+                      </div>
+                    </Card>
+                  )}
+                </div>
+              </div>
             </div>
           )}
 
@@ -1314,6 +1451,56 @@ export default function Home() {
                 >
                   <CheckCircle size={14} />
                   <span>保存</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Behavior Modal */}
+      {showBehaviorModal && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
+          <div className="bg-[#141720] border border-slate-700/50 rounded-2xl shadow-2xl w-[420px] overflow-hidden animate-in zoom-in duration-200">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800">
+              <div className="flex items-center space-x-2">
+                <Workflow size={15} className="text-blue-400" />
+                <h2 className="text-sm font-bold">创建自动化流程</h2>
+              </div>
+              <button onClick={() => setShowBehaviorModal(false)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors">
+                <X size={15} />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-400 mb-1.5">流程名称</label>
+                <input
+                  type="text"
+                  value={newBehaviorName}
+                  onChange={e => setNewBehaviorName(e.target.value)}
+                  placeholder="例如: 自动登录 Facebook"
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors text-slate-200"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-400 mb-1.5">流程描述 (可选)</label>
+                <textarea
+                  value={newBehaviorDesc}
+                  onChange={e => setNewBehaviorDesc(e.target.value)}
+                  placeholder="这个流程是用来做什么的..."
+                  className="w-full h-24 bg-slate-900 border border-slate-700 rounded-lg p-3 text-sm focus:outline-none focus:border-blue-500 transition-colors text-slate-300 resize-none"
+                />
+              </div>
+              <div className="flex justify-end space-x-2 pt-2">
+                <button onClick={() => setShowBehaviorModal(false)} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm font-bold border border-slate-700 transition-colors">
+                  取消
+                </button>
+                <button 
+                  onClick={handleCreateBehavior}
+                  className="flex items-center justify-center space-x-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-bold shadow-lg shadow-blue-500/20 transition-colors"
+                >
+                  <Plus size={14} />
+                  <span>立即创建</span>
                 </button>
               </div>
             </div>
