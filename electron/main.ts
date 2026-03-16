@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs'
+import { appendFileSync, mkdirSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -78,6 +78,78 @@ const launchRetryCounts = new Map<string, number>()
 const launchQueue: string[] = []
 const cancelledLaunches = new Set<string>()
 let launchQueueActive = false
+const MAX_QUEUE = Number(process.env.MAX_QUEUE_LENGTH || 200)
+
+function resolveAuditLogPath(): string {
+  try {
+    return path.join(app.getPath('userData'), process.env.RUNTIME_AUDIT_FILE || 'runtime-audit.log')
+  } catch {
+    return path.join(process.cwd(), process.env.RUNTIME_AUDIT_FILE || 'runtime-audit.log')
+  }
+}
+
+const AUDIT_LOG_PATH = resolveAuditLogPath()
+let gracefulShutdownInFlight = false
+let beforeQuitHandled = false
+
+function audit(action: string, payload: Record<string, unknown> = {}) {
+  try {
+    const rec = { ts: new Date().toISOString(), pid: process.pid, action, ...payload }
+    appendFileSync(AUDIT_LOG_PATH, `${JSON.stringify(rec)}\n`)
+  } catch (error) {
+    console.error('audit write failed', error)
+  }
+}
+
+async function saveAllElectronSessions(): Promise<void> {
+  audit('save_all_begin', { count: runtimeContexts.size })
+  for (const [profileId, context] of runtimeContexts.entries()) {
+    try {
+      const profilePath = getProfilePath(app, profileId)
+      mkdirSync(profilePath, { recursive: true })
+      const storagePath = path.join(profilePath, 'storageState.json')
+      await context.storageState({ path: storagePath })
+      audit('save_ok', { profileId, storagePath })
+    } catch (error) {
+      audit('save_err', { profileId, err: String(error) })
+      console.error('Failed saving storageState for', profileId, error)
+    }
+  }
+  audit('save_all_end', { count: runtimeContexts.size })
+}
+
+async function gracefulShutdownHandler(signalOrErr?: unknown) {
+  if (gracefulShutdownInFlight) {
+    return
+  }
+  gracefulShutdownInFlight = true
+  try {
+    audit('process_shutdown_begin', { info: String(signalOrErr || '') })
+    console.log('Graceful shutdown: saving sessions...')
+    await saveAllElectronSessions()
+  } catch (error) {
+    console.error('graceful shutdown save failed', error)
+  } finally {
+    audit('process_shutdown_end', { info: String(signalOrErr || '') })
+    setTimeout(() => process.exit(signalOrErr ? 1 : 0), 300)
+  }
+}
+
+process.on('SIGINT', () => {
+  console.log('SIGINT')
+  void gracefulShutdownHandler('SIGINT')
+})
+process.on('SIGTERM', () => {
+  console.log('SIGTERM')
+  void gracefulShutdownHandler('SIGTERM')
+})
+process.on('uncaughtException', (error) => {
+  console.error('uncaughtException', error)
+  void gracefulShutdownHandler(error)
+})
+
+console.log('Runtime audit log:', AUDIT_LOG_PATH)
+
 const cloudPhoneProviderRegistry = new CloudPhoneProviderRegistry()
 cloudPhoneProviderRegistry.register(new SelfHostedCloudPhoneProvider())
 cloudPhoneProviderRegistry.register(new ThirdPartyCloudPhoneProvider())
@@ -796,8 +868,14 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
 async function enqueueLaunch(profileId: string): Promise<void> {
   cancelledLaunches.delete(profileId)
   if (runtimeContexts.has(profileId) || queuedProfileIds.has(profileId) || startingProfileIds.has(profileId)) {
+    audit('enqueue_skip_existing', { profileId })
     return
   }
+  if (launchQueue.length > MAX_QUEUE) {
+    audit('enqueue_rejected_queue_full', { profileId, queueLen: launchQueue.length })
+    throw new Error('launch queue is full')
+  }
+  audit('enqueue', { profileId, queueLen: launchQueue.length + 1 })
   queuedProfileIds.add(profileId)
   launchQueue.push(profileId)
   await updateProfileStatus(profileId, 'queued')
@@ -809,27 +887,47 @@ async function processLaunchQueue(): Promise<void> {
     return
   }
   launchQueueActive = true
+  audit('processLaunchQueue_start', {
+    queueLen: launchQueue.length,
+    activeStarting: Array.from(startingProfileIds),
+    activeRunning: Array.from(runtimeContexts.keys()),
+  })
   try {
     while (
       launchQueue.length > 0 &&
       startingProfileIds.size < getMaxConcurrentStarts() &&
-      runtimeContexts.size < getMaxActiveProfiles()
+      runtimeContexts.size + startingProfileIds.size < getMaxActiveProfiles()
     ) {
       const profileId = launchQueue.shift()
       if (!profileId) {
         break
       }
+      if (cancelledLaunches.has(profileId)) {
+        audit('processLaunchQueue_skip_cancelled', { profileId })
+        continue
+      }
+      if (startingProfileIds.has(profileId)) {
+        audit('processLaunchQueue_skip_already_starting', { profileId })
+        continue
+      }
       queuedProfileIds.delete(profileId)
       startingProfileIds.add(profileId)
-      await updateProfileStatus(profileId, 'starting')
+      audit('processLaunchQueue_dequeue', {
+        profileId,
+        currentStartingCount: startingProfileIds.size,
+        queueRemaining: launchQueue.length,
+      })
 
       void (async () => {
         try {
+          await updateProfileStatus(profileId, 'starting')
           await launchRuntimeNow(profileId)
           launchRetryCounts.delete(profileId)
+          audit('start_profile_ok', { profileId })
         } catch (error) {
           if (error instanceof Error && error.message === 'Launch cancelled') {
             launchRetryCounts.delete(profileId)
+            audit('start_profile_cancelled', { profileId })
             await updateProfileStatus(profileId, 'stopped')
             return
           }
@@ -839,9 +937,11 @@ async function processLaunchQueue(): Promise<void> {
             queuedProfileIds.add(profileId)
             launchQueue.push(profileId)
             await updateProfileStatus(profileId, 'queued')
+            audit('start_profile_retry', { profileId, retries, maxRetries: getMaxLaunchRetries() })
             logEvent('warn', 'runtime', `Retrying launch for profile ${profileId} (${retries}/${getMaxLaunchRetries()})`, profileId)
           } else {
             await updateProfileStatus(profileId, 'error')
+            audit('start_profile_err', { profileId, err: String(error) })
             logEvent(
               'error',
               'runtime',
@@ -851,16 +951,19 @@ async function processLaunchQueue(): Promise<void> {
           }
         } finally {
           startingProfileIds.delete(profileId)
-          launchQueueActive = false
-          void processLaunchQueue()
+          setImmediate(() => {
+            void processLaunchQueue()
+          })
         }
       })()
-      return
     }
   } finally {
-    if (startingProfileIds.size === 0) {
-      launchQueueActive = false
-    }
+    launchQueueActive = false
+    audit('processLaunchQueue_end', {
+      queueLen: launchQueue.length,
+      startingCount: startingProfileIds.size,
+      activeRunning: runtimeContexts.size,
+    })
   }
 }
 
@@ -1221,9 +1324,27 @@ async function bootstrap(): Promise<void> {
       void createMainWindow()
     }
   })
+
+  app.on('before-quit', (event) => {
+    if (beforeQuitHandled) {
+      return
+    }
+    beforeQuitHandled = true
+    event.preventDefault()
+    void (async () => {
+      try {
+        audit('app_before_quit_begin')
+        await saveAllElectronSessions()
+      } finally {
+        audit('app_before_quit_end')
+        setTimeout(() => app.exit(0), 300)
+      }
+    })()
+  })
 }
 
 app.on('window-all-closed', async () => {
+  await saveAllElectronSessions()
   for (const profileId of [...runtimeContexts.keys()]) {
     await stopRuntime(profileId)
   }
