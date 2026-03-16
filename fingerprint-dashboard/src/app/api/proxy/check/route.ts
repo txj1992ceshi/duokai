@@ -24,7 +24,7 @@ export async function POST(req: Request) {
     // Attempt to fetch IP info through the proxy
     // Using ip-api.com (HTTP) because it's simpler for testing connectivity
     // or ipapi.co (HTTPS)
-    return new Promise((resolve) => {
+    return new Promise<Response>((resolve) => {
       const http = require('http');
       const options = {
         hostname: 'ip-api.com',

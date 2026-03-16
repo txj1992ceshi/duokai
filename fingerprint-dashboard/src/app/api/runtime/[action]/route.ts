@@ -1,13 +1,14 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 
-export async function POST(req: Request, { params }: { params: { action: string } }) {
-  const action = params.action; // start | stop | action
+// Next.js 15+ requires params to be a Promise in dynamic route handlers
+export async function POST(req: Request, { params }: { params: Promise<{ action: string }> }) {
+  const { action } = await params; // start | stop | action
   
   // Read runtime config from settings DB (prioritize Env, fallback to settings)
   const db = getDb();
-  let runtimeUrl = process.env.RUNTIME_URL || db.settings.runtimeUrl;
-  let apiKey = process.env.RUNTIME_API_KEY || db.settings.runtimeApiKey || '';
+  const runtimeUrl = process.env.RUNTIME_URL || db.settings.runtimeUrl;
+  const apiKey = process.env.RUNTIME_API_KEY || db.settings.runtimeApiKey || '';
 
   if (!runtimeUrl) return NextResponse.json({ error: 'RUNTIME_URL 未配置' }, { status: 500 });
   

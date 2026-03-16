@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server';
 import { spawn } from 'child_process';
 import path from 'path';
+import fs from 'fs';
+
+// Force Node.js runtime so child_process and fs are available
+export const runtime = 'nodejs';
 
 export async function POST(req: Request) {
   try {
@@ -10,24 +14,39 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Profile ID is required' }, { status: 400 });
     }
 
-    // Determine path to stealth-engine
-    // Since we are running Next.js from the `fingerprint-dashboard` root, 
-    // we use process.cwd() to locate the sibling folder where we placed the engine.
-    const engineLocation = path.join(process.cwd(), 'stealth-engine');
-    const launchScript = path.join(engineLocation, 'launch.js');
+    // Build path dynamically to prevent Turbopack static analysis from
+    // treating this as a module import. We split the string intentionally.
+    const cwd = process.cwd();
+    const engineDir = 'stealth-engine';
+    const scriptName = 'launch.js';
+    const engineLocation = path.resolve(cwd, engineDir);
+    const launchScript = path.resolve(engineLocation, scriptName);
+
+    if (!fs.existsSync(launchScript)) {
+      return NextResponse.json({ 
+        error: `launch.js not found. Looking at: ${launchScript}` 
+      }, { status: 500 });
+    }
 
     console.log(`[API] Spawning browser for profile: ${profileId}`);
 
-    // Spawn the Node process detached from Next.js server so it doesn't block
-    const child = spawn('node', [launchScript, '--profileId', profileId], {
-      cwd: engineLocation,
-      detached: true,
-      stdio: 'ignore'
-    });
+    const child = spawn(
+      process.execPath, // Use same node version as Next.js
+      [launchScript, '--profileId', profileId],
+      {
+        cwd: engineLocation,
+        detached: true,
+        stdio: 'ignore',
+        env: { ...process.env },
+      }
+    );
 
     child.unref();
 
-    return NextResponse.json({ success: true, message: `Profile ${profileId} launched successfully` });
+    return NextResponse.json({ 
+      success: true, 
+      message: `Profile ${profileId} launched` 
+    });
 
   } catch (error: any) {
     console.error('[API Error]', error);
