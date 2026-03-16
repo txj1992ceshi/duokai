@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@source "../**/*.{js,ts,jsx,tsx}";
+
 :root {
   --app-bg: #0f172a;
   --panel-bg: rgba(30, 41, 59, 0.7);
