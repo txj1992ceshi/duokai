@@ -6,8 +6,9 @@ import {
   Puzzle, Bell, Plus, Trash2, Pencil, Play, ShieldCheck, Activity,
   Database, Wifi, WifiOff, ChevronRight, Loader2, X, CheckCircle,
   AlertCircle, MapPin, Zap, Building, User, FingerprintIcon,
-  MonitorSmartphone, RefreshCcw, Upload
+  MonitorSmartphone, RefreshCcw, Upload, Settings as SettingsIcon, StopCircle, Command
 } from 'lucide-react'
+import * as runtime from '@/lib/runtimeClient'
 
 export interface Profile {
   id: string;
@@ -20,6 +21,19 @@ export interface Profile {
   seed?: string;
   isMobile?: boolean;
   groupId?: string;
+  runtimeSessionId?: string;
+}
+
+export interface Behavior {
+  id: string;
+  name: string;
+  description?: string;
+  actions: any[];
+}
+
+export interface Settings {
+  runtimeUrl: string;
+  runtimeApiKey: string;
 }
 
 declare global {
@@ -93,6 +107,12 @@ export default function Home() {
   const [editingGroup, setEditingGroup] = useState<any>(null);
   const [groupInput, setGroupInput] = useState('');
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  
+  const [behaviors, setBehaviors] = useState<Behavior[]>([]);
+  const [settings, setSettings] = useState<Settings>({ runtimeUrl: '', runtimeApiKey: '' });
+  const [showBehaviorModal, setShowBehaviorModal] = useState(false);
+  const [newBehaviorName, setNewBehaviorName] = useState('');
+  const [newBehaviorDesc, setNewBehaviorDesc] = useState('');
 
   const handleSaveGroup = async () => {
     if (!groupInput.trim()) return;
@@ -141,12 +161,16 @@ export default function Home() {
 
   const fetchProfiles = async () => {
     try {
-      const [resP, resG] = await Promise.all([
+      const [resP, resG, resB, resS] = await Promise.all([
         fetch('/api/profiles'),
-        fetch('/api/groups')
+        fetch('/api/groups'),
+        fetch('/api/behaviors'),
+        fetch('/api/settings')
       ]);
       if (resP.ok) setProfiles(await resP.json())
       if (resG.ok) setGroups(await resG.json())
+      if (resB.ok) setBehaviors(await resB.json())
+      if (resS.ok) setSettings(await resS.json())
     } catch (err) {
       console.error('获取数据失败', err)
     } finally {
@@ -175,9 +199,89 @@ export default function Home() {
   const handleDeleteProfile = async (id: string) => {
     if (!confirm('确定要删除这个环境吗？这将清除该环境的所有缓存。')) return;
     try {
+      // Find if it has a session and stop it
+      const p = profiles.find(x => x.id === id);
+      if (p?.runtimeSessionId) {
+        await runtime.stopSession(p.runtimeSessionId).catch(() => {});
+      }
       const res = await fetch(`/api/profiles/${id}`, { method: 'DELETE' })
       if (res.ok) fetchProfiles()
     } catch (err) { console.error('Failed to delete', err) }
+  }
+
+  const handleStartSession = async (p: Profile) => {
+    try {
+      // Find proxy details if any
+      let proxyDetail = null;
+      if (p.proxy) {
+        // Find in our proxies list if it matches host:port
+        proxyDetail = proxies.find(px => `${px.host}:${px.port}` === p.proxy);
+      }
+      
+      const res = await runtime.startSession(p, proxyDetail, { headless: false });
+      if (res.sessionId) {
+        // Update profile in DB with sessionId
+        await fetch(`/api/profiles/${p.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...p, runtimeSessionId: res.sessionId, status: 'Running' })
+        });
+        fetchProfiles();
+      }
+    } catch (err) {
+      alert('启动失败: ' + (typeof err === 'object' ? JSON.stringify(err) : err));
+    }
+  }
+
+  const handleStopSession = async (p: Profile) => {
+    if (!p.runtimeSessionId) return;
+    try {
+      await runtime.stopSession(p.runtimeSessionId);
+      await fetch(`/api/profiles/${p.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...p, runtimeSessionId: '', status: 'Ready' })
+      });
+      fetchProfiles();
+    } catch (err) {
+      console.error('Stop failed', err);
+      // Force clear if failed? 
+      await fetch(`/api/profiles/${p.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...p, runtimeSessionId: '', status: 'Ready' })
+      });
+      fetchProfiles();
+    }
+  }
+
+  const handleCreateBehavior = async () => {
+    if (!newBehaviorName.trim()) return;
+    try {
+      const res = await fetch('/api/behaviors', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newBehaviorName, description: newBehaviorDesc, actions: [] })
+      });
+      if (res.ok) {
+        setShowBehaviorModal(false);
+        setNewBehaviorName('');
+        setNewBehaviorDesc('');
+        fetchProfiles();
+      }
+    } catch (err) { console.error(err) }
+  }
+
+  const handleSaveSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings)
+      });
+      if (res.ok) alert('设置已保存');
+    } catch (err) { console.error(err) }
   }
 
   const handleSaveProfile = async (e: React.FormEvent) => {
@@ -329,6 +433,7 @@ export default function Home() {
     { icon: Users, label: '团队分组' },
     { icon: Network, label: '代理 IP' },
     { icon: Puzzle, label: '扩展程序' },
+    { icon: SettingsIcon, label: '系统设置' },
   ]
 
   return (
@@ -497,17 +602,21 @@ export default function Home() {
                           </td>
                           <td className="py-3.5 text-right">
                             <div className="flex items-center justify-end space-x-1">
-                              <button
-                                onClick={async () => {
-                                  try {
-                                    const res = await fetch('/api/launch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profileId: p.id }) });
-                                    if (!res.ok) throw new Error('启动失败');
-                                  } catch (err) { alert("启动浏览器失败。"); }
-                                }}
-                                className="flex items-center space-x-1 px-2.5 py-1.5 bg-blue-600/80 hover:bg-blue-600 rounded-md text-xs font-bold transition-colors shadow-sm active:scale-95"
-                              >
-                                <Play size={10} /><span>打开</span>
-                              </button>
+                              {p.runtimeSessionId ? (
+                                <button
+                                  onClick={() => handleStopSession(p)}
+                                  className="flex items-center space-x-1 px-2.5 py-1.5 bg-red-600/80 hover:bg-red-600 rounded-md text-xs font-bold transition-colors shadow-sm active:scale-95"
+                                >
+                                  <StopCircle size={10} /><span>停止</span>
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => handleStartSession(p)}
+                                  className="flex items-center space-x-1 px-2.5 py-1.5 bg-blue-600/80 hover:bg-blue-600 rounded-md text-xs font-bold transition-colors shadow-sm active:scale-95"
+                                >
+                                  <Play size={10} /><span>打开</span>
+                                </button>
+                              )}
                               <button onClick={() => setEditingProfile(p)} className="p-1.5 rounded-md text-slate-400 hover:text-slate-200 hover:bg-slate-700 transition-colors">
                                 <Pencil size={13} />
                               </button>
@@ -581,17 +690,21 @@ export default function Home() {
                             </span>
                           </td>
                           <td className="py-3.5 text-right flex justify-end space-x-1">
-                            <button
-                              onClick={async () => {
-                                try {
-                                  const res = await fetch('/api/launch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profileId: p.id }) });
-                                  if (!res.ok) throw new Error('启动失败');
-                                } catch (err) { alert("启动浏览器失败。"); }
-                              }}
-                              className="flex items-center space-x-1 px-2.5 py-1.5 bg-blue-600/80 hover:bg-blue-600 rounded-md text-xs font-bold transition-colors shadow-sm active:scale-95"
-                            >
-                              <Play size={10} /><span>唤醒真机</span>
-                            </button>
+                              {p.runtimeSessionId ? (
+                                <button
+                                  onClick={() => handleStopSession(p)}
+                                  className="flex items-center space-x-1 px-2.5 py-1.5 bg-red-600/80 hover:bg-red-600 rounded-md text-xs font-bold transition-colors shadow-sm active:scale-95"
+                                >
+                                  <StopCircle size={10} /><span>停止</span>
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => handleStartSession(p)}
+                                  className="flex items-center space-x-1 px-2.5 py-1.5 bg-blue-600/80 hover:bg-blue-600 rounded-md text-xs font-bold transition-colors shadow-sm active:scale-95"
+                                >
+                                  <Play size={10} /><span>唤醒真机</span>
+                                </button>
+                              )}
                             <button onClick={() => setEditingProfile(p)} className="p-1.5 rounded-md text-slate-400 hover:text-slate-200 hover:bg-slate-700 transition-colors">
                               <Pencil size={13} />
                             </button>
@@ -715,17 +828,21 @@ export default function Home() {
                                 </span>
                               </td>
                               <td className="py-3.5 text-right flex justify-end space-x-1">
-                                <button
-                                  onClick={async () => {
-                                    try {
-                                      const res = await fetch('/api/launch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profileId: p.id }) });
-                                      if (!res.ok) throw new Error('启动失败');
-                                    } catch (err) { alert("启动浏览器失败。"); }
-                                  }}
-                                  className="flex items-center space-x-1 px-2.5 py-1.5 bg-blue-600/80 hover:bg-blue-600 rounded-md text-xs font-bold transition-colors shadow-sm active:scale-95"
-                                >
-                                  <Play size={10} /><span>{p.isMobile ? '唤醒真机' : '打开'}</span>
-                                </button>
+                                {p.runtimeSessionId ? (
+                                  <button
+                                    onClick={() => handleStopSession(p)}
+                                    className="flex items-center space-x-1 px-2.5 py-1.5 bg-red-600/80 hover:bg-red-600 rounded-md text-xs font-bold transition-colors shadow-sm active:scale-95"
+                                  >
+                                    <StopCircle size={10} /><span>停止</span>
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => handleStartSession(p)}
+                                    className="flex items-center space-x-1 px-2.5 py-1.5 bg-blue-600/80 hover:bg-blue-600 rounded-md text-xs font-bold transition-colors shadow-sm active:scale-95"
+                                  >
+                                    <Play size={10} /><span>{p.isMobile ? '唤醒真机' : '打开'}</span>
+                                  </button>
+                                )}
                                 <button onClick={() => setEditingProfile(p)} className="p-1.5 rounded-md text-slate-400 hover:text-slate-200 hover:bg-slate-700 transition-colors">
                                   <Pencil size={13} />
                                 </button>
@@ -744,7 +861,123 @@ export default function Home() {
             </div>
           )}
 
-          {/* ─── 代理 IP ─── */}
+          {/* ─── 系统设置 ─── */}
+          {activeTab === '系统设置' && (
+            <div className="animate-in fade-in duration-300 max-w-2xl">
+              <div className="mb-6">
+                <h3 className="text-base font-bold">Runtime 执行引擎设置</h3>
+                <p className="text-xs text-slate-500 mt-0.5">配置远程或者本地的 Playwright 执行节点信息</p>
+              </div>
+              <Card>
+                <form onSubmit={handleSaveSettings} className="space-y-5">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 mb-1.5 uppercase tracking-wider">Runtime API URL</label>
+                    <input
+                      type="text"
+                      value={settings.runtimeUrl}
+                      onChange={e => setSettings({ ...settings, runtimeUrl: e.target.value })}
+                      placeholder="http://127.0.0.1:3001"
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 mb-1.5 uppercase tracking-wider">Runtime API Key</label>
+                    <input
+                      type="password"
+                      value={settings.runtimeApiKey}
+                      onChange={e => setSettings({ ...settings, runtimeApiKey: e.target.value })}
+                      placeholder="输入您的安全密钥"
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors font-mono"
+                    />
+                  </div>
+                  <div className="pt-2">
+                    <button type="submit" className="flex items-center space-x-2 px-6 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-bold shadow-lg shadow-blue-500/20 transition-all active:scale-95">
+                      <CheckCircle size={15} />
+                      <span>保存配置</span>
+                    </button>
+                  </div>
+                </form>
+              </Card>
+            </div>
+          )}
+
+          {/* ─── 自动化流程 ─── */}
+          {activeTab === '自动化流程' && (
+            <div className="animate-in fade-in duration-300 space-y-5">
+              <div className="flex justify-between items-center">
+                <div>
+                  <h3 className="text-base font-bold">行为模板库</h3>
+                  <p className="text-xs text-slate-500 mt-0.5">预设鼠标轨迹、输入序列，通过 Runtime 自动执行</p>
+                </div>
+                <button onClick={() => setShowBehaviorModal(true)} className="flex items-center space-x-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-xs font-bold transition-colors shadow-lg shadow-blue-500/20">
+                  <Plus size={13} /><span>新建模板</span>
+                </button>
+              </div>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {behaviors.length === 0 ? (
+                  <div className="col-span-full">
+                    <Card>
+                      <EmptyState icon={Workflow} title="暂无行为模板" desc="创建一个模板，定义如何自动完成社交平台登录或养号动作。" />
+                    </Card>
+                  </div>
+                ) : behaviors.map(b => (
+                  <Card key={b.id} className="hover:border-slate-600 cursor-pointer transition-all group">
+                    <div className="flex items-start justify-between mb-4">
+                      <div className="p-2 rounded-lg bg-orange-500/10 text-orange-400 border border-orange-500/20">
+                        <Command size={16} />
+                      </div>
+                      <span className="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400 font-mono italic">#{b.id.slice(-4)}</span>
+                    </div>
+                    <p className="font-bold text-sm tracking-tight">{b.name}</p>
+                    <p className="text-xs text-slate-500 mt-1 line-clamp-2 leading-relaxed">{b.description || '暂无详细描述'}</p>
+                    <div className="mt-4 pt-4 border-t border-slate-800 flex justify-between items-center">
+                      <span className="text-[10px] text-slate-600 font-bold uppercase tracking-widest">{b.actions.length} 个步骤</span>
+                      <button className="text-xs text-blue-400 hover:text-blue-300 font-bold">配置步骤</button>
+                    </div>
+                  </Card>
+                ))}
+              </div>
+
+              {showBehaviorModal && (
+                <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
+                  <div className="bg-[#141720] border border-slate-700/50 rounded-2xl shadow-2xl w-[400px] overflow-hidden animate-in zoom-in duration-200">
+                    <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800">
+                      <h2 className="text-sm font-bold">新建行为模板</h2>
+                      <button onClick={() => setShowBehaviorModal(false)} className="text-slate-400 hover:text-slate-200 transition-colors">
+                        <X size={15} />
+                      </button>
+                    </div>
+                    <div className="p-6 space-y-4">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-400 mb-1.5">模板名称</label>
+                        <input
+                          type="text"
+                          autoFocus
+                          value={newBehaviorName}
+                          onChange={e => setNewBehaviorName(e.target.value)}
+                          placeholder="例如: Facebook 养号序列"
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-400 mb-1.5">描述 (可选)</label>
+                        <textarea
+                          value={newBehaviorDesc}
+                          onChange={e => setNewBehaviorDesc(e.target.value)}
+                          placeholder="输入模板的主要功能描述..."
+                          className="w-full h-24 bg-slate-900 border border-slate-700 rounded-lg p-3 text-sm focus:outline-none focus:border-blue-500 transition-colors resize-none"
+                        />
+                      </div>
+                      <div className="flex justify-end pt-2">
+                        <button onClick={handleCreateBehavior} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-bold">创建模板</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           {activeTab === '代理 IP' && (
             <div className="animate-in fade-in duration-300 space-y-4">
               <div className="flex items-center justify-between">
