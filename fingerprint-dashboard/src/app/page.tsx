@@ -113,6 +113,7 @@ export default function Home() {
   const [showBehaviorModal, setShowBehaviorModal] = useState(false);
   const [newBehaviorName, setNewBehaviorName] = useState('');
   const [newBehaviorDesc, setNewBehaviorDesc] = useState('');
+  const [runtimeOnline, setRuntimeOnline] = useState<boolean | null>(null);
 
   const handleSaveGroup = async () => {
     if (!groupInput.trim()) return;
@@ -180,6 +181,26 @@ export default function Home() {
 
   useEffect(() => { fetchProfiles() }, [])
 
+  // Poll runtime server status every 5 seconds
+  useEffect(() => {
+    const checkRuntime = async () => {
+      try {
+        const res = await fetch('/api/runtime/status');
+        if (res.ok) {
+          const data = await res.json();
+          setRuntimeOnline(data.online === true);
+        } else {
+          setRuntimeOnline(false);
+        }
+      } catch {
+        setRuntimeOnline(false);
+      }
+    };
+    checkRuntime();
+    const interval = setInterval(checkRuntime, 5000);
+    return () => clearInterval(interval);
+  }, [])
+
   const handleCreateProfile = async (isMobile = false, targetGroupId?: string) => {
     try {
       const isMob = activeTab === '手机环境' || isMobile;
@@ -211,14 +232,13 @@ export default function Home() {
 
   const handleStartSession = async (p: Profile) => {
     try {
-      // Find proxy details if any
-      let proxyDetail = null;
-      if (p.proxy) {
-        // Find in our proxies list if it matches host:port
-        proxyDetail = proxies.find(px => `${px.host}:${px.port}` === p.proxy);
+      if (runtimeOnline === false) {
+        alert('⚠️ Runtime Server 未运行！\n\n请先启动：\n  node stealth-engine/server.js\n\n或使用「日常启动面板」脚本一键启动。');
+        return;
       }
-      
-      const res = await runtime.startSession(p, proxyDetail, { headless: false });
+      // Pass the full profile object to the runtime server.
+      // server.js reads proxy from profile.proxy (URL string like http://user:pass@host:port)
+      const res = await runtime.startSession(p, undefined, { headless: false });
       if (res.sessionId) {
         // Update profile in DB with sessionId
         await fetch(`/api/profiles/${p.id}`, {
@@ -228,8 +248,9 @@ export default function Home() {
         });
         fetchProfiles();
       }
-    } catch (err) {
-      alert('启动失败: ' + (typeof err === 'object' ? JSON.stringify(err) : err));
+    } catch (err: any) {
+      const msg = err?.error || err?.message || JSON.stringify(err);
+      alert('启动失败: ' + msg);
     }
   }
 
@@ -486,9 +507,27 @@ export default function Home() {
         <header className="h-14 flex items-center justify-between px-6 border-b border-slate-800/80 bg-[#0f1117]/80 backdrop-blur-sm">
           <div className="flex items-center space-x-3">
             <h2 className="text-sm font-semibold text-slate-100">{activeTab}</h2>
+            {/* Dashboard online indicator */}
             <div className="flex items-center space-x-1.5 px-2.5 py-1 bg-green-500/10 border border-green-500/20 rounded-full">
               <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-              <span className="text-[10px] font-bold text-green-500 tracking-wider">在线</span>
+              <span className="text-[10px] font-bold text-green-500 tracking-wider">面板在线</span>
+            </div>
+            {/* Runtime server status indicator */}
+            <div className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-full border ${
+              runtimeOnline === true
+                ? 'bg-blue-500/10 border-blue-500/20'
+                : runtimeOnline === false
+                ? 'bg-red-500/10 border-red-500/20'
+                : 'bg-slate-700/30 border-slate-700'
+            }`}>
+              <div className={`w-1.5 h-1.5 rounded-full ${
+                runtimeOnline === true ? 'bg-blue-400 animate-pulse' : runtimeOnline === false ? 'bg-red-500' : 'bg-slate-500'
+              }`} />
+              <span className={`text-[10px] font-bold tracking-wider ${
+                runtimeOnline === true ? 'text-blue-400' : runtimeOnline === false ? 'text-red-400' : 'text-slate-500'
+              }`}>
+                {runtimeOnline === true ? 'Runtime 就绪' : runtimeOnline === false ? 'Runtime 离线' : '检测中...'}
+              </span>
             </div>
           </div>
           <div className="flex items-center space-x-3">

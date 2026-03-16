@@ -1,42 +1,70 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 
-// Next.js 15+ requires params to be a Promise in dynamic route handlers
-export async function POST(req: Request, { params }: { params: Promise<{ action: string }> }) {
-  const { action } = await params; // start | stop | action
-  
-  // Read runtime config from settings DB (prioritize Env, fallback to settings)
-  const db = getDb();
-  const runtimeUrl = process.env.RUNTIME_URL || db.settings.runtimeUrl;
-  const apiKey = process.env.RUNTIME_API_KEY || db.settings.runtimeApiKey || '';
+// Force Node.js runtime: needed for fs/path operations in db.ts
+export const runtime = 'nodejs';
 
-  if (!runtimeUrl) return NextResponse.json({ error: 'RUNTIME_URL 未配置' }, { status: 500 });
-  
+/**
+ * POST /api/runtime/[action]
+ * 
+ * Proxies requests to the local Stealth Engine Runtime Server.
+ * The runtime server runs at http://127.0.0.1:3001 (or RUNTIME_URL env).
+ * 
+ * Supported actions: start | stop | action
+ */
+export async function POST(
+  req: Request,
+  { params }: { params: Promise<{ action: string }> }
+) {
+  const { action } = await params; // start | stop | action
+
+  const db = getDb();
+  const runtimeUrl =
+    process.env.RUNTIME_URL || db.settings?.runtimeUrl || 'http://127.0.0.1:3001';
+  const apiKey =
+    process.env.RUNTIME_API_KEY || db.settings?.runtimeApiKey || '';
+
   const payload = await req.json().catch(() => ({}));
-  let target = runtimeUrl.replace(/\/$/, '') + '/session/';
-  if (action === 'start') target += 'start';
-  else if (action === 'stop') target += 'stop';
-  else target += 'action';
+
+  // Map action → runtime server endpoint path
+  const endpointMap: Record<string, string> = {
+    start:  '/session/start',
+    stop:   '/session/stop',
+    action: '/session/action',
+  };
+  const endpoint = endpointMap[action];
+  if (!endpoint) {
+    return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });
+  }
+
+  const target = runtimeUrl.replace(/\/$/, '') + endpoint;
 
   try {
     const r = await fetch(target, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
+        'Content-Type':  'application/json',
         'x-runtime-key': apiKey,
       },
       body: JSON.stringify(payload),
+      // Timeout: start may take a few seconds to launch browser
+      signal: AbortSignal.timeout(action === 'start' ? 30000 : 10000),
     });
-    
-    let json = {};
-    try {
-      json = await r.json();
-    } catch {
-      // In case the response is not valid JSON
-    }
-    
+
+    let json: any = {};
+    try { json = await r.json(); } catch { /* non-JSON response */ }
+
+    // On successful start/stop, always return the runtime's response directly
+    // so the frontend can pick up sessionId
     return NextResponse.json(json, { status: r.status });
+
   } catch (err: any) {
-    return NextResponse.json({ error: err?.message || 'runtime 通信失败' }, { status: 500 });
+    const isTimeout = err?.name === 'TimeoutError';
+    const message   = isTimeout
+      ? 'Runtime server 响应超时 — 请确认 stealth-engine/server.js 已启动'
+      : (err?.message || '无法连接到 Runtime Server');
+
+    console.error(`[API /runtime/${action}]`, message);
+    return NextResponse.json({ error: message }, { status: 503 });
   }
 }
