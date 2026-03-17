@@ -32,8 +32,11 @@ class ProxyPoolManager {
       maxBackoffSeconds: 24 * 3600, // max backoff 24 hours
       persistencePath: path.join(os.homedir(), '.antigravity-browser', 'proxy-pool.json'),
       cleanupInterval: 60 * 1000,
+      saveThrottleMs: 1000, // Debounce save calls
       ...options
     };
+
+    this._saveTimer = null;
 
     // ensure dir exists
     try { fs.mkdirSync(path.dirname(this.options.persistencePath), { recursive: true }); } catch {}
@@ -50,11 +53,19 @@ class ProxyPoolManager {
 
   // ---------- Persistence ----------
   save() {
+    if (this._saveTimer) return;
+    this._saveTimer = setTimeout(() => {
+      this._saveTimer = null;
+      this._doSave();
+    }, this.options.saveThrottleMs || 1000);
+  }
+
+  _doSave() {
     try {
       const data = {
         proxies: this.proxies,
-        sticky: Array.from(this.stickyMap.entries()), // [ [profileId, {url,expiresAt}], ... ]
-        blacklist: Array.from(this.blacklist.entries()), // [ [url,{until,backoffSeconds,attempts}], ... ]
+        sticky: Array.from(this.stickyMap.entries()), 
+        blacklist: Array.from(this.blacklist.entries()),
         savedAt: new Date().toISOString()
       };
       
@@ -62,7 +73,7 @@ class ProxyPoolManager {
       fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf-8');
       fs.renameSync(tmp, this.options.persistencePath);
     } catch (e) {
-      console.warn('[ProxyPool] save() failed', e.message);
+      console.warn('[ProxyPool] _doSave() failed', e.message);
     }
   }
 

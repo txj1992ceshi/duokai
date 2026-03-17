@@ -1,0 +1,53 @@
+{
+  "id": null,
+  "uid": "duokai-overview",
+  "title": "Duokai - Overview",
+  "schemaVersion": 29,
+  "version": 1,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Proxies - Alive",
+      "id": 1,
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [{ "expr": "duokai_proxy_alive", "legendFormat": "" }]
+    },
+    {
+      "type": "stat",
+      "title": "Proxies - Sick",
+      "id": 2,
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [{ "expr": "duokai_proxy_sick", "legendFormat": "" }]
+    },
+    {
+      "type": "stat",
+      "title": "Proxies - Dead",
+      "id": 3,
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 4 },
+      "targets": [{ "expr": "duokai_proxy_dead", "legendFormat": "" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Active Sessions",
+      "id": 4,
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 8 },
+      "targets": [{ "expr": "duokai_active_sessions", "legendFormat": "active_sessions" }]
+    },
+    {
+      "type": "stat",
+      "title": "Sticky Count",
+      "id": 5,
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 14 },
+      "targets": [{ "expr": "duokai_sticky_count", "legendFormat": "" }]
+    },
+    {
+      "type": "stat",
+      "title": "Blacklist Count",
+      "id": 6,
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 14 },
+      "targets": [{ "expr": "duokai_blacklist_count", "legendFormat": "" }]
+    }
+  ],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" }
+}

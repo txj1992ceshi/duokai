@@ -1,0 +1,34 @@
+groups:
+- name: duokai.rules
+  rules:
+  - alert: DuokaiManyDeadProxies
+    expr: duokai_proxy_dead > 5
+    for: 5m
+    labels: { severity: "critical" }
+    annotations:
+      summary: "Too many dead proxies on Duokai"
+      description: "duokai_proxy_dead = {{ $value }} for >5m"
+
+  - alert: DuokaiBlacklistSpike
+    expr: increase(duokai_blacklist_count[5m]) > 5
+    for: 2m
+    labels: { severity: "warning" }
+    annotations:
+      summary: "Blacklist spike"
+      description: "More than 5 proxies entered blacklist in 5m."
+
+  - alert: DuokaiActiveSessionsSpike
+    expr: duokai_active_sessions > 200
+    for: 5m
+    labels: { severity: "warning" }
+    annotations:
+      summary: "High active sessions"
+      description: "Active sessions on Duokai exceed 200 for >5m."
+
+  - alert: DuokaiUAMismatch
+    expr: increase(duokai_ua_version_mismatch_total[10m]) >= 1
+    for: 0m
+    labels: { severity: "info" }
+    annotations:
+      summary: "UA vs Engine mismatch detected"
+      description: "One or more UA/version mismatches detected in the last 10m."
