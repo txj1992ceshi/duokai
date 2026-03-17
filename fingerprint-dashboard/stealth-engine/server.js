@@ -34,7 +34,9 @@ const { humanClick, humanType, humanScroll, randomDelay } = require('./humanize'
 const createQueue = require('./session-queue');
 
 const ProxyPoolManager = require('./proxy-pool');
-const RuntimeMonitor = require('./monitor');
+const RedisProxyPool   = require('./redis-proxy-pool');
+const RuntimeMonitor   = require('./monitor');
+const metrics          = require('./metrics');
 
 const PORT         = parseInt(process.env.RUNTIME_PORT || '3001', 10);
 const BASE_DIR     = path.join(os.homedir(), '.antigravity-browser');
@@ -73,11 +75,22 @@ const queue = createQueue({
 });
 
 // Initialize Managers
-const proxyPool = new ProxyPoolManager({
-  persistencePath: path.join(BASE_DIR, 'proxy-pool.json')
-});
+let proxyPool;
+if (process.env.REDIS_URL) {
+  proxyPool = new RedisProxyPool({ redisUrl: process.env.REDIS_URL });
+  console.log(`[Runtime] 🚀 Using Redis for Proxy Pool: ${process.env.REDIS_URL}`);
+} else {
+  proxyPool = new ProxyPoolManager({
+    persistencePath: path.join(BASE_DIR, 'proxy-pool.json')
+  });
+}
 
 const monitor = new RuntimeMonitor(path.join(BASE_DIR, 'runtime-audit.log'));
+
+// Periodic metrics refresh
+if (!process.env.REDIS_URL) {
+  setInterval(() => metrics.updateProxyMetrics(proxyPool), 15000);
+}
 
 // Auth check
 function verifyKey(req) {
@@ -240,6 +253,7 @@ async function handleStart(body) {
     const uaMajorMatch = (fingerprint.userAgent || '').match(/Chrome\/(\d+)/);
     const uaMajor = uaMajorMatch ? uaMajorMatch[1] : null;
     if (browserMajor && uaMajor && browserMajor !== uaMajor) {
+      metrics.onUaMismatch();
       monitor.log('system', profileId, {
         event: 'ua_version_mismatch',
         browserVersion, ua: fingerprint.userAgent
@@ -279,10 +293,14 @@ async function handleStart(body) {
     });
 
     if (!ipInfo || ipInfo.error || !ipInfo.query) {
+      metrics.onProxyVerified(false);
+      metrics.onProxyFailure();
       if (selectedProxyUrl) proxyPool.reportFailure(selectedProxyUrl);
       await context.close().catch(() => {});
       throw new Error('代理校验失败：无法通过浏览器确认公网 IP');
     }
+
+    metrics.onProxyVerified(true);
 
     // ipInfo 结构常包含： query, country, countryCode, regionName, city, isp
     monitor.log(sessionId, profileId, {
@@ -297,6 +315,7 @@ async function handleStart(body) {
 
     // ---------- geo 校验：国家/时区/语言是否合理 ----------
     if (!isGeoCompatible(fingerprint, ipInfo)) {
+      metrics.onProxyFailure();
       if (selectedProxyUrl) proxyPool.reportFailure(selectedProxyUrl);
       await context.close().catch(() => {});
       throw new Error('代理地理位置与 profile 不一致，已回收代理');
@@ -342,6 +361,8 @@ async function handleStart(body) {
     p.status = 'Running';
     writeDb(db);
   }
+
+  metrics.onSessionStart();
 
   console.log(`[Runtime] ✅ Session started: ${sessionId} (profile: ${profileData.name || profileId})`);
   if (ctxOptions.proxy) console.log(`[Runtime]    Proxy: ${ctxOptions.proxy.server}`);
@@ -595,15 +616,19 @@ const server = http.createServer(async (req, res) => {
       if (url === '/session/list') {
         return send(res, 200, handleList());
       }
+      if (url === '/metrics') {
+        return metrics.metricsHandler(req, res, { proxyPool, sessionsMap: sessions });
+      }
       if (url === '/proxy/status') {
         try {
-          const proxiesList = (proxyPool.proxies || []).map(p => ({
+          const state = await proxyPool.getState();
+          const proxiesList = (state.proxies || []).map(p => ({
             url: p.url, health: p.health, lastUsed: p.lastUsed, failCount: p.failCount, latency: p.latency
           }));
           const sticky = {};
-          for (const [k, v] of (proxyPool.stickyMap || new Map())) sticky[k] = v;
+          for (const [k, v] of (state.sticky || [])) sticky[k] = v;
           const blacklist = {};
-          for (const [u, m] of (proxyPool.blacklist || new Map())) blacklist[u] = m;
+          for (const [u, m] of (state.blacklist || [])) blacklist[u] = m;
           
           return send(res, 200, { ok: true, proxies: proxiesList, stickyMap: sticky, blacklist });
         } catch (e) {
