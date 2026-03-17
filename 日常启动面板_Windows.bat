@@ -10,17 +10,34 @@ if not exist "fingerprint-dashboard\node_modules" (
 )
 
 echo 🚀 启动中... 正在唤醒后台服务端...
-:: 在后台静默启动
-start "Fingerprint-Server" /d "fingerprint-dashboard" /min cmd /c "npm run dev"
 
-echo ⏳ 正在等待服务端开门 (3000端口)...
-:check_port
+:: Step 4: 启动 Runtime Server (3001 端口)
+echo ⏳ 正在启动浏览器 Runtime 服务 (3001)...
+start "Fingerprint-Runtime" /d "fingerprint-dashboard\stealth-engine" /min node server.js
+
+:: 等待 3001 端口就绪
+:check_runtime
+netstat -ano | findstr :3001 | findstr LISTENING >nul
+if %errorlevel% neq 0 (
+    echo | set /p="."
+    timeout /t 1 /nobreak >nul
+    goto check_runtime
+)
+echo. ✅ Runtime 就绪
+
+:: Step 5: 启动 Dashboard (3000 端口)
+echo ⏳ 正在启动管理面板 (3000)...
+start "Fingerprint-Dashboard" /d "fingerprint-dashboard" /min cmd /c "npm run dev"
+
+:: 等待 3000 端口就绪
+:check_dashboard
 netstat -ano | findstr :3000 | findstr LISTENING >nul
 if %errorlevel% neq 0 (
     echo | set /p="."
     timeout /t 1 /nobreak >nul
-    goto check_port
+    goto check_dashboard
 )
+echo. ✅ 面板已开门
 
 echo.
 echo ✅ 服务端已就绪！正在以程序模式启动 UI 界面...

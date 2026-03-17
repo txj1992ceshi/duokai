@@ -59,8 +59,41 @@ function buildInjectionScript(profile) {
     deviceMemory:         ${deviceMemory},
     languages:            ${JSON.stringify(languages)},
     language:             '${languages[0]}',
+    language:             '${languages[0]}',
     webdriver:            false,
+    maxTouchPoints:       isMobile ? 5 : 0,
+    doNotTrack:           '1',
+    deviceMemory:         ${deviceMemory},
   };
+
+  // Add navigator.connection
+  const connection = {
+    downlink: 10,
+    effectiveType: '4g',
+    onchange: null,
+    rtt: 50,
+    saveData: false
+  };
+
+  Object.defineProperty(navigator, 'connection', {
+    get: () => connection,
+    configurable: true
+  });
+
+  // Add navigator.getBattery
+  if (navigator.getBattery) {
+    const battery = {
+      charging: true,
+      chargingTime: 0,
+      dischargingTime: Infinity,
+      level: 1,
+      onchargingchange: null,
+      onchargingtimechange: null,
+      ondischargingtimechange: null,
+      onlevelchange: null,
+    };
+    navigator.getBattery = () => Promise.resolve(battery);
+  }
 
   for (const [key, value] of Object.entries(navigatorOverrides)) {
     try {
@@ -209,6 +242,20 @@ function buildInjectionScript(profile) {
       }
       return origQuery(parameters);
     };
+  }
+
+  // 10. PROTECT PROTOTYPES — Hide the fact that we modified things
+  const hideToString = (fn, originalFn) => {
+    try {
+      fn.toString = () => originalFn.toString();
+    } catch(e) {}
+  };
+  
+  hideToString(HTMLCanvasElement.prototype.toDataURL, originalToDataURL);
+  hideToString(CanvasRenderingContext2D.prototype.getImageData, originalGetImageData);
+  hideToString(WebGLRenderingContext.prototype.getParameter, getParameterOrig);
+  if (typeof WebGL2RenderingContext !== 'undefined') {
+    hideToString(WebGL2RenderingContext.prototype.getParameter, getParameter2Orig);
   }
 
   console.debug('[Stealth] Fingerprint injection complete.');

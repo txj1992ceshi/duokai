@@ -25,8 +25,16 @@ const crypto = require('crypto');
 
 const { chromium }           = require('playwright');
 const { buildInjectionScript } = require('./fingerprint-injector');
+const { buildFontInjectionScript } = require('./font-injector');
+const { buildMediaDevicesScript } = require('./media-devices');
+const { setupRequestInterceptor } = require('./request-interceptor');
+
 const { generateFingerprint }  = require('./profiles');
 const { humanClick, humanType, humanScroll, randomDelay } = require('./humanize');
+const createQueue = require('./session-queue');
+
+const ProxyPoolManager = require('./proxy-pool');
+const RuntimeMonitor = require('./monitor');
 
 const PORT         = parseInt(process.env.RUNTIME_PORT || '3001', 10);
 const BASE_DIR     = path.join(os.homedir(), '.antigravity-browser');
@@ -40,7 +48,35 @@ const DB_PATH      = path.join(BASE_DIR, 'db.json');
 const sessions = new Map();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Helpers
+// Queue initialization for session safety (limit MAX concurrency, auto cleanup)
+// ─────────────────────────────────────────────────────────────────────────────
+const queue = createQueue({
+  doStart: async (payload) => {
+    return await handleStart(payload);
+  },
+  doStop: async (sessionId) => {
+    return await handleStop({ sessionId });
+  },
+  saveStorageState: async (sessionId) => {
+    const entry = sessions.get(sessionId);
+    if (!entry) return;
+    try {
+      const stateFile = getStateFile(entry.profileId);
+      const state = await entry.context.storageState();
+      fs.writeFileSync(stateFile, JSON.stringify(state, null, 2), 'utf-8');
+      console.log(`[Runtime] 💾 Queue auto-saved storageState for profile ${entry.profileId}`);
+    } catch(e) {}
+  },
+  auditFile: path.join(BASE_DIR, 'runtime-audit.log'),
+  maxActiveSessions: Number(process.env.MAX_ACTIVE_SESSIONS || 6),
+  sessionTimeoutHours: Number(process.env.SESSION_TIMEOUT_HOURS || 24),
+});
+
+// Initialize Managers
+const proxyPool = new ProxyPoolManager();
+const monitor = new RuntimeMonitor(path.join(BASE_DIR, 'runtime-audit.log'));
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 
 function readDb() {
@@ -158,6 +194,11 @@ async function handleStart(body) {
       '--disable-blink-features=AutomationControlled',
       '--disable-infobars',
       `--window-size=${fingerprint.screenWidth},${fingerprint.screenHeight}`,
+      '--disable-quic',
+      '--disable-background-networking',
+      '--disable-component-update',
+      '--no-pings',
+      '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
     ],
     ignoreDefaultArgs: ['--enable-automation'],
   };
@@ -180,7 +221,15 @@ async function handleStart(body) {
 
   // Inject stealth fingerprint script into ALL pages before they load
   const stealthScript = buildInjectionScript(fingerprint);
+  const fontScript    = buildFontInjectionScript(seedNum);
+  const mediaScript   = buildMediaDevicesScript(seedNum);
+  
   await context.addInitScript(stealthScript);
+  await context.addInitScript(fontScript);
+  await context.addInitScript(mediaScript);
+
+  // Setup header/client-hints interception
+  await setupRequestInterceptor(context, { ...fingerprint, isMobile });
 
   // Open initial page
   const page = await context.newPage();
@@ -227,6 +276,12 @@ async function handleStart(body) {
 
   console.log(`[Runtime] ✅ Session started: ${sessionId} (profile: ${profileData.name || profileId})`);
   if (proxyStr) console.log(`[Runtime]    Proxy: ${proxyStr.server}`);
+
+  monitor.log(sessionId, profileId, { 
+    event: 'start', 
+    proxy: proxyStr?.server || 'direct',
+    ua: fingerprint.userAgent 
+  });
 
   return { sessionId };
 }
@@ -376,7 +431,16 @@ const server = http.createServer(async (req, res) => {
     // ── GET routes ──────────────────────────────────────────────────────────
     if (req.method === 'GET') {
       if (url === '/health') {
-        return send(res, 200, { ok: true, sessions: sessions.size, pid: process.pid });
+        return send(res, 200, { 
+          ok: true, 
+          sessions: sessions.size, 
+          queued: queue.getQueueLen(),
+          processing: queue.getActiveCount(),
+          pid: process.pid 
+        });
+      }
+      if (url === '/runtime/metrics') {
+        return send(res, 200, { active: queue.getActiveCount(), queueLen: queue.getQueueLen(), auditFile: queue.auditFile });
       }
       if (url === '/session/list') {
         return send(res, 200, handleList());
@@ -389,11 +453,12 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
 
       if (url === '/session/start') {
-        const result = await handleStart(body);
+        const result = await queue.enqueueStart(body);
         return send(res, 200, result);
       }
       if (url === '/session/stop') {
-        const result = await handleStop(body);
+        if (!body.sessionId) throw new Error('sessionId is required');
+        const result = await queue.stopSession(body.sessionId);
         return send(res, 200, result);
       }
       if (url === '/session/action') {
@@ -427,28 +492,4 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log('  GET  /health          — Health check\n');
 });
 
-// Graceful shutdown: save all storageStates on SIGINT/SIGTERM
-async function gracefulShutdown(signal) {
-  console.log(`\n[Runtime] Received ${signal}, saving all sessions...`);
-  const promises = [];
-  for (const [sessionId, entry] of sessions) {
-    promises.push(
-      (async () => {
-        try {
-          const stateFile = getStateFile(entry.profileId);
-          const state = await entry.context.storageState();
-          fs.writeFileSync(stateFile, JSON.stringify(state, null, 2), 'utf-8');
-          await entry.context.close().catch(() => {});
-          console.log(`[Runtime] 💾 Saved session ${sessionId}`);
-        } catch (e) {
-          console.warn(`[Runtime] ⚠️  ${sessionId}: ${e.message}`);
-        }
-      })()
-    );
-  }
-  await Promise.allSettled(promises);
-  server.close(() => process.exit(0));
-}
-
-process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+// Graceful shutdown is now handled automatically by session-queue.js hook.

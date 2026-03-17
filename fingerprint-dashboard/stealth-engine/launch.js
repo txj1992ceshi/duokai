@@ -13,6 +13,8 @@
 
 const { chromium } = require('playwright');
 const { buildInjectionScript } = require('./fingerprint-injector');
+const { buildFontInjectionScript } = require('./font-injector');
+const { buildMediaDevicesScript } = require('./media-devices');
 const { createProfile } = require('./profiles');
 const path = require('path');
 const os = require('os');
@@ -126,6 +128,11 @@ const stealthScript = buildInjectionScript(profile.fingerprint);
       '--disable-blink-features=AutomationControlled',
       '--disable-infobars',
       `--window-size=${profile.fingerprint.screenWidth},${profile.fingerprint.screenHeight}`,
+      '--disable-quic',
+      '--disable-background-networking',
+      '--disable-component-update',
+      '--no-pings',
+      '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
     ],
     ignoreDefaultArgs: ['--enable-automation'],
   };
@@ -142,8 +149,11 @@ const stealthScript = buildInjectionScript(profile.fingerprint);
   // Use persistent context so cookies survive between sessions
   const context = await chromium.launchPersistentContext(userDataDir, contextOptions);
 
-  // Inject stealth script into ALL pages before they load
+  // Inject stealth scripts into ALL pages before they load
+  const seedNum = profile.id.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
   await context.addInitScript(stealthScript);
+  await context.addInitScript(buildFontInjectionScript(seedNum));
+  await context.addInitScript(buildMediaDevicesScript(seedNum));
 
   const page = await context.newPage();
 
