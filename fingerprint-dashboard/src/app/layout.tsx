@@ -2,7 +2,7 @@ import './globals.css'
 import type { Metadata } from 'next'
 
 export const metadata: Metadata = {
-  title: 'AntigravityCore Dashboard',
+  title: '军伙商贸Core Dashboard',
   description: 'Stealth Fingerprint Browser Management',
 }
 

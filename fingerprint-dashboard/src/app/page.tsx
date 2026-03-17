@@ -536,7 +536,7 @@ export default function Home() {
             <FingerprintIcon size={16} strokeWidth={2} />
           </div>
           <span className="text-base font-bold tracking-tight">
-            Antigravity<span className="text-blue-500">Core</span>
+            军伙商贸<span className="text-blue-500">Core</span>
           </span>
         </div>
 
