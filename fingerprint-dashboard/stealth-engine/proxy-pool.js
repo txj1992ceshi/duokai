@@ -29,6 +29,7 @@ class ProxyPoolManager {
       maxFailures: 3,
       stickyTTL: 24 * 3600 * 1000, // 24 hours
       blacklistBaseSeconds: 60, // base backoff 60s
+      maxBackoffSeconds: 24 * 3600, // max backoff 24 hours
       persistencePath: path.join(os.homedir(), '.antigravity-browser', 'proxy-pool.json'),
       cleanupInterval: 60 * 1000,
       ...options
@@ -56,7 +57,10 @@ class ProxyPoolManager {
         blacklist: Array.from(this.blacklist.entries()), // [ [url,{until,backoffSeconds,attempts}], ... ]
         savedAt: new Date().toISOString()
       };
-      fs.writeFileSync(this.options.persistencePath, JSON.stringify(data, null, 2), 'utf-8');
+      
+      const tmp = this.options.persistencePath + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf-8');
+      fs.renameSync(tmp, this.options.persistencePath);
     } catch (e) {
       console.warn('[ProxyPool] save() failed', e.message);
     }
@@ -189,12 +193,15 @@ class ProxyPoolManager {
 
       // determine backoff / blacklist if dead
       if (proxy.health === 'dead') {
-        // compute attempts and backoff
         const prev = this.blacklist.get(proxyUrl) || { attempts: 0, backoffSeconds: this.options.blacklistBaseSeconds };
         prev.attempts = (prev.attempts || 0) + 1;
-        // backoff doubles each time attempts increases
-        prev.backoffSeconds = this.options.blacklistBaseSeconds * Math.pow(2, Math.max(0, prev.attempts - 1));
+        
+        // backoff doubles each time attempts increases, capped at maxBackoffSeconds
+        const maxBackoff = this.options.maxBackoffSeconds || 24 * 3600;
+        const computedBackoff = this.options.blacklistBaseSeconds * Math.pow(2, Math.max(0, prev.attempts - 1));
+        prev.backoffSeconds = Math.min(computedBackoff, maxBackoff);
         prev.until = Date.now() + prev.backoffSeconds * 1000;
+        
         this.blacklist.set(proxyUrl, prev);
         // clear sticky entries using this proxy
         for (const [profileId, info] of Array.from(this.stickyMap.entries())) {

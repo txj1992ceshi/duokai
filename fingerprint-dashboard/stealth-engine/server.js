@@ -602,7 +602,10 @@ const server = http.createServer(async (req, res) => {
           }));
           const sticky = {};
           for (const [k, v] of (proxyPool.stickyMap || new Map())) sticky[k] = v;
-          return send(res, 200, { ok: true, proxies: proxiesList, stickyMap: sticky });
+          const blacklist = {};
+          for (const [u, m] of (proxyPool.blacklist || new Map())) blacklist[u] = m;
+          
+          return send(res, 200, { ok: true, proxies: proxiesList, stickyMap: sticky, blacklist });
         } catch (e) {
           return send(res, 500, { error: String(e) });
         }
