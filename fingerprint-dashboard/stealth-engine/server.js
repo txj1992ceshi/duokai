@@ -579,6 +579,14 @@ const server = http.createServer(async (req, res) => {
       if (url === '/session/list') {
         return send(res, 200, handleList());
       }
+      if (url === '/proxy/status') {
+        return send(res, 200, { 
+          total: proxyPool.proxies.length,
+          healthy: proxyPool.proxies.filter(p => p.health === 'alive').length,
+          dead: proxyPool.proxies.filter(p => p.health === 'dead').length,
+          stickySessions: proxyPool.stickyMap.size
+        });
+      }
       return send(res, 404, { error: 'Not found' });
     }
 
@@ -598,6 +606,13 @@ const server = http.createServer(async (req, res) => {
       if (url === '/session/action') {
         const result = await handleAction(body);
         return send(res, 200, result);
+      }
+      if (url === '/proxy/add') {
+        const { proxies } = body;
+        if (!Array.isArray(proxies)) return send(res, 400, { error: 'proxies 必须是数组' });
+        proxyPool.addProxies(proxies);
+        proxyPool.checkAll().catch(() => {});
+        return send(res, 200, { ok: true, added: proxies.length });
       }
       return send(res, 404, { error: 'Not found' });
     }
