@@ -580,12 +580,16 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, handleList());
       }
       if (url === '/proxy/status') {
-        return send(res, 200, { 
-          total: proxyPool.proxies.length,
-          healthy: proxyPool.proxies.filter(p => p.health === 'alive').length,
-          dead: proxyPool.proxies.filter(p => p.health === 'dead').length,
-          stickySessions: proxyPool.stickyMap.size
-        });
+        try {
+          const proxiesList = (proxyPool.proxies || []).map(p => ({
+            url: p.url, health: p.health, lastUsed: p.lastUsed, failCount: p.failCount, latency: p.latency
+          }));
+          const sticky = {};
+          for (const [k, v] of (proxyPool.stickyMap || new Map())) sticky[k] = v;
+          return send(res, 200, { ok: true, proxies: proxiesList, stickyMap: sticky });
+        } catch (e) {
+          return send(res, 500, { error: String(e) });
+        }
       }
       return send(res, 404, { error: 'Not found' });
     }
@@ -610,9 +614,29 @@ const server = http.createServer(async (req, res) => {
       if (url === '/proxy/add') {
         const { proxies } = body;
         if (!Array.isArray(proxies)) return send(res, 400, { error: 'proxies 必须是数组' });
-        proxyPool.addProxies(proxies);
-        proxyPool.checkAll().catch(() => {});
-        return send(res, 200, { ok: true, added: proxies.length });
+        try {
+          proxyPool.addProxies(proxies);
+          // 触发异步健康检查（不阻塞请求）
+          proxyPool.checkAll().catch(() => {});
+          return send(res, 200, { ok: true, added: proxies.length });
+        } catch (e) {
+          return send(res, 500, { error: e.message });
+        }
+      }
+      if (url === '/proxy/remove') {
+        const { proxies } = body;
+        if (!Array.isArray(proxies)) return send(res, 400, { error: 'proxies 必须是数组' });
+        try {
+          // 直接操纵 pool 内数组（proxy-pool 目前未提供内置 remove）
+          proxyPool.proxies = (proxyPool.proxies || []).filter(p => !proxies.includes(p.url));
+          // 同步更新 stickyMap：移除对应映射
+          for (const key of Array.from(proxyPool.stickyMap.keys())) {
+            if (proxies.includes(proxyPool.stickyMap.get(key))) proxyPool.stickyMap.delete(key);
+          }
+          return send(res, 200, { ok: true, removed: proxies.length });
+        } catch (e) {
+          return send(res, 500, { error: e.message });
+        }
       }
       return send(res, 404, { error: 'Not found' });
     }
