@@ -146,35 +146,48 @@ function send(res, status, body) {
  */
 async function handleStart(body) {
   const { profile: profileData, proxy: proxyOverride, headless = false } = body;
-
   if (!profileData?.id) throw new Error('profile.id is required');
 
   const profileId = profileData.id;
 
-  // Determine seed (numeric) for fingerprint generation
+  // ---------- seed / fingerprint ----------
   const seedStr = profileData.seed || profileId;
-  // Convert string seed to number using simple hash
   let seedNum = 0;
-  for (let i = 0; i < seedStr.length; i++) {
-    seedNum = (seedNum * 31 + seedStr.charCodeAt(i)) >>> 0;
-  }
+  for (let i = 0; i < seedStr.length; i++) seedNum = (seedNum * 31 + seedStr.charCodeAt(i)) >>> 0;
 
   const isMobile  = !!profileData.isMobile;
   const fingerprint = generateFingerprint(seedNum, isMobile);
-
-  // Allow explicit user agent override
   if (profileData.ua) fingerprint.userAgent = profileData.ua;
 
-  // User data dir — each profile gets its own isolated folder
+  // ---------- user data dir ----------
   const userDataDir = path.join(PROFILES_DIR, profileId);
   fs.mkdirSync(userDataDir, { recursive: true });
 
-  // Parse proxy
-  const proxyStr = proxyOverride?.server
-    ? proxyOverride                              // Already parsed object from frontend
-    : parseProxy(profileData.proxy);
+  // ---------- proxy selection: profile override -> proxyPool ----------
+  // selectedProxyUrl 保存 “原始代理字符串”，便于向 proxyPool.reportFailure 报告
+  let selectedProxyUrl = null;
+  // proxyStr 为 Playwright 所需的 { server, username, password } 或 null
+  let proxyStr = proxyOverride?.server ? proxyOverride : parseProxy(profileData.proxy);
 
-  // Build Playwright context options
+  if (!proxyStr) {
+    // try get from pool (sticky)
+    try {
+      const poolUrl = await proxyPool.getProxy(profileId);
+      if (poolUrl) {
+        selectedProxyUrl = poolUrl;
+        proxyStr = parseProxy(poolUrl);
+      } else {
+        throw new Error('No proxy available from pool and no proxy configured for profile');
+      }
+    } catch (e) {
+      throw new Error('Proxy acquisition failed: ' + e.message);
+    }
+  } else {
+    // profile provided proxy string (keep for logging)
+    if (!selectedProxyUrl && profileData.proxy) selectedProxyUrl = profileData.proxy;
+  }
+
+  // ---------- build Playwright context options ----------
   /** @type {import('playwright').BrowserContextOptions} */
   const ctxOptions = {
     headless,
@@ -203,42 +216,89 @@ async function handleStart(body) {
     ignoreDefaultArgs: ['--enable-automation'],
   };
 
-  if (proxyStr) {
-    ctxOptions.proxy = proxyStr;
-  }
+  if (proxyStr) ctxOptions.proxy = proxyStr;
 
-  // Restore storageState from previous session if available
-  const stateFile = getStateFile(profileId);
-  if (fs.existsSync(stateFile)) {
-    try {
-      ctxOptions.storageState = stateFile;
-      console.log(`[Runtime] Restoring storageState for profile ${profileId}`);
-    } catch {}
-  }
-
-  // Launch persistent context (cookies/localStorage survive between sessions)
+  // ---------- launch persistent context ----------
   const context = await chromium.launchPersistentContext(userDataDir, ctxOptions);
 
-  // Inject stealth fingerprint script into ALL pages before they load
+  // 少量 TLS/UA 一致性检查（只警告，不强制）
+  try {
+    const browserVersion = String(context.browser()?.version?.() || '');
+    const browserMajorMatch = browserVersion.match(/(\d+)\./);
+    const browserMajor = browserMajorMatch ? browserMajorMatch[1] : null;
+    const uaMajorMatch = (fingerprint.userAgent || '').match(/Chrome\/(\d+)/);
+    const uaMajor = uaMajorMatch ? uaMajorMatch[1] : null;
+    if (browserMajor && uaMajor && browserMajor !== uaMajor) {
+      monitor.log('system', profileId, {
+        event: 'ua_version_mismatch',
+        browserVersion, ua: fingerprint.userAgent
+      });
+      console.warn(`[Runtime] UA major (${uaMajor}) != Chromium major (${browserMajor}) — TLS/JA3 风险`);
+    }
+  } catch (e) {
+    // 忽略检查错误
+  }
+
+  // ---------- inject scripts / interceptor ----------
   const stealthScript = buildInjectionScript(fingerprint);
   const fontScript    = buildFontInjectionScript(seedNum);
   const mediaScript   = buildMediaDevicesScript(seedNum);
-  
   await context.addInitScript(stealthScript);
   await context.addInitScript(fontScript);
   await context.addInitScript(mediaScript);
 
-  // Setup header/client-hints interception
   await setupRequestInterceptor(context, { ...fingerprint, isMobile });
 
-  // Open initial page
+  // ---------- new page + sessionId ----------
   const page = await context.newPage();
-  await page.goto('about:blank');
-
-  // Generate session ID
   const sessionId = crypto.randomUUID();
 
-  // Track page URL as user navigates
+  // ---------- verify public IP via browser (ensures proxy actually applied) ----------
+  try {
+    await page.goto('about:blank');
+
+    // 在浏览器上下文内请求 ip-api（走代理）
+    const ipInfo = await page.evaluate(async () => {
+      try {
+        const res = await fetch('https://ip-api.com/json', { cache: 'no-store' });
+        return await res.json();
+      } catch (e) {
+        return { error: String(e) };
+      }
+    });
+
+    if (!ipInfo || ipInfo.error || !ipInfo.query) {
+      if (selectedProxyUrl) proxyPool.reportFailure(selectedProxyUrl);
+      await context.close().catch(() => {});
+      throw new Error('代理校验失败：无法通过浏览器确认公网 IP');
+    }
+
+    // ipInfo 结构常包含： query, country, countryCode, regionName, city, isp
+    monitor.log(sessionId, profileId, {
+      event: 'proxy_verified',
+      ip: ipInfo.query,
+      country: ipInfo.country,
+      countryCode: ipInfo.countryCode || null,
+      region: ipInfo.regionName,
+      city: ipInfo.city,
+      isp: ipInfo.isp
+    });
+
+    // ---------- geo 校验：国家/时区/语言是否合理 ----------
+    if (!isGeoCompatible(fingerprint, ipInfo)) {
+      if (selectedProxyUrl) proxyPool.reportFailure(selectedProxyUrl);
+      await context.close().catch(() => {});
+      throw new Error('代理地理位置与 profile 不一致，已回收代理');
+    }
+
+  } catch (err) {
+    // 清理并向上抛
+    try { await context.close(); } catch (_) {}
+    throw err;
+  }
+
+  // ---------- 成功后继续：跟原逻辑建立 session 跟踪 ----------
+  // Track page navigation
   page.on('framenavigated', frame => {
     if (frame === page.mainFrame()) {
       const entry = sessions.get(sessionId);
@@ -246,12 +306,10 @@ async function handleStart(body) {
     }
   });
 
-  // Handle context close (e.g. user closes browser window)
   context.on('close', async () => {
     if (sessions.has(sessionId)) {
       console.log(`[Runtime] Context closed externally for session ${sessionId}`);
       sessions.delete(sessionId);
-      // Update db — clear runtimeSessionId
       await clearDbSession(profileId, sessionId);
     }
   });
@@ -265,7 +323,7 @@ async function handleStart(body) {
     fingerprint: { ...fingerprint, userAgent: fingerprint.userAgent.slice(0, 80) },
   });
 
-  // Persist sessionId back to db
+  // Persist sessionId back to db (如原逻辑)
   const db = readDb();
   const p  = db.profiles.find(x => x.id === profileId);
   if (p) {
@@ -275,12 +333,12 @@ async function handleStart(body) {
   }
 
   console.log(`[Runtime] ✅ Session started: ${sessionId} (profile: ${profileData.name || profileId})`);
-  if (proxyStr) console.log(`[Runtime]    Proxy: ${proxyStr.server}`);
+  if (ctxOptions.proxy) console.log(`[Runtime]    Proxy: ${ctxOptions.proxy.server}`);
 
-  monitor.log(sessionId, profileId, { 
-    event: 'start', 
-    proxy: proxyStr?.server || 'direct',
-    ua: fingerprint.userAgent 
+  monitor.log(sessionId, profileId, {
+    event: 'start',
+    proxy: ctxOptions.proxy?.server || 'direct',
+    ua: fingerprint.userAgent,
   });
 
   return { sessionId };
@@ -408,6 +466,82 @@ function handleList() {
     });
   }
   return list;
+}
+
+/**
+ * isGeoCompatible(fingerprint, ipInfo)
+ * fingerprint: { timezone, languages: [...], ... }
+ * ipInfo: { country, countryCode, ... }  — 来自 ip-api 的返回
+ *
+ * 作用：粗略判断代理返回的 IP 国家/地区，是否与 profile 的 timezone/lang 匹配。
+ * 如果明显不匹配（例如 timezone=Asia/Shanghai 但 IP 在 US），函数返回 false。
+ * 这是为了避免“个人 profile 的时区/语言”与代理地理信息冲突，从而触发风控。
+ */
+function isGeoCompatible(fingerprint, ipInfo) {
+  try {
+    if (!fingerprint || !ipInfo) return true;
+    const tz = String(fingerprint.timezone || '').trim();
+    const langs = Array.isArray(fingerprint.languages) ? fingerprint.languages : (fingerprint.languages ? [fingerprint.languages] : []);
+    const country = (ipInfo.country || '').toLowerCase();
+    const cc = (ipInfo.countryCode || '').toUpperCase();
+
+    // 简单时区 -> 国家映射（常见）
+    const tzToCC = {
+      'Asia/Shanghai': 'CN',
+      'Asia/Chongqing': 'CN',
+      'Asia/Harbin': 'CN',
+      'Asia/Seoul': 'KR',
+      'Asia/Tokyo': 'JP',
+      'Asia/Singapore': 'SG',
+      'Asia/Kolkata': 'IN',
+      'Europe/London': 'GB',
+      'Europe/Paris': 'FR',
+      'Europe/Berlin': 'DE',
+      'America/New_York': 'US',
+      'America/Los_Angeles': 'US',
+      'America/Chicago': 'US',
+      'Australia/Sydney': 'AU',
+      'Asia/Taipei': 'TW',
+      'Asia/Hong_Kong': 'HK',
+    };
+
+    const countryNames = {
+      CN: 'china', US: 'united states', JP: 'japan', SG: 'singapore', KR: 'korea', IN: 'india',
+      GB: 'united kingdom', FR: 'france', DE: 'germany', AU: 'australia', TW: 'taiwan', HK: 'hong kong'
+    };
+
+    // 1) 如果时区 leadership 明确映射，优先对比 countryCode
+    if (tzToCC[tz]) {
+      const expected = tzToCC[tz];
+      if (cc && cc === expected) return true;
+      // country 字符串里包含国家名也可判为匹配
+      if (country && country.includes((countryNames[expected] || '').toLowerCase())) return true;
+      return false;
+    }
+
+    // 2) 若无时区映射，尝试用 languages 做朴素匹配
+    if (langs.length) {
+      for (const lang of langs) {
+        const l = String(lang || '').toLowerCase();
+        // zh -> China/Taiwan/HK, en -> US/GB/AU, ja -> JP, ko -> KR, fr -> FR, de -> DE
+        if (l.startsWith('zh') && (country.includes('china') || country.includes('taiwan') || country.includes('hong'))) return true;
+        if (l.startsWith('ja') && country.includes('japan')) return true;
+        if (l.startsWith('ko') && (country.includes('korea') || country.includes('south'))) return true;
+        if (l.startsWith('fr') && country.includes('france')) return true;
+        if (l.startsWith('de') && country.includes('germany')) return true;
+        if (l.startsWith('en') && (country.includes('united') || country.includes('america') || country.includes('australia') || country.includes('britain') || country.includes('uk'))) return true;
+      }
+    }
+
+    // 3) 宽松策略：如果无法判断或 country 字段为空，则认为兼容（不要误杀）
+    if (!country && !cc) return true;
+
+    // 最后一步：若 country 包含常见区域名则接受，否则拒绝
+    return !!(country.includes('china') || country.includes('united') || country.includes('japan') || country.includes('singapore') || country.includes('korea') || country.includes('india') || country.includes('france') || country.includes('germany') || country.includes('australia') || country.includes('taiwan') || country.includes('hong kong'));
+
+  } catch (e) {
+    return true; // 出错时宽松通过，避免阻塞启动
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
