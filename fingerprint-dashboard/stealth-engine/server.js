@@ -76,7 +76,6 @@ const queue = createQueue({
 const proxyPool = new ProxyPoolManager({
   persistencePath: path.join(BASE_DIR, 'proxy-pool.json')
 });
-proxyPool.load();
 
 const monitor = new RuntimeMonitor(path.join(BASE_DIR, 'runtime-audit.log'));
 
@@ -644,12 +643,7 @@ const server = http.createServer(async (req, res) => {
         const { proxies } = body;
         if (!Array.isArray(proxies)) return send(res, 400, { error: 'proxies 必须是数组' });
         try {
-          // 直接操纵 pool 内数组（proxy-pool 目前未提供内置 remove）
-          proxyPool.proxies = (proxyPool.proxies || []).filter(p => !proxies.includes(p.url));
-          // 同步更新 stickyMap：移除对应映射
-          for (const key of Array.from(proxyPool.stickyMap.keys())) {
-            if (proxies.includes(proxyPool.stickyMap.get(key))) proxyPool.stickyMap.delete(key);
-          }
+          proxyPool.removeProxies(proxies);
           return send(res, 200, { ok: true, removed: proxies.length });
         } catch (e) {
           return send(res, 500, { error: e.message });
