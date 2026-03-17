@@ -73,8 +73,20 @@ const queue = createQueue({
 });
 
 // Initialize Managers
-const proxyPool = new ProxyPoolManager();
+const proxyPool = new ProxyPoolManager({
+  persistencePath: path.join(BASE_DIR, 'proxy-pool.json')
+});
+proxyPool.load();
+
 const monitor = new RuntimeMonitor(path.join(BASE_DIR, 'runtime-audit.log'));
+
+// Auth check
+function verifyKey(req) {
+  const db = readDb();
+  const apiKey = process.env.RUNTIME_KEY || db.settings?.runtimeApiKey;
+  if (!apiKey) return true; // Loose if not set
+  return req.headers['x-runtime-key'] === apiKey;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
@@ -562,6 +574,11 @@ const server = http.createServer(async (req, res) => {
   const url = req.url?.split('?')[0] || '/';
 
   try {
+    // ── Authentication ───────────────────────────────────────────────────────
+    if (!verifyKey(req)) {
+      return send(res, 401, { error: 'Unauthorized: Missing or invalid x-runtime-key' });
+    }
+
     // ── GET routes ──────────────────────────────────────────────────────────
     if (req.method === 'GET') {
       if (url === '/health') {

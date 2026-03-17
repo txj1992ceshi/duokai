@@ -20,10 +20,36 @@ class ProxyPoolManager {
       healthCheckUrl: 'http://httpbin.org/ip',
       checkInterval: 5 * 60 * 1000, // 5 minutes
       maxFailures: 3,
+      persistencePath: null,
       ...options
     };
     
     this.loadLock = false;
+  }
+
+  save() {
+    if (!this.options.persistencePath) return;
+    try {
+      const data = {
+        proxies: this.proxies,
+        stickyMap: Array.from(this.stickyMap.entries())
+      };
+      fs.writeFileSync(this.options.persistencePath, JSON.stringify(data, null, 2));
+    } catch (e) {
+      console.error('[ProxyPool] Persistence save failed', e);
+    }
+  }
+
+  load() {
+    if (!this.options.persistencePath || !fs.existsSync(this.options.persistencePath)) return;
+    try {
+      const data = JSON.parse(fs.readFileSync(this.options.persistencePath, 'utf8'));
+      this.proxies = data.proxies || [];
+      this.stickyMap = new Map(data.stickyMap || []);
+      console.log(`[ProxyPool] Loaded ${this.proxies.length} proxies from storage`);
+    } catch (e) {
+      console.error('[ProxyPool] Persistence load failed', e);
+    }
   }
 
   /**
@@ -42,6 +68,7 @@ class ProxyPoolManager {
         });
       }
     });
+    this.save();
   }
 
   /**
@@ -84,10 +111,12 @@ class ProxyPoolManager {
     const proxy = this.proxies.find(p => p.url === proxyUrl);
     if (proxy) {
       proxy.failCount++;
+      // Exponential backoff logic would go here if we tracked separate time windows
       if (proxy.failCount >= this.options.maxFailures) {
         proxy.health = 'dead';
         console.warn(`[ProxyPool] Proxy marked as DEAD: ${proxyUrl}`);
       }
+      this.save();
     }
   }
 
