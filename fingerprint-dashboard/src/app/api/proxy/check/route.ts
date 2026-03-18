@@ -2,9 +2,43 @@ import { NextResponse } from 'next/server';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 
+function normalizeProxy(raw: string) {
+  const proxy = raw.trim();
+
+  // 已经是标准 URL：scheme://user:pass@host:port 或 scheme://host:port
+  try {
+    const u = new URL(proxy);
+    if (u.protocol && u.hostname && u.port) return proxy;
+  } catch {}
+
+  // 兼容：scheme://host:port:user:pass
+  let m = proxy.match(/^(https?|socks5):\/\/([^:]+):(\d+):([^:]+):(.+)$/i);
+  if (m) {
+    const [, protocol, host, port, user, pass] = m;
+    return `${protocol}://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}`;
+  }
+
+  // 兼容：host:port:user:pass
+  m = proxy.match(/^([^:]+):(\d+):([^:]+):(.+)$/);
+  if (m) {
+    const [, host, port, user, pass] = m;
+    return `http://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}`;
+  }
+
+  // 兼容：user:pass@host:port
+  m = proxy.match(/^([^:]+):([^@]+)@([^:]+):(\d+)$/);
+  if (m) {
+    const [, user, pass, host, port] = m;
+    return `http://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}`;
+  }
+
+  return proxy;
+}
+
 export async function POST(req: Request) {
   try {
-    const { proxy } = await req.json();
+    const { proxy: rawProxy } = await req.json();
+    const proxy = normalizeProxy(rawProxy);
 
     if (!proxy) {
       return NextResponse.json({ error: '请输入代理地址' }, { status: 400 });
