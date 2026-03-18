@@ -200,6 +200,106 @@ function send(res, status, body) {
   res.end(json);
 }
 
+async function handleBrowserProxyTest(body) {
+  const startedAt = Date.now();
+  const proxyRaw = body?.proxy;
+  const proxy = parseProxy(proxyRaw);
+  if (!proxy) throw new Error('代理格式错误');
+
+  const browser = await chromium.launch({
+    headless: true,
+    proxy,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-quic',
+      '--disable-background-networking',
+      '--disable-component-update',
+      '--no-pings',
+      '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+    ],
+  });
+
+  try {
+    const page = await browser.newPage();
+    await page.goto('about:blank', { waitUntil: 'load', timeout: 10000 });
+
+    const ipInfo = await page.evaluate(async () => {
+      try {
+        const res = await fetch('https://ip-api.com/json', { cache: 'no-store' });
+        return await res.json();
+      } catch (e) {
+        return { error: String(e) };
+      }
+    });
+
+    if (!ipInfo || ipInfo.error || !ipInfo.query) {
+      const detail = ipInfo?.error ? String(ipInfo.error) : '';
+      throw buildBrowserProxyError(detail || '无法通过真实浏览器确认公网 IP');
+    }
+
+    return {
+      success: true,
+      ip: ipInfo.query,
+      country: ipInfo.country,
+      region: ipInfo.regionName,
+      city: ipInfo.city,
+      isp: ipInfo.isp,
+      elapsedMs: Date.now() - startedAt,
+    };
+  } catch (err) {
+    const browserError = classifyBrowserProxyError(err);
+    return {
+      success: false,
+      error: browserError.message,
+      errorType: browserError.type,
+      elapsedMs: Date.now() - startedAt,
+    };
+  } finally {
+    await browser.close().catch(() => {});
+  }
+}
+
+function buildBrowserProxyError(message) {
+  const err = new Error(message);
+  return err;
+}
+
+function classifyBrowserProxyError(err) {
+  const message = String(err?.message || err || '');
+  const normalized = message.toLowerCase();
+
+  if (
+    normalized.includes('timeout') ||
+    normalized.includes('timed out') ||
+    normalized.includes('err_timed_out')
+  ) {
+    return { type: 'timeout', message: '连接超时' };
+  }
+
+  if (
+    normalized.includes('407') ||
+    normalized.includes('proxy authentication required') ||
+    normalized.includes('invalid_auth_credentials') ||
+    normalized.includes('err_invalid_auth_credentials') ||
+    normalized.includes('authentication')
+  ) {
+    return { type: 'auth', message: '代理认证失败' };
+  }
+
+  if (
+    normalized.includes('empty reply') ||
+    normalized.includes('socket hang up') ||
+    normalized.includes('failed to fetch') ||
+    normalized.includes('target closed') ||
+    normalized.includes('无法通过真实浏览器确认公网 ip')
+  ) {
+    return { type: 'no_response', message: '目标站点无响应' };
+  }
+
+  return { type: 'unknown', message: message || '真实浏览器测试失败' };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Session Handlers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -693,6 +793,10 @@ const server = http.createServer(async (req, res) => {
       }
       if (url === '/session/action') {
         const result = await handleAction(body);
+        return send(res, 200, result);
+      }
+      if (url === '/proxy/test-browser') {
+        const result = await handleBrowserProxyTest(body);
         return send(res, 200, result);
       }
       if (url === '/proxy/add') {

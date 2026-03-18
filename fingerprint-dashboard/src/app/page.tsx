@@ -17,6 +17,11 @@ export interface Profile {
   lastActive: string;
   tags: string[];
   proxy?: string;
+  proxyType?: 'http' | 'socks5';
+  proxyHost?: string;
+  proxyPort?: string;
+  proxyUsername?: string;
+  proxyPassword?: string;
   ua?: string;
   seed?: string;
   isMobile?: boolean;
@@ -89,6 +94,77 @@ const EmptyState = ({ icon: Icon, title, desc }: { icon: React.ElementType, titl
   </div>
 )
 
+function parseProxyToDraft(proxy?: string) {
+  const emptyDraft = {
+    proxyType: 'http' as const,
+    proxyHost: '',
+    proxyPort: '',
+    proxyUsername: '',
+    proxyPassword: '',
+  };
+
+  if (!proxy) return emptyDraft;
+
+  const raw = proxy.trim();
+
+  try {
+    const url = new URL(raw);
+    return {
+      proxyType: (url.protocol.replace(':', '') === 'socks5' ? 'socks5' : 'http') as 'http' | 'socks5',
+      proxyHost: url.hostname,
+      proxyPort: url.port,
+      proxyUsername: decodeURIComponent(url.username || ''),
+      proxyPassword: decodeURIComponent(url.password || ''),
+    };
+  } catch {}
+
+  let match = raw.match(/^(https?|socks5):\/\/([^:]+):(\d+):([^:]+):(.+)$/i);
+  if (match) {
+    const [, protocol, host, port, username, password] = match;
+    return {
+      proxyType: (protocol === 'socks5' ? 'socks5' : 'http') as 'http' | 'socks5',
+      proxyHost: host,
+      proxyPort: port,
+      proxyUsername: username,
+      proxyPassword: password,
+    };
+  }
+
+  match = raw.match(/^([^:]+):(\d+):([^:]+):(.+)$/);
+  if (match) {
+    const [, host, port, username, password] = match;
+    return {
+      ...emptyDraft,
+      proxyHost: host,
+      proxyPort: port,
+      proxyUsername: username,
+      proxyPassword: password,
+    };
+  }
+
+  return emptyDraft;
+}
+
+function buildProxyFromDraft(profile: Pick<Profile, 'proxyType' | 'proxyHost' | 'proxyPort' | 'proxyUsername' | 'proxyPassword'>) {
+  const host = profile.proxyHost?.trim() || '';
+  const port = profile.proxyPort?.trim() || '';
+  const username = profile.proxyUsername?.trim() || '';
+  const password = profile.proxyPassword?.trim() || '';
+  const protocol = profile.proxyType === 'socks5' ? 'socks5' : 'http';
+
+  if (!host || !port) return '';
+
+  if (username || password) {
+    return `${protocol}://${host}:${port}:${username}:${password}`;
+  }
+
+  return `${protocol}://${host}:${port}`;
+}
+
+function toEditableProfile(profile: Profile): Profile {
+  return { ...profile, ...parseProxyToDraft(profile.proxy) };
+}
+
 export default function Home() {
   const [activeTab, setActiveTab] = useState('浏览器环境')
   const [profiles, setProfiles] = useState<Profile[]>([])
@@ -96,6 +172,8 @@ export default function Home() {
   const [editingProfile, setEditingProfile] = useState<Profile | null>(null)
   const [proxyChecking, setProxyChecking] = useState(false)
   const [proxyResult, setProxyResult] = useState<any>(null)
+  const [proxyBrowserChecking, setProxyBrowserChecking] = useState(false)
+  const [proxyBrowserResult, setProxyBrowserResult] = useState<any>(null)
 
   const [proxies, setProxies] = useState([
     { id: '1', host: '45.12.33.1', port: '8080', type: 'HTTP', status: '在线', delay: '120ms', city: '洛杉矶' },
@@ -317,27 +395,59 @@ export default function Home() {
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!editingProfile) return
+    const { proxyType, proxyHost, proxyPort, proxyUsername, proxyPassword, ...rest } = editingProfile
+    const payload = {
+      ...rest,
+      proxy: buildProxyFromDraft({ proxyType, proxyHost, proxyPort, proxyUsername, proxyPassword }),
+    }
     try {
-      const res = await fetch(`/api/profiles/${editingProfile.id}`, {
+      const res = await fetch(`/api/profiles/${payload.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editingProfile)
+        body: JSON.stringify(payload)
       })
       if (res.ok) { setEditingProfile(null); fetchProfiles() }
     } catch (err) { console.error('Failed to update', err) }
   }
 
   const handleCheckProxy = async () => {
-    if (!editingProfile?.proxy) { alert('请先输入代理地址'); return; }
+    if (!editingProfile) return;
+    const proxy = buildProxyFromDraft(editingProfile);
+    if (!proxy) { alert('请先填写代理类型、主机和端口'); return; }
     setProxyChecking(true); setProxyResult(null);
     try {
       const res = await fetch('/api/proxy/check', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ proxy: editingProfile.proxy })
+        body: JSON.stringify({ proxy })
       });
       setProxyResult(await res.json());
     } catch (err) { setProxyResult({ error: '检查失败' }); }
     finally { setProxyChecking(false); }
+  }
+
+  const handleBrowserCheckProxy = async () => {
+    if (!editingProfile) return;
+    const proxy = buildProxyFromDraft(editingProfile);
+    if (!proxy) { alert('请先填写代理类型、主机和端口'); return; }
+    setProxyBrowserChecking(true); setProxyBrowserResult(null);
+    try {
+      const res = await fetch('/api/proxy/browser-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ proxy })
+      });
+      setProxyBrowserResult(await res.json());
+    } catch (err) {
+      setProxyBrowserResult({ error: '真实浏览器测试失败' });
+    } finally {
+      setProxyBrowserChecking(false);
+    }
+  }
+
+  const openProfileEditor = (profile: Profile) => {
+    setEditingProfile(toEditableProfile(profile));
+    setProxyResult(null);
+    setProxyBrowserResult(null);
   }
 
   // New function for testing individual proxy items in the list
@@ -725,7 +835,7 @@ export default function Home() {
                                   <Play size={10} /><span>打开</span>
                                 </button>
                               )}
-                              <button onClick={() => setEditingProfile(p)} className="p-1.5 rounded-md text-slate-400 hover:text-slate-200 hover:bg-slate-700 transition-colors">
+                              <button onClick={() => openProfileEditor(p)} className="p-1.5 rounded-md text-slate-400 hover:text-slate-200 hover:bg-slate-700 transition-colors">
                                 <Pencil size={13} />
                               </button>
                               <button onClick={() => handleDeleteProfile(p.id)} className="p-1.5 rounded-md text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-colors">
@@ -813,7 +923,7 @@ export default function Home() {
                                   <Play size={10} /><span>唤醒真机</span>
                                 </button>
                               )}
-                            <button onClick={() => setEditingProfile(p)} className="p-1.5 rounded-md text-slate-400 hover:text-slate-200 hover:bg-slate-700 transition-colors">
+                            <button onClick={() => openProfileEditor(p)} className="p-1.5 rounded-md text-slate-400 hover:text-slate-200 hover:bg-slate-700 transition-colors">
                               <Pencil size={13} />
                             </button>
                             <button onClick={() => handleDeleteProfile(p.id)} className="p-1.5 rounded-md text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-colors">
@@ -951,7 +1061,7 @@ export default function Home() {
                                     <Play size={10} /><span>{p.isMobile ? '唤醒真机' : '打开'}</span>
                                   </button>
                                 )}
-                                <button onClick={() => setEditingProfile(p)} className="p-1.5 rounded-md text-slate-400 hover:text-slate-200 hover:bg-slate-700 transition-colors">
+                                <button onClick={() => openProfileEditor(p)} className="p-1.5 rounded-md text-slate-400 hover:text-slate-200 hover:bg-slate-700 transition-colors">
                                   <Pencil size={13} />
                                 </button>
                                 <button onClick={() => handleDeleteProfile(p.id)} className="p-1.5 rounded-md text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-colors">
@@ -1268,7 +1378,7 @@ export default function Home() {
                 <Pencil size={15} className="text-blue-400" />
                 <h2 className="text-sm font-bold">编辑环境: <span className="text-blue-400">{editingProfile.name}</span></h2>
               </div>
-              <button onClick={() => { setEditingProfile(null); setProxyResult(null); }} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors">
+              <button onClick={() => { setEditingProfile(null); setProxyResult(null); setProxyBrowserResult(null); }} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors">
                 <X size={15} />
               </button>
             </div>
@@ -1285,15 +1395,49 @@ export default function Home() {
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-400 mb-1.5">代理服务器 (HTTP / SOCKS5)</label>
-                <div className="flex space-x-2">
+                <label className="block text-xs font-bold text-slate-400 mb-1.5">代理服务器</label>
+                <div className="grid grid-cols-2 gap-3">
+                  <select
+                    value={editingProfile.proxyType || 'http'}
+                    onChange={e => { setEditingProfile({ ...editingProfile, proxyType: e.target.value as 'http' | 'socks5' }); setProxyResult(null); setProxyBrowserResult(null); }}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors text-slate-200"
+                  >
+                    <option value="http">HTTP</option>
+                    <option value="socks5">SOCKS5</option>
+                  </select>
                   <input
                     type="text"
-                    value={editingProfile.proxy || ''}
-                    placeholder="例如: http://user:pass@127.0.0.1:8080"
-                    onChange={e => { setEditingProfile({ ...editingProfile, proxy: e.target.value }); setProxyResult(null); }}
-                    className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors"
+                    value={editingProfile.proxyHost || ''}
+                    placeholder="代理主机，例如 38.69.171.250"
+                    onChange={e => { setEditingProfile({ ...editingProfile, proxyHost: e.target.value }); setProxyResult(null); setProxyBrowserResult(null); }}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors"
                   />
+                  <input
+                    type="text"
+                    value={editingProfile.proxyPort || ''}
+                    placeholder="代理端口，例如 44001"
+                    onChange={e => { setEditingProfile({ ...editingProfile, proxyPort: e.target.value }); setProxyResult(null); setProxyBrowserResult(null); }}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors"
+                  />
+                  <input
+                    type="text"
+                    value={editingProfile.proxyUsername || ''}
+                    placeholder="账号"
+                    onChange={e => { setEditingProfile({ ...editingProfile, proxyUsername: e.target.value }); setProxyResult(null); setProxyBrowserResult(null); }}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors"
+                  />
+                  <input
+                    type="text"
+                    value={editingProfile.proxyPassword || ''}
+                    placeholder="密码"
+                    onChange={e => { setEditingProfile({ ...editingProfile, proxyPassword: e.target.value }); setProxyResult(null); setProxyBrowserResult(null); }}
+                    className="col-span-2 w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors"
+                  />
+                </div>
+                <div className="mt-2 flex items-center gap-2">
+                  <div className="flex-1 bg-slate-950/80 border border-slate-800 rounded-lg px-3 py-2 text-[11px] font-mono text-slate-400 break-all">
+                    {buildProxyFromDraft(editingProfile) || '填写代理主机和端口后，将在这里生成代理串'}
+                  </div>
                   <button
                     type="button"
                     disabled={proxyChecking}
@@ -1302,6 +1446,15 @@ export default function Home() {
                   >
                     {proxyChecking ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />}
                     <span>{proxyChecking ? '检测中' : '校验'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={proxyBrowserChecking}
+                    onClick={handleBrowserCheckProxy}
+                    className="flex items-center space-x-1.5 px-3 py-2 bg-blue-600/80 border border-blue-500/30 rounded-lg text-xs font-bold hover:bg-blue-600 disabled:opacity-50 transition-colors"
+                  >
+                    {proxyBrowserChecking ? <Loader2 size={12} className="animate-spin" /> : <Globe size={12} />}
+                    <span>{proxyBrowserChecking ? '真测中' : '真测'}</span>
                   </button>
                 </div>
                 {proxyResult && (
@@ -1314,6 +1467,27 @@ export default function Home() {
                         <span className="flex items-center space-x-1"><Database size={10} /><span>IP: {proxyResult.ip}</span></span>
                         <span className="flex items-center space-x-1"><Zap size={10} /><span>延迟: {proxyResult.delay}ms</span></span>
                         <span className="flex items-center space-x-1"><Building size={10} /><span>{proxyResult.isp}</span></span>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {proxyBrowserResult && (
+                  <div className={`mt-2 text-[11px] p-3 rounded-lg ${proxyBrowserResult.error ? 'bg-red-500/10 border border-red-500/20 text-red-400' : 'bg-blue-500/10 border border-blue-500/20 text-blue-300'}`}>
+                    {proxyBrowserResult.error ? (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center space-x-2"><AlertCircle size={12} /><span>真实浏览器测试: {proxyBrowserResult.error}</span></div>
+                        <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-red-300/90">
+                          <span>失败类型: {proxyBrowserResult.errorType === 'timeout' ? '超时' : proxyBrowserResult.errorType === 'auth' ? '认证失败' : proxyBrowserResult.errorType === 'no_response' ? '目标站点无响应' : '未知错误'}</span>
+                          <span>耗时: {proxyBrowserResult.elapsedMs ?? '-'}ms</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                        <span className="flex items-center space-x-1"><Globe size={10} /><span>真实浏览器测试已通过</span></span>
+                        <span className="flex items-center space-x-1"><Database size={10} /><span>IP: {proxyBrowserResult.ip}</span></span>
+                        <span className="flex items-center space-x-1"><MapPin size={10} /><span>归属地: {proxyBrowserResult.country} {proxyBrowserResult.city}</span></span>
+                        <span className="flex items-center space-x-1"><Building size={10} /><span>{proxyBrowserResult.isp}</span></span>
+                        <span className="flex items-center space-x-1"><Zap size={10} /><span>耗时: {proxyBrowserResult.elapsedMs ?? '-'}ms</span></span>
                       </div>
                     )}
                   </div>
@@ -1357,7 +1531,7 @@ export default function Home() {
               </div>
 
               <div className="flex justify-end space-x-2 pt-2">
-                <button type="button" onClick={() => { setEditingProfile(null); setProxyResult(null); }} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm font-bold border border-slate-700 transition-colors">
+                <button type="button" onClick={() => { setEditingProfile(null); setProxyResult(null); setProxyBrowserResult(null); }} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm font-bold border border-slate-700 transition-colors">
                   取消
                 </button>
                 <button type="submit" className="flex items-center space-x-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-bold shadow-lg shadow-blue-500/20 transition-colors">
