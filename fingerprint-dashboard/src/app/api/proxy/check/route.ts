@@ -55,12 +55,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: '代理格式错误' }, { status: 400 });
     }
 
-    // --- DEBUG RETURN ---
-    return NextResponse.json({
-      success: true,
-      normalizedProxy: proxy,
-      agentType: agent?.constructor?.name || 'unknown'
-    });
 
     // Attempt to fetch IP info through the proxy
     // Using ip-api.com (HTTP) because it's simpler for testing connectivity
