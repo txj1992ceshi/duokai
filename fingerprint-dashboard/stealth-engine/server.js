@@ -117,21 +117,51 @@ function writeDb(data) {
 
 function parseProxy(proxyString) {
   if (!proxyString) return null;
+  let str = proxyString.trim();
+  
+  // Try standard URL format first
   try {
-    const url = new URL(proxyString);
-    return {
-      server:   `${url.protocol}//${url.hostname}:${url.port}`,
-      username: decodeURIComponent(url.username) || undefined,
-      password: decodeURIComponent(url.password) || undefined,
-    };
-  } catch {
-    // Try plain host:port
-    const parts = proxyString.replace(/^https?:\/\//, '').split(':');
-    if (parts.length >= 2) {
-      return { server: `http://${parts[0]}:${parts[1]}` };
+    const url = new URL(str.includes('://') ? str : 'http://' + str);
+    if (url.hostname && url.port) {
+      return {
+        server:   `${url.protocol}//${url.hostname}:${url.port}`,
+        username: decodeURIComponent(url.username) || undefined,
+        password: decodeURIComponent(url.password) || undefined,
+      };
     }
-    return null;
+  } catch (e) {}
+
+  // Fallback: try common formats like ip:port:user:pass
+  // Format: host:port:user:pass
+  const parts = str.split(':');
+  if (parts.length === 4) {
+    return {
+      server: `http://${parts[0]}:${parts[1]}`,
+      username: parts[2],
+      password: parts[3]
+    };
   }
+  
+  // Format: user:pass@host:port (handled by URL catch-all if protocol added, but let's be safe)
+  if (str.includes('@')) {
+    const [auth, target] = str.split('@');
+    const authParts = auth.split(':');
+    const targetParts = target.split(':');
+    if (authParts.length === 2 && targetParts.length === 2) {
+      return {
+        server: `http://${targetParts[0]}:${targetParts[1]}`,
+        username: authParts[0],
+        password: authParts[1]
+      };
+    }
+  }
+
+  // Last resort: host:port
+  if (parts.length === 2) {
+    return { server: `http://${parts[0]}:${parts[1]}` };
+  }
+
+  return null;
 }
 
 function getStateFile(profileId) {
