@@ -117,47 +117,57 @@ function writeDb(data) {
 
 function parseProxy(proxyString) {
   if (!proxyString) return null;
-  let str = proxyString.trim();
-  
-  // Try standard URL format first
+
+  const raw = String(proxyString).trim();
+
+  // 1) 先尝试直接按标准 URL 解析
   try {
-    const url = new URL(str.includes('://') ? str : 'http://' + str);
-    if (url.hostname && url.port) {
+    const url = new URL(raw);
+    if (url.protocol && url.hostname && url.port) {
       return {
-        server:   `${url.protocol}//${url.hostname}:${url.port}`,
+        server: `${url.protocol}//${url.hostname}:${url.port}`,
         username: decodeURIComponent(url.username) || undefined,
         password: decodeURIComponent(url.password) || undefined,
       };
     }
-  } catch (e) {}
+  } catch {}
 
-  // Fallback: try common formats like ip:port:user:pass
-  // Format: host:port:user:pass
-  const parts = str.split(':');
-  if (parts.length === 4) {
+  // 2) 兼容 scheme://host:port:user:pass
+  let m = raw.match(/^(https?|socks5):\/\/([^:]+):(\d+):([^:]+):(.+)$/i);
+  if (m) {
+    const [, protocol, host, port, user, pass] = m;
     return {
-      server: `http://${parts[0]}:${parts[1]}`,
-      username: parts[2],
-      password: parts[3]
+      server: `${protocol}://${host}:${port}`,
+      username: decodeURIComponent(user) || undefined,
+      password: decodeURIComponent(pass) || undefined,
     };
   }
-  
-  // Format: user:pass@host:port (handled by URL catch-all if protocol added, but let's be safe)
-  if (str.includes('@')) {
-    const [auth, target] = str.split('@');
-    const authParts = auth.split(':');
-    const targetParts = target.split(':');
-    if (authParts.length === 2 && targetParts.length === 2) {
-      return {
-        server: `http://${targetParts[0]}:${targetParts[1]}`,
-        username: authParts[0],
-        password: authParts[1]
-      };
-    }
+
+  // 3) 兼容 host:port:user:pass，默认按 http
+  m = raw.match(/^([^:]+):(\d+):([^:]+):(.+)$/);
+  if (m) {
+    const [, host, port, user, pass] = m;
+    return {
+      server: `http://${host}:${port}`,
+      username: decodeURIComponent(user) || undefined,
+      password: decodeURIComponent(pass) || undefined,
+    };
   }
 
-  // Last resort: host:port
-  if (parts.length === 2) {
+  // 4) 兼容 user:pass@host:port，默认按 http
+  m = raw.match(/^([^:]+):([^@]+)@([^:]+):(\d+)$/);
+  if (m) {
+    const [, user, pass, host, port] = m;
+    return {
+      server: `http://${host}:${port}`,
+      username: decodeURIComponent(user) || undefined,
+      password: decodeURIComponent(pass) || undefined,
+    };
+  }
+
+  // 5) 最后兜底 host:port
+  const parts = raw.replace(/^https?:\/\//, '').split(':');
+  if (parts.length >= 2) {
     return { server: `http://${parts[0]}:${parts[1]}` };
   }
 
