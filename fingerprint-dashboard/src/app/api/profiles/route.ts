@@ -33,6 +33,9 @@ export async function POST(req: Request) {
       expectedProxyCountry: body.expectedProxyCountry || undefined,
       expectedProxyRegion: body.expectedProxyRegion || undefined,
       proxyVerification: body.proxyVerification || undefined,
+      startupPlatform: body.startupPlatform || undefined,
+      startupUrl: body.startupUrl || undefined,
+      startupNavigation: body.startupNavigation || undefined,
     };
 
     db.profiles.push(newProfile);

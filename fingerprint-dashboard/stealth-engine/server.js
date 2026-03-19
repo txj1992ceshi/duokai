@@ -115,12 +115,105 @@ function writeDb(data) {
   fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2), 'utf-8');
 }
 
+function updateProfileRuntimeState(profileId, updates) {
+  const db = readDb();
+  const profile = db.profiles.find((entry) => entry.id === profileId);
+  if (!profile) return null;
+  Object.assign(profile, updates);
+  writeDb(db);
+  return profile;
+}
+
 function normalizeProxyType(type) {
   const normalized = String(type || '').trim().toLowerCase();
   if (normalized === 'https') return 'https';
   if (normalized === 'socks5') return 'socks5';
   if (normalized === 'direct') return 'direct';
   return 'http';
+}
+
+function normalizeStartupUrl(url) {
+  const value = String(url || '').trim();
+  if (!value) return '';
+  if (/^https?:\/\//i.test(value)) return value;
+  return `https://${value}`;
+}
+
+const GEO_FINGERPRINT_HINTS = [
+  {
+    aliases: ['canada', '加拿大', 'ca'],
+    defaultHint: { timezone: 'America/Toronto', languages: ['en-CA', 'en-US', 'en'] },
+    regionHints: [
+      { matches: ['quebec', 'montreal', 'montréal'], timezone: 'America/Toronto', languages: ['fr-CA', 'fr', 'en-CA', 'en'] },
+      { matches: ['toronto', 'ontario'], timezone: 'America/Toronto', languages: ['en-CA', 'en-US', 'en'] },
+      { matches: ['vancouver', 'british columbia'], timezone: 'America/Vancouver', languages: ['en-CA', 'en-US', 'en'] },
+    ],
+  },
+  {
+    aliases: ['united states', 'usa', 'us', '美国', '美國'],
+    defaultHint: { timezone: 'America/New_York', languages: ['en-US', 'en'] },
+  },
+  {
+    aliases: ['united kingdom', 'uk', 'britain', 'england', '英国', '英國'],
+    defaultHint: { timezone: 'Europe/London', languages: ['en-GB', 'en'] },
+  },
+  {
+    aliases: ['japan', '日本', 'jp'],
+    defaultHint: { timezone: 'Asia/Tokyo', languages: ['ja-JP', 'ja', 'en-US', 'en'] },
+  },
+  {
+    aliases: ['hong kong', '香港', 'hk'],
+    defaultHint: { timezone: 'Asia/Hong_Kong', languages: ['zh-HK', 'zh', 'en-HK', 'en'] },
+  },
+  {
+    aliases: ['singapore', '新加坡', 'sg'],
+    defaultHint: { timezone: 'Asia/Singapore', languages: ['en-SG', 'en', 'zh-SG', 'zh'] },
+  },
+  {
+    aliases: ['china', '中国', '中國', 'cn', 'mainland china', '中国大陆'],
+    defaultHint: { timezone: 'Asia/Shanghai', languages: ['zh-CN', 'zh', 'en-US', 'en'] },
+  },
+];
+
+function normalizeGeoText(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function findGeoFingerprintHint(country, region) {
+  const normalizedCountry = normalizeGeoText(country);
+  const normalizedRegion = normalizeGeoText(region);
+  if (!normalizedCountry) return null;
+
+  for (const entry of GEO_FINGERPRINT_HINTS) {
+    if (!entry.aliases.includes(normalizedCountry)) continue;
+
+    if (normalizedRegion && Array.isArray(entry.regionHints)) {
+      const regionMatch = entry.regionHints.find((hint) =>
+        hint.matches.some((candidate) => normalizedRegion.includes(candidate))
+      );
+      if (regionMatch) {
+        return {
+          timezone: regionMatch.timezone,
+          languages: regionMatch.languages,
+        };
+      }
+    }
+
+    return entry.defaultHint;
+  }
+
+  return null;
+}
+
+function alignFingerprintWithExpectedGeo(fingerprint, expectedCountry, expectedRegion) {
+  const hint = findGeoFingerprintHint(expectedCountry, expectedRegion);
+  if (!hint) return fingerprint;
+
+  return {
+    ...fingerprint,
+    timezone: hint.timezone || fingerprint.timezone,
+    languages: Array.isArray(hint.languages) && hint.languages.length ? hint.languages : fingerprint.languages,
+  };
 }
 
 function buildProxyUrlFromFields(source) {
@@ -632,11 +725,6 @@ async function handleBrowserProxyTest(body) {
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
-      '--disable-quic',
-      '--disable-background-networking',
-      '--disable-component-update',
-      '--no-pings',
-      '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
     ],
   });
 
@@ -652,6 +740,17 @@ async function handleBrowserProxyTest(body) {
   }
 }
 
+async function closeExtraBlankPages(context, keepPage) {
+  const extraPages = context.pages().filter((candidate) => candidate !== keepPage);
+  await Promise.all(extraPages.map(async (candidate) => {
+    try {
+      if (candidate.url() === 'about:blank') {
+        await candidate.close({ runBeforeUnload: false });
+      }
+    } catch (_) {}
+  }));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Session Handlers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -665,6 +764,7 @@ async function handleStart(body) {
   if (!profileData?.id) throw new Error('profile.id is required');
 
   const profileId = profileData.id;
+  const startupUrl = normalizeStartupUrl(profileData.startupUrl);
 
   // ---------- seed / fingerprint ----------
   const seedStr = profileData.seed || profileId;
@@ -672,7 +772,12 @@ async function handleStart(body) {
   for (let i = 0; i < seedStr.length; i++) seedNum = (seedNum * 31 + seedStr.charCodeAt(i)) >>> 0;
 
   const isMobile  = !!profileData.isMobile;
-  const fingerprint = generateFingerprint(seedNum, isMobile);
+  let fingerprint = generateFingerprint(seedNum, isMobile);
+  fingerprint = alignFingerprintWithExpectedGeo(
+    fingerprint,
+    profileData.expectedProxyCountry,
+    profileData.expectedProxyRegion
+  );
   if (profileData.ua) fingerprint.userAgent = profileData.ua;
 
   // ---------- user data dir ----------
@@ -741,11 +846,6 @@ async function handleStart(body) {
       '--disable-blink-features=AutomationControlled',
       '--disable-infobars',
       `--window-size=${fingerprint.screenWidth},${fingerprint.screenHeight}`,
-      '--disable-quic',
-      '--disable-background-networking',
-      '--disable-component-update',
-      '--no-pings',
-      '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
     ],
     ignoreDefaultArgs: ['--enable-automation'],
   };
@@ -784,8 +884,9 @@ async function handleStart(body) {
 
   await setupRequestInterceptor(context, { ...fingerprint, isMobile });
 
-  // ---------- new page + sessionId ----------
-  const page = await context.newPage();
+  // ---------- reuse default page opened by persistent context ----------
+  const initialPages = context.pages();
+  const page = initialPages[0] || await context.newPage();
   const sessionId = crypto.randomUUID();
   let verification = null;
 
@@ -828,6 +929,39 @@ async function handleStart(body) {
     throw err;
   }
 
+  let startupNavigation = startupUrl
+    ? { ok: false, requestedUrl: startupUrl, finalUrl: 'about:blank', error: '' }
+    : null;
+
+  await closeExtraBlankPages(context, page);
+
+  if (startupUrl) {
+    try {
+      await page.goto(startupUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      startupNavigation = {
+        ok: true,
+        requestedUrl: startupUrl,
+        finalUrl: page.url(),
+      };
+    } catch (error) {
+      startupNavigation = {
+        ok: false,
+        requestedUrl: startupUrl,
+        finalUrl: page.url() || 'about:blank',
+        error: error?.message || 'Failed to open startup URL',
+      };
+      monitor.log(sessionId, profileId, {
+        event: 'startup_navigation_failed',
+        requestedUrl: startupUrl,
+        finalUrl: startupNavigation.finalUrl,
+        error: startupNavigation.error,
+      });
+      await page.goto('about:blank', { waitUntil: 'load', timeout: 10000 }).catch(() => {});
+    }
+  }
+
+  await closeExtraBlankPages(context, page);
+
   // ---------- 成功后继续：跟原逻辑建立 session 跟踪 ----------
   // Track page navigation
   page.on('framenavigated', frame => {
@@ -850,20 +984,18 @@ async function handleStart(body) {
     page,
     profileId,
     startedAt: Date.now(),
-    currentUrl: 'about:blank',
+    currentUrl: startupNavigation?.finalUrl || page.url() || 'about:blank',
     fingerprint: { ...fingerprint, userAgent: fingerprint.userAgent.slice(0, 80) },
     verification,
   });
 
   // Persist sessionId back to db (如原逻辑)
-  const db = readDb();
-  const p  = db.profiles.find(x => x.id === profileId);
-  if (p) {
-    p.runtimeSessionId = sessionId;
-    p.status = 'Running';
-    p.proxyVerification = verification;
-    writeDb(db);
-  }
+  updateProfileRuntimeState(profileId, {
+    runtimeSessionId: sessionId,
+    status: 'Running',
+    proxyVerification: verification,
+    startupNavigation: startupNavigation || undefined,
+  });
 
   metrics.onSessionStart();
 
@@ -874,11 +1006,13 @@ async function handleStart(body) {
     event: 'start',
     proxy: ctxOptions.proxy?.server || 'direct',
     ua: fingerprint.userAgent,
+    startupUrl: startupUrl || null,
   });
 
   return {
     sessionId,
     verification: sessions.get(sessionId)?.verification,
+    startupNavigation,
   };
 }
 

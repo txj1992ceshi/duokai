@@ -78,6 +78,14 @@ export interface Profile {
   expectedProxyCountry?: string; // Optional expected provider country/region used for strict proxy egress checks
   expectedProxyRegion?: string;
   proxyVerification?: ProxyVerificationRecord; // Last browser-layer verified egress result
+  startupPlatform?: string;
+  startupUrl?: string;
+  startupNavigation?: {
+    ok: boolean;
+    requestedUrl?: string;
+    finalUrl?: string;
+    error?: string;
+  };
 }
 
 export interface Group {

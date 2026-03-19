@@ -14,6 +14,7 @@ function buildInjectionScript(profile) {
     userAgent,
     platform,
     vendor,
+    isMobile,
     hardwareConcurrency,
     deviceMemory,
     screenWidth,
