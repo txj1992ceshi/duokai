@@ -17,7 +17,33 @@
 
 'use strict';
 
+function isNonFatalStreamError(err) {
+  const message = String(err?.message || err || '');
+  return err?.code === 'EIO'
+    || err?.code === 'EPIPE'
+    || message.includes('write EIO')
+    || message.includes('write EPIPE');
+}
+
+function installSafeConsole() {
+  for (const method of ['log', 'warn', 'error', 'info', 'debug']) {
+    const original = console[method].bind(console);
+    console[method] = (...args) => {
+      try {
+        original(...args);
+      } catch (err) {
+        if (!isNonFatalStreamError(err)) {
+          throw err;
+        }
+      }
+    };
+  }
+}
+
+installSafeConsole();
+
 const http = require('http');
+const https = require('https');
 const path = require('path');
 const fs   = require('fs');
 const os   = require('os');
@@ -42,6 +68,17 @@ const PORT         = parseInt(process.env.RUNTIME_PORT || '3001', 10);
 const BASE_DIR     = path.join(os.homedir(), '.antigravity-browser');
 const PROFILES_DIR = path.join(BASE_DIR, 'profiles');
 const DB_PATH      = path.join(BASE_DIR, 'db.json');
+
+process.stdout?.on?.('error', (err) => {
+  if (!isNonFatalStreamError(err)) {
+    throw err;
+  }
+});
+process.stderr?.on?.('error', (err) => {
+  if (!isNonFatalStreamError(err)) {
+    throw err;
+  }
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // In-memory session store: sessionId → SessionEntry
@@ -354,6 +391,11 @@ function createRuntimeHttpError(status, body) {
 function buildEnvironmentVerification({
   status,
   proxyType,
+  effectiveProxyTransport,
+  hostEnvironment,
+  networkMode,
+  gatewayReachable,
+  browserVerified,
   latencyMs,
   ip,
   country,
@@ -373,6 +415,11 @@ function buildEnvironmentVerification({
     layer: 'environment',
     status,
     proxyType,
+    effectiveProxyTransport,
+    hostEnvironment,
+    networkMode,
+    gatewayReachable,
+    browserVerified,
     latencyMs,
     ip,
     country,
@@ -394,6 +441,107 @@ function buildEnvironmentVerification({
 
 function normalizeGeoValue(value) {
   return String(value || '').trim().toLowerCase();
+}
+
+function detectHostEnvironment() {
+  switch (process.platform) {
+    case 'darwin':
+      return 'macos';
+    case 'win32':
+      return 'windows';
+    case 'linux':
+      return 'linux';
+    default:
+      return 'unknown';
+  }
+}
+
+function inferNetworkMode(hostEnvironment) {
+  return hostEnvironment === 'windows' ? 'unknown' : 'system_proxy_only';
+}
+
+function toEntryTransport(proxyType) {
+  if (proxyType === 'https') return 'https-entry';
+  if (proxyType === 'socks5') return 'socks5-entry';
+  if (proxyType === 'direct') return 'direct';
+  return 'http-entry';
+}
+
+async function checkDefaultTls() {
+  return new Promise((resolve) => {
+    const req = https.get('https://api.ipify.org?format=json', { timeout: 5000 }, (res) => {
+      res.resume();
+      resolve(res.statusCode >= 200 && res.statusCode < 500);
+    });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', () => resolve(false));
+  });
+}
+
+async function checkProxyGatewayReachability(proxy) {
+  if (!proxy?.server) return false;
+  try {
+    const target = new URL(proxy.server);
+    const transport = target.protocol === 'https:' ? https : http;
+    return await new Promise((resolve) => {
+      const req = transport.request({
+        host: target.hostname,
+        port: Number(target.port),
+        method: 'HEAD',
+        path: '/',
+        timeout: 4000,
+        rejectUnauthorized: false,
+      }, (res) => {
+        res.resume();
+        resolve(true);
+      });
+      req.on('timeout', () => req.destroy(new Error('timeout')));
+      req.on('error', () => resolve(false));
+      req.end();
+    });
+  } catch {
+    return false;
+  }
+}
+
+async function buildHostRuntimeProfile(preferredProxyType, proxy) {
+  const hostEnvironment = detectHostEnvironment();
+  const proxyType = normalizeProxyType(preferredProxyType);
+  const preferredTransport = toEntryTransport(proxyType);
+  const proxyEntryCandidates = proxyType === 'socks5'
+    ? ['socks5-entry']
+    : proxyType === 'direct'
+      ? ['direct']
+      : Array.from(new Set([preferredTransport, 'https-entry', 'http-entry'])).filter((entry) => entry !== 'direct');
+
+  const [defaultTlsOk, proxyGatewayReachable] = await Promise.all([
+    checkDefaultTls(),
+    checkProxyGatewayReachability(proxy),
+  ]);
+
+  return {
+    os: hostEnvironment,
+    networkMode: inferNetworkMode(hostEnvironment),
+    defaultTlsOk,
+    proxyGatewayReachable,
+    browserProbePreferred: hostEnvironment === 'windows' || !proxyGatewayReachable || !defaultTlsOk,
+    proxyEntryCandidates,
+  };
+}
+
+function toCandidateProxy(proxy, candidateTransport) {
+  if (!proxy?.server) return proxy;
+  const server = new URL(proxy.server);
+  if (candidateTransport === 'https-entry') {
+    return { ...proxy, proxyType: 'https', server: `https://${server.hostname}:${server.port}` };
+  }
+  if (candidateTransport === 'http-entry') {
+    return { ...proxy, proxyType: 'http', server: `http://${server.hostname}:${server.port}` };
+  }
+  if (candidateTransport === 'socks5-entry') {
+    return { ...proxy, proxyType: 'socks5', server: `socks5://${server.hostname}:${server.port}` };
+  }
+  return { ...proxy };
 }
 
 const COUNTRY_ALIASES = new Map([
@@ -644,6 +792,7 @@ function probeToRecord(probe) {
 }
 
 async function verifyBrowserProxyEgress(page, expectations = {}, proxyType = 'direct') {
+  const hostEnvironment = detectHostEnvironment();
   const startedAt = Date.now();
   await page.goto('about:blank', { waitUntil: 'load', timeout: 10000 });
 
@@ -660,6 +809,11 @@ async function verifyBrowserProxyEgress(page, expectations = {}, proxyType = 'di
     return buildEnvironmentVerification({
       status: httpsProbe?.status || 'unknown',
       proxyType,
+      effectiveProxyTransport: toEntryTransport(proxyType),
+      hostEnvironment,
+      networkMode: inferNetworkMode(hostEnvironment),
+      gatewayReachable: true,
+      browserVerified: false,
       latencyMs: Date.now() - startedAt,
       error: httpsProbe?.error || '无法通过真实浏览器确认公网 IP',
       detail: httpsProbe?.detail,
@@ -674,6 +828,11 @@ async function verifyBrowserProxyEgress(page, expectations = {}, proxyType = 'di
   const verification = buildEnvironmentVerification({
     status: 'verified',
     proxyType,
+    effectiveProxyTransport: toEntryTransport(proxyType),
+    hostEnvironment,
+    networkMode: inferNetworkMode(hostEnvironment),
+    gatewayReachable: true,
+    browserVerified: true,
     latencyMs: Date.now() - startedAt,
     ip: httpsProbe.ip,
     country: httpsProbe.country,
@@ -692,6 +851,7 @@ async function verifyBrowserProxyEgress(page, expectations = {}, proxyType = 'di
     return buildEnvironmentVerification({
       ...verification,
       status: 'vpn_leak_suspected',
+      browserVerified: false,
       error: '真实浏览器出口与配置的代理信息不一致',
       detail: `Observed ${verification.ip || '-'} ${verification.country || '-'} ${verification.region || '-'}, expected ${expectations.expectedIp || '-'} ${expectations.expectedCountry || '-'} ${expectations.expectedRegion || '-'}`,
     });
@@ -700,12 +860,94 @@ async function verifyBrowserProxyEgress(page, expectations = {}, proxyType = 'di
   return verification;
 }
 
+async function negotiateBrowserProxyEgress(proxy, expectations = {}, hostProfile = null) {
+  const profile = hostProfile || await buildHostRuntimeProfile(proxy?.proxyType, proxy);
+  const failures = [];
+
+  for (const candidateTransport of profile.proxyEntryCandidates) {
+    const candidateProxy = toCandidateProxy(proxy, candidateTransport);
+    const browserProxy = candidateProxy
+      ? { server: candidateProxy.server, username: candidateProxy.username, password: candidateProxy.password }
+      : undefined;
+
+    let browser;
+    try {
+      browser = await chromium.launch({
+        headless: true,
+        proxy: browserProxy,
+        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      });
+      const page = await browser.newPage();
+      const verification = await verifyBrowserProxyEgress(page, expectations, candidateProxy?.proxyType || 'direct');
+      const result = {
+        ...verification,
+        effectiveProxyTransport: candidateTransport,
+        hostEnvironment: profile.os,
+        networkMode: profile.networkMode,
+        gatewayReachable: profile.proxyGatewayReachable,
+        browserVerified: verification.status === 'verified',
+      };
+
+      if (verification.status === 'verified') {
+        await browser.close().catch(() => {});
+        return { hostProfile: profile, proxy: candidateProxy, verification: result };
+      }
+
+      failures.push(result);
+    } catch (error) {
+      const classified = classifyBrowserProxyError(error);
+      failures.push(buildEnvironmentVerification({
+        status: classified.type,
+        proxyType: candidateProxy?.proxyType || proxy?.proxyType || 'direct',
+        effectiveProxyTransport: candidateTransport,
+        hostEnvironment: profile.os,
+        networkMode: profile.networkMode,
+        gatewayReachable: profile.proxyGatewayReachable,
+        browserVerified: false,
+        latencyMs: 0,
+        error: classified.message,
+        detail: String(error?.message || error),
+        expectedIp: expectations.expectedIp,
+        expectedCountry: expectations.expectedCountry,
+        expectedRegion: expectations.expectedRegion,
+      }));
+    } finally {
+      if (browser) await browser.close().catch(() => {});
+    }
+  }
+
+  const bestFailure = failures.find((entry) => entry.status !== 'unknown') || failures[0];
+  return {
+    hostProfile: profile,
+    proxy,
+    verification: bestFailure || buildEnvironmentVerification({
+      status: 'unknown',
+      proxyType: proxy?.proxyType || 'direct',
+      effectiveProxyTransport: toEntryTransport(proxy?.proxyType || 'direct'),
+      hostEnvironment: profile.os,
+      networkMode: profile.networkMode,
+      gatewayReachable: profile.proxyGatewayReachable,
+      browserVerified: false,
+      latencyMs: 0,
+      error: '无法通过真实浏览器确认公网 IP',
+      expectedIp: expectations.expectedIp,
+      expectedCountry: expectations.expectedCountry,
+      expectedRegion: expectations.expectedRegion,
+    }),
+  };
+}
+
 async function handleBrowserProxyTest(body) {
   const proxy = resolveRuntimeProxy(body, { allowImplicitHttp: false });
   if (proxy?.ambiguous) {
     return buildEnvironmentVerification({
       status: 'unknown',
       proxyType: normalizeProxyType(body?.proxyType),
+      effectiveProxyTransport: toEntryTransport(normalizeProxyType(body?.proxyType)),
+      hostEnvironment: detectHostEnvironment(),
+      networkMode: inferNetworkMode(detectHostEnvironment()),
+      gatewayReachable: false,
+      browserVerified: false,
       latencyMs: 0,
       error: '代理协议未明确',
       detail: '旧代理字符串缺少 scheme，请在界面中明确选择 HTTP / HTTPS / SOCKS5',
@@ -715,29 +957,13 @@ async function handleBrowserProxyTest(body) {
     });
   }
 
-  const browserProxy = proxy
-    ? { server: proxy.server, username: proxy.username, password: proxy.password }
-    : undefined;
-
-  const browser = await chromium.launch({
-    headless: true,
-    proxy: browserProxy,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-    ],
+  const negotiated = await negotiateBrowserProxyEgress(proxy, {
+    expectedIp: body?.expectedIp,
+    expectedCountry: body?.expectedCountry,
+    expectedRegion: body?.expectedRegion,
   });
 
-  try {
-    const page = await browser.newPage();
-    return await verifyBrowserProxyEgress(page, {
-      expectedIp: body?.expectedIp,
-      expectedCountry: body?.expectedCountry,
-      expectedRegion: body?.expectedRegion,
-    }, proxy?.proxyType || normalizeProxyType(body?.proxyType));
-  } finally {
-    await browser.close().catch(() => {});
-  }
+  return negotiated.verification;
 }
 
 async function closeExtraBlankPages(context, keepPage) {
@@ -822,11 +1048,44 @@ async function handleStart(body) {
     if (!selectedProxyUrl && profileData.proxy) selectedProxyUrl = profileData.proxy;
   }
 
+  const runtimeProxyType = proxyStr?.proxyType || normalizeProxyType(profileData.proxyType);
+  const hostProfile = await buildHostRuntimeProfile(
+    profileData.preferredProxyTransport || runtimeProxyType,
+    proxyStr
+  );
+  let verification = null;
+  let resolvedProxy = proxyStr;
+
+  if (proxyStr || wantsDirect) {
+    const negotiated = await negotiateBrowserProxyEgress(proxyStr, {
+      expectedIp: profileData.expectedProxyIp,
+      expectedCountry: profileData.expectedProxyCountry,
+      expectedRegion: profileData.expectedProxyRegion,
+    }, hostProfile);
+    verification = negotiated.verification;
+    resolvedProxy = negotiated.proxy;
+
+    if (verification.status !== 'verified') {
+      metrics.onProxyVerified(false);
+      metrics.onProxyFailure();
+      if (selectedProxyUrl) proxyPool.reportFailure(selectedProxyUrl);
+      throw createRuntimeHttpError(400, {
+        error: verification.error || '环境层代理验证未通过',
+        layer: verification.layer,
+        status: verification.status,
+        verification,
+        hostEnvironment: hostProfile.os,
+        environmentReady: false,
+      });
+    }
+
+    metrics.onProxyVerified(true);
+  }
+
   // ---------- build Playwright context options ----------
   /** @type {import('playwright').BrowserContextOptions} */
-  const runtimeProxyType = proxyStr?.proxyType || normalizeProxyType(profileData.proxyType);
-  const browserProxy = proxyStr
-    ? { server: proxyStr.server, username: proxyStr.username, password: proxyStr.password }
+  const browserProxy = resolvedProxy
+    ? { server: resolvedProxy.server, username: resolvedProxy.username, password: resolvedProxy.password }
     : undefined;
   const ctxOptions = {
     headless,
@@ -888,43 +1147,19 @@ async function handleStart(body) {
   const initialPages = context.pages();
   const page = initialPages[0] || await context.newPage();
   const sessionId = crypto.randomUUID();
-  let verification = null;
-
-  // ---------- verify public IP via browser (ensures proxy actually applied) ----------
   try {
-    verification = await verifyBrowserProxyEgress(page, {
-      expectedIp: profileData.expectedProxyIp,
-      expectedCountry: profileData.expectedProxyCountry,
-      expectedRegion: profileData.expectedProxyRegion,
-    }, runtimeProxyType);
-
-    if (verification.status !== 'verified') {
-      metrics.onProxyVerified(false);
-      metrics.onProxyFailure();
-      if (selectedProxyUrl) proxyPool.reportFailure(selectedProxyUrl);
-      await context.close().catch(() => {});
-      throw createRuntimeHttpError(400, {
-        error: verification.error || '环境层代理验证未通过',
-        layer: verification.layer,
-        status: verification.status,
-        verification,
-      });
-    }
-
-    metrics.onProxyVerified(true);
-
     monitor.log(sessionId, profileId, {
       event: 'proxy_verified',
-      ip: verification.ip,
-      country: verification.country,
-      region: verification.region,
-      city: verification.city,
-      isp: verification.isp,
-      provider: verification.provider || null,
+      ip: verification?.ip,
+      country: verification?.country,
+      region: verification?.region,
+      city: verification?.city,
+      isp: verification?.isp,
+      provider: verification?.provider || null,
+      effectiveProxyTransport: verification?.effectiveProxyTransport || null,
+      hostEnvironment: hostProfile.os,
     });
-
   } catch (err) {
-    // 清理并向上抛
     try { await context.close(); } catch (_) {}
     throw err;
   }
@@ -994,6 +1229,9 @@ async function handleStart(body) {
     runtimeSessionId: sessionId,
     status: 'Running',
     proxyVerification: verification,
+    preferredProxyTransport: profileData.preferredProxyTransport || runtimeProxyType || null,
+    lastResolvedProxyTransport: verification?.proxyType || resolvedProxy?.proxyType || runtimeProxyType || null,
+    lastHostEnvironment: hostProfile.os,
     startupNavigation: startupNavigation || undefined,
   });
 
@@ -1011,6 +1249,9 @@ async function handleStart(body) {
 
   return {
     sessionId,
+    hostEnvironment: hostProfile.os,
+    effectiveProxyTransport: verification?.effectiveProxyTransport,
+    environmentReady: verification?.status === 'verified',
     verification: sessions.get(sessionId)?.verification,
     startupNavigation,
   };

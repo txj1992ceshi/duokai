@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import type { ProxyProtocol, ProxyVerificationRecord } from '@/lib/proxyTypes';
+import type { HostEnvironment, ProxyProtocol, ProxyVerificationRecord } from '@/lib/proxyTypes';
 
 function deriveStructuredProxy(proxy?: string) {
   const empty = {
@@ -70,6 +70,9 @@ export interface Profile {
   proxyUsername?: string;
   proxyPassword?: string;
   expectedProxyIp?: string;
+  preferredProxyTransport?: ProxyProtocol;
+  lastResolvedProxyTransport?: ProxyProtocol;
+  lastHostEnvironment?: HostEnvironment;
   ua?: string; // Optional Custom User Agent
   seed?: string; // Seed for deterministic fingerprint generation
   isMobile?: boolean; // Mobile phone profile flag
@@ -166,6 +169,10 @@ const initDb = () => {
           if (!next.proxyPort && derived.proxyPort) next.proxyPort = derived.proxyPort;
           if (!next.proxyUsername && derived.proxyUsername) next.proxyUsername = derived.proxyUsername;
           if (!next.proxyPassword && derived.proxyPassword) next.proxyPassword = derived.proxyPassword;
+          modified = true;
+        }
+        if (!next.preferredProxyTransport && next.proxyType) {
+          next.preferredProxyTransport = next.proxyType;
           modified = true;
         }
         return next;

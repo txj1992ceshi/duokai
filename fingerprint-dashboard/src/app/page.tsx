@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import {
   LayoutDashboard, Globe, Smartphone, Workflow, Users, Network,
   Puzzle, Bell, Plus, Trash2, Pencil, Play, ShieldCheck, Activity,
@@ -9,7 +9,7 @@ import {
   MonitorSmartphone, RefreshCcw, Upload, Settings as SettingsIcon, StopCircle, Command
 } from 'lucide-react'
 import * as runtime from '@/lib/runtimeClient'
-import type { ProxyCheckStatus, ProxyProtocol, ProxyVerificationRecord } from '@/lib/proxyTypes'
+import type { HostEnvironment, ProxyCheckStatus, ProxyProtocol, ProxyVerificationRecord } from '@/lib/proxyTypes'
 
 export interface Profile {
   id: string;
@@ -25,6 +25,9 @@ export interface Profile {
   proxyPassword?: string;
   proxyTypeSource?: 'explicit' | 'inferred' | 'direct';
   expectedProxyIp?: string;
+  preferredProxyTransport?: ProxyProtocol;
+  lastResolvedProxyTransport?: ProxyProtocol;
+  lastHostEnvironment?: HostEnvironment;
   expectedProxyCountry?: string;
   expectedProxyRegion?: string;
   ua?: string;
@@ -292,6 +295,34 @@ function getVerificationTone(result?: ProxyVerificationRecord | null) {
   return 'text-red-400';
 }
 
+function getHostEnvironmentLabel(hostEnvironment?: HostEnvironment) {
+  switch (hostEnvironment) {
+    case 'macos':
+      return 'macOS';
+    case 'windows':
+      return 'Windows';
+    case 'linux':
+      return 'Linux';
+    default:
+      return '未知宿主';
+  }
+}
+
+function getEntryTransportLabel(transport?: string) {
+  switch (transport) {
+    case 'https-entry':
+      return 'HTTPS entry';
+    case 'http-entry':
+      return 'HTTP entry';
+    case 'socks5-entry':
+      return 'SOCKS5 entry';
+    case 'direct':
+      return 'DIRECT';
+    default:
+      return '-';
+  }
+}
+
 function getStartupNavigationTone(profile: Pick<Profile, 'startupNavigation' | 'runtimeSessionId'>) {
   if (!profile.runtimeSessionId) return 'text-slate-500';
   if (profile.startupNavigation?.ok === false) return 'text-amber-300';
@@ -317,6 +348,18 @@ function formatExpectedTarget(profile: Pick<Profile, 'expectedProxyIp' | 'expect
     formatExpectedGeo(profile),
   ].filter(Boolean);
   return bits.join(' · ');
+}
+
+function getProfileStatusTone(profile: Pick<Profile, 'status' | 'runtimeSessionId'>, isStarting = false) {
+  if (isStarting) return 'bg-amber-500/15 text-amber-300 border-amber-500/20';
+  if (profile.runtimeSessionId || profile.status === 'Running') return 'bg-emerald-500/15 text-emerald-300 border-emerald-500/20';
+  return 'bg-slate-700/50 text-slate-300 border-slate-600/40';
+}
+
+function getProfileStatusLabel(profile: Pick<Profile, 'status'>, isStarting = false) {
+  if (isStarting) return '启动中';
+  if (profile.status === 'Ready') return '就绪';
+  return profile.status || '未知';
 }
 
 const COUNTRY_ALIASES = new Map<string, string[]>([
@@ -401,6 +444,7 @@ const ProxyNodeCell = ({ profile }: { profile: Profile }) => (
         环境层: {getCheckStatusLabel(profile.proxyVerification.status)}
         {profile.proxyVerification.ip ? ` · ${profile.proxyVerification.ip}` : ''}
         {profile.proxyVerification.country ? ` · ${profile.proxyVerification.country}${profile.proxyVerification.city ? ` ${profile.proxyVerification.city}` : ''}` : ''}
+        {profile.proxyVerification.effectiveProxyTransport ? ` · ${getEntryTransportLabel(profile.proxyVerification.effectiveProxyTransport)}` : ''}
       </div>
     )}
     {profile.runtimeSessionId && (
@@ -438,6 +482,8 @@ export default function Home() {
   const [newBehaviorName, setNewBehaviorName] = useState('');
   const [newBehaviorDesc, setNewBehaviorDesc] = useState('');
   const [runtimeOnline, setRuntimeOnline] = useState<boolean | null>(null);
+  const runtimeFailureCountRef = useRef(0);
+  const [startingProfileIds, setStartingProfileIds] = useState<Record<string, boolean>>({});
   const [selectedBehavior, setSelectedBehavior] = useState<Behavior | null>(null);
   const [executingBehaviorId, setExecutingBehaviorId] = useState<string | null>(null);
   const [execLogs, setExecLogs] = useState<string[]>([]);
@@ -519,6 +565,7 @@ export default function Home() {
         const res = await fetch('/api/runtime/status');
         if (res.ok) {
           const data = await res.json();
+          runtimeFailureCountRef.current = 0;
           setRuntimeOnline(data.online === true);
           
           if (data.online && data.sessions) {
@@ -539,12 +586,18 @@ export default function Home() {
             setProfiles(prev => prev.map(p => p.status === 'Running' ? { ...p, status: 'Ready' } : p));
           }
         } else {
-          setRuntimeOnline(false);
+          runtimeFailureCountRef.current += 1;
+          if (runtimeFailureCountRef.current >= 2) {
+            setRuntimeOnline(false);
+          }
           setProfiles(prev => prev.map(p => p.status === 'Running' ? { ...p, status: 'Ready' } : p));
         }
       } catch {
-        setRuntimeOnline(false);
-        setProfiles(prev => prev.map(p => p.status === 'Running' ? { ...p, status: 'Ready' } : p));
+        runtimeFailureCountRef.current += 1;
+        if (runtimeFailureCountRef.current >= 2) {
+          setRuntimeOnline(false);
+          setProfiles(prev => prev.map(p => p.status === 'Running' ? { ...p, status: 'Ready' } : p));
+        }
       }
     };
     checkRuntime();
@@ -582,10 +635,17 @@ export default function Home() {
   }
 
   const handleStartSession = async (p: Profile) => {
+    setStartingProfileIds(prev => ({ ...prev, [p.id]: true }));
     try {
       if (runtimeOnline === false) {
-        alert('⚠️ Runtime Server 未运行！\n\n请先启动：\n  node stealth-engine/server.js\n\n或使用「日常启动面板」脚本一键启动。');
-        return;
+        const statusRes = await fetch('/api/runtime/status').catch(() => null);
+        const statusJson = statusRes?.ok ? await statusRes.json() : null;
+        if (!statusJson?.online) {
+          alert('⚠️ Runtime Server 未运行！\n\n请先启动：\n  node stealth-engine/server.js\n\n或使用「日常启动面板」脚本一键启动。');
+          return;
+        }
+        setRuntimeOnline(true);
+        runtimeFailureCountRef.current = 0;
       }
       const res = await runtime.startSession(p, undefined, { headless: false });
       if (res.sessionId) {
@@ -596,9 +656,15 @@ export default function Home() {
       }
     } catch (err: any) {
       const msg = err?.verification?.status
-        ? `${getCheckStatusLabel(err.verification.status)}${err.verification.detail ? `\n${err.verification.detail}` : ''}`
+        ? `${getCheckStatusLabel(err.verification.status)}${err.verification.detail ? `\n${err.verification.detail}` : ''}${err.verification.effectiveProxyTransport ? `\n最终入口模式: ${getEntryTransportLabel(err.verification.effectiveProxyTransport)}` : ''}${err.hostEnvironment ? `\n宿主环境: ${getHostEnvironmentLabel(err.hostEnvironment)}` : ''}`
         : (err?.error || err?.message || JSON.stringify(err));
       alert('启动失败: ' + msg);
+    } finally {
+      setStartingProfileIds(prev => {
+        const next = { ...prev };
+        delete next[p.id];
+        return next;
+      });
     }
   }
 
@@ -617,6 +683,8 @@ export default function Home() {
       fetchProfiles();
     }
   }
+
+  const isStartingProfile = (profileId: string) => !!startingProfileIds[profileId];
 
 
 
@@ -656,6 +724,7 @@ export default function Home() {
     const payload = {
       ...rest,
       proxyType: proxyType || 'direct',
+      preferredProxyTransport: proxyType || 'direct',
       proxyHost: proxyType === 'direct' ? '' : (proxyHost || ''),
       proxyPort: proxyType === 'direct' ? '' : (proxyPort || ''),
       proxyUsername: proxyType === 'direct' ? '' : (proxyUsername || ''),
@@ -1099,72 +1168,92 @@ export default function Home() {
           {activeTab === '浏览器环境' && (
             <div className="animate-in fade-in duration-300">
               <Card title="环境快速管理">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
-                    <thead className="text-slate-500 border-b border-slate-800">
-                      <tr>
-                        <th className="pb-3 font-semibold text-xs">识别 ID</th>
-                        <th className="pb-3 font-semibold text-xs">环境名称</th>
-                        <th className="pb-3 font-semibold text-xs">代理节点</th>
-                        <th className="pb-3 font-semibold text-xs">指纹种子</th>
-                        <th className="pb-3 font-semibold text-xs">状态</th>
-                        <th className="pb-3 font-semibold text-xs text-right">操作</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800/50">
-                      {loading ? (
-                        <tr><td colSpan={6} className="py-12 text-center">
-                          <Loader2 size={20} className="animate-spin text-slate-500 mx-auto" />
-                        </td></tr>
-                      ) : profiles.filter(p => !p.isMobile).length === 0 ? (
-                        <tr><td colSpan={6}>
-                          <EmptyState icon={Globe} title="暂无浏览器环境" desc="点击右上角「新建环境」创建您的第一个桌面隔离环境。" />
-                        </td></tr>
-                      ) : profiles.filter(p => !p.isMobile).map((p) => (
-                        <tr key={p.id} className="group hover:bg-slate-800/20 transition-colors">
-                          <td className="py-3.5 font-mono text-xs text-slate-500">{p.id.split('-')[0]}</td>
-                          <td className="py-3.5 font-medium text-sm flex items-center space-x-2">
-                             <MonitorSmartphone size={13} className="text-slate-500" />
-                             <span>{p.name}</span>
-                          </td>
-                          <td className="py-3.5">
-                            <ProxyNodeCell profile={p} />
-                          </td>
-                          <td className="py-3.5 text-xs text-slate-400 font-mono">{p.seed ? p.seed.slice(0, 8) : '—'}</td>
-                          <td className="py-3.5">
-                            <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold ${p.status === 'Running' ? 'bg-green-500/15 text-green-400' : 'bg-slate-700/50 text-slate-400'}`}>
-                              {p.status === 'Ready' ? '就绪' : p.status}
-                            </span>
-                          </td>
-                          <td className="py-3.5 text-right">
-                            <div className="flex items-center justify-end space-x-1">
+                <div className="space-y-3">
+                  {loading ? (
+                    <div className="py-12 text-center">
+                      <Loader2 size={20} className="animate-spin text-slate-500 mx-auto" />
+                    </div>
+                  ) : profiles.filter(p => !p.isMobile).length === 0 ? (
+                    <EmptyState icon={Globe} title="暂无浏览器环境" desc="点击右上角「新建环境」创建您的第一个桌面隔离环境。" />
+                  ) : (
+                    profiles.filter(p => !p.isMobile).map((p) => {
+                      const isStarting = isStartingProfile(p.id);
+                      return (
+                        <div
+                          key={p.id}
+                          className="rounded-2xl border border-slate-700/60 bg-slate-900/35 p-4 transition-all hover:border-slate-600 hover:bg-slate-900/50"
+                        >
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="min-w-0 flex-1 space-y-3">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-mono text-[11px] text-slate-500">{p.id.split('-')[0]}</span>
+                                <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-100">
+                                  <MonitorSmartphone size={14} className="text-slate-500" />
+                                  {p.name}
+                                </span>
+                                <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-bold ${getProfileStatusTone(p, isStarting)}`}>
+                                  {getProfileStatusLabel(p, isStarting)}
+                                </span>
+                              </div>
+
+                              <div className="grid gap-3 xl:grid-cols-[minmax(0,2.1fr)_160px_170px]">
+                                <div className="rounded-xl border border-slate-800 bg-[#111722] px-3 py-3">
+                                  <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">代理节点</div>
+                                  <ProxyNodeCell profile={p} />
+                                </div>
+
+                                <div className="rounded-xl border border-slate-800 bg-[#111722] px-3 py-3">
+                                  <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">指纹种子</div>
+                                  <div className="font-mono text-sm text-slate-200">{p.seed ? p.seed.slice(0, 8) : '—'}</div>
+                                  {p.lastHostEnvironment && (
+                                    <div className="mt-2 text-[11px] text-slate-500">宿主环境 · {getHostEnvironmentLabel(p.lastHostEnvironment)}</div>
+                                  )}
+                                </div>
+
+                                <div className="rounded-xl border border-slate-800 bg-[#111722] px-3 py-3">
+                                  <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">平台状态</div>
+                                  <div className={`text-sm font-medium ${getStartupNavigationTone(p)}`}>{getStartupNavigationLabel(p) || '平台页: 未指定'}</div>
+                                  {p.lastResolvedProxyTransport && (
+                                    <div className="mt-2 text-[11px] text-slate-500">最终入口 · {String(p.lastResolvedProxyTransport).toUpperCase()}</div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="flex shrink-0 items-center gap-1 self-center">
                               {p.runtimeSessionId ? (
                                 <button
                                   onClick={() => handleStopSession(p)}
-                                  className="flex items-center space-x-1 px-2.5 py-1.5 bg-red-600/80 hover:bg-red-600 rounded-md text-xs font-bold transition-colors shadow-sm active:scale-95"
+                                  className="flex items-center space-x-1 rounded-lg bg-red-600/85 px-3 py-2 text-xs font-bold text-white transition-colors hover:bg-red-600"
                                 >
-                                  <StopCircle size={10} /><span>停止</span>
+                                  <StopCircle size={12} /><span>停止</span>
                                 </button>
                               ) : (
                                 <button
                                   onClick={() => handleStartSession(p)}
-                                  className="flex items-center space-x-1 px-2.5 py-1.5 bg-blue-600/80 hover:bg-blue-600 rounded-md text-xs font-bold transition-colors shadow-sm active:scale-95"
+                                  disabled={isStarting}
+                                  className={`flex items-center space-x-1 rounded-lg px-3 py-2 text-xs font-bold text-white transition-colors ${
+                                    isStarting
+                                      ? 'bg-amber-600/85 cursor-wait'
+                                      : 'bg-blue-600/85 hover:bg-blue-600'
+                                  }`}
                                 >
-                                  <Play size={10} /><span>打开</span>
+                                  {isStarting ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
+                                  <span>{isStarting ? '启动中' : '打开'}</span>
                                 </button>
                               )}
-                              <button onClick={() => openProfileEditor(p)} className="p-1.5 rounded-md text-slate-400 hover:text-slate-200 hover:bg-slate-700 transition-colors">
-                                <Pencil size={13} />
+                              <button onClick={() => openProfileEditor(p)} className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200">
+                                <Pencil size={14} />
                               </button>
-                              <button onClick={() => handleDeleteProfile(p.id)} className="p-1.5 rounded-md text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-colors">
-                                <Trash2 size={13} />
+                              <button onClick={() => handleDeleteProfile(p.id)} className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-red-500/10 hover:text-red-400">
+                                <Trash2 size={14} />
                               </button>
                             </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
                 </div>
               </Card>
             </div>
@@ -1216,8 +1305,14 @@ export default function Home() {
                           </td>
                           <td className="py-3.5 text-xs text-slate-400 font-mono">{p.seed ? p.seed.slice(0, 8) : '—'}</td>
                           <td className="py-3.5">
-                            <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold ${p.status === 'Running' ? 'bg-purple-500/15 text-purple-400' : 'bg-slate-700/50 text-slate-400'}`}>
-                              {p.status === 'Ready' ? '就绪' : p.status}
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                              isStartingProfile(p.id)
+                                ? 'bg-amber-500/15 text-amber-400'
+                                : p.status === 'Running'
+                                  ? 'bg-purple-500/15 text-purple-400'
+                                  : 'bg-slate-700/50 text-slate-400'
+                            }`}>
+                              {isStartingProfile(p.id) ? '启动中' : p.status === 'Ready' ? '就绪' : p.status}
                             </span>
                           </td>
                           <td className="py-3.5 text-right flex justify-end space-x-1">
@@ -1231,9 +1326,15 @@ export default function Home() {
                               ) : (
                                 <button
                                   onClick={() => handleStartSession(p)}
-                                  className="flex items-center space-x-1 px-2.5 py-1.5 bg-blue-600/80 hover:bg-blue-600 rounded-md text-xs font-bold transition-colors shadow-sm active:scale-95"
+                                  disabled={isStartingProfile(p.id)}
+                                  className={`flex items-center space-x-1 px-2.5 py-1.5 rounded-md text-xs font-bold transition-colors shadow-sm ${
+                                    isStartingProfile(p.id)
+                                      ? 'bg-amber-600/80 text-amber-50 cursor-wait opacity-90'
+                                      : 'bg-blue-600/80 hover:bg-blue-600 active:scale-95'
+                                  }`}
                                 >
-                                  <Play size={10} /><span>唤醒真机</span>
+                                  {isStartingProfile(p.id) ? <Loader2 size={10} className="animate-spin" /> : <Play size={10} />}
+                                  <span>{isStartingProfile(p.id) ? '启动中' : '唤醒真机'}</span>
                                 </button>
                               )}
                             <button onClick={() => openProfileEditor(p)} className="p-1.5 rounded-md text-slate-400 hover:text-slate-200 hover:bg-slate-700 transition-colors">
@@ -1349,8 +1450,14 @@ export default function Home() {
                               </td>
                               <td className="py-3.5 text-xs text-slate-400 font-mono">{p.seed ? p.seed.slice(0, 8) : '—'}</td>
                               <td className="py-3.5">
-                                <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold ${p.status === 'Running' ? (p.isMobile ? 'bg-purple-500/15 text-purple-400':'bg-green-500/15 text-green-400') : 'bg-slate-700/50 text-slate-400'}`}>
-                                  {p.status === 'Ready' ? '就绪' : p.status}
+                                <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                                  isStartingProfile(p.id)
+                                    ? 'bg-amber-500/15 text-amber-400'
+                                    : p.status === 'Running'
+                                      ? (p.isMobile ? 'bg-purple-500/15 text-purple-400':'bg-green-500/15 text-green-400')
+                                      : 'bg-slate-700/50 text-slate-400'
+                                }`}>
+                                  {isStartingProfile(p.id) ? '启动中' : p.status === 'Ready' ? '就绪' : p.status}
                                 </span>
                               </td>
                               <td className="py-3.5 text-right flex justify-end space-x-1">
@@ -1364,9 +1471,15 @@ export default function Home() {
                                 ) : (
                                   <button
                                     onClick={() => handleStartSession(p)}
-                                    className="flex items-center space-x-1 px-2.5 py-1.5 bg-blue-600/80 hover:bg-blue-600 rounded-md text-xs font-bold transition-colors shadow-sm active:scale-95"
+                                    disabled={isStartingProfile(p.id)}
+                                    className={`flex items-center space-x-1 px-2.5 py-1.5 rounded-md text-xs font-bold transition-colors shadow-sm ${
+                                      isStartingProfile(p.id)
+                                        ? 'bg-amber-600/80 text-amber-50 cursor-wait opacity-90'
+                                        : 'bg-blue-600/80 hover:bg-blue-600 active:scale-95'
+                                    }`}
                                   >
-                                    <Play size={10} /><span>{p.isMobile ? '唤醒真机' : '打开'}</span>
+                                    {isStartingProfile(p.id) ? <Loader2 size={10} className="animate-spin" /> : <Play size={10} />}
+                                    <span>{isStartingProfile(p.id) ? '启动中' : p.isMobile ? '唤醒真机' : '打开'}</span>
                                   </button>
                                 )}
                                 <button onClick={() => openProfileEditor(p)} className="p-1.5 rounded-md text-slate-400 hover:text-slate-200 hover:bg-slate-700 transition-colors">
@@ -1859,6 +1972,7 @@ export default function Home() {
                   <p className="mt-2 text-[11px] text-slate-500 leading-relaxed">
                     控制层流量可以继续走宿主机当前网络/VPN；环境层流量必须通过当前环境代理出网。
                     {editingProfile.proxyTypeSource === 'inferred' ? ' 当前代理协议来自旧数据推断，默认按 HTTP 处理，可手动切换为 HTTPS / SOCKS5。' : ''}
+                    {' 当前机器会优先按宿主环境自动协商代理入口模式，再进行真实浏览器验证。'}
                     {formatExpectedTarget(editingProfile) ? ` 当前严格期望出口: ${formatExpectedTarget(editingProfile)}` : ' 如需严格拦截 VPN 串流，请填写期望 IP，并先运行一次真实浏览器检测自动生成国家/地区。'}
                   </p>
                   <div className="mt-2 flex items-center gap-2">
@@ -1895,7 +2009,9 @@ export default function Home() {
                       </div>
                       <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1">
                         <span className="flex items-center space-x-1"><ShieldCheck size={10} /><span>协议: {String(proxyResult.proxyType || editingProfile.proxyType || 'direct').toUpperCase()}</span></span>
+                        <span className="flex items-center space-x-1"><Globe size={10} /><span>宿主环境: {getHostEnvironmentLabel(proxyResult.hostEnvironment)}</span></span>
                         <span className="flex items-center space-x-1"><Network size={10} /><span>网关状态: {proxyResult.gatewayReachable ? '已触达' : '未触达'}</span></span>
+                        <span className="flex items-center space-x-1"><Activity size={10} /><span>候选入口: {getEntryTransportLabel(proxyResult.candidateTransport || proxyResult.effectiveProxyTransport)}</span></span>
                         <span className="flex items-center space-x-1"><Database size={10} /><span>IP: {proxyResult.ip || '-'}</span></span>
                         <span className="flex items-center space-x-1"><MapPin size={10} /><span>归属地: {proxyResult.country || '-'} {proxyResult.city || ''}</span></span>
                         <span className="flex items-center space-x-1"><Building size={10} /><span>{proxyResult.isp || proxyResult.error || '-'}</span></span>
@@ -1928,6 +2044,9 @@ export default function Home() {
                       </div>
                       <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1">
                         <span className="flex items-center space-x-1"><ShieldCheck size={10} /><span>协议: {String(proxyBrowserResult.proxyType || editingProfile.proxyType || 'direct').toUpperCase()}</span></span>
+                        <span className="flex items-center space-x-1"><Activity size={10} /><span>最终入口: {getEntryTransportLabel(proxyBrowserResult.effectiveProxyTransport)}</span></span>
+                        <span className="flex items-center space-x-1"><Globe size={10} /><span>宿主环境: {getHostEnvironmentLabel(proxyBrowserResult.hostEnvironment)}</span></span>
+                        <span className="flex items-center space-x-1"><Network size={10} /><span>环境状态: {proxyBrowserResult.browserVerified ? '已就绪' : '未就绪'}</span></span>
                         <span className="flex items-center space-x-1"><Database size={10} /><span>IP: {proxyBrowserResult.ip || '-'}</span></span>
                         <span className="flex items-center space-x-1"><MapPin size={10} /><span>归属地: {proxyBrowserResult.country || '-'} {proxyBrowserResult.city || ''}</span></span>
                         <span className="flex items-center space-x-1"><Building size={10} /><span>{proxyBrowserResult.isp || '-'}</span></span>
