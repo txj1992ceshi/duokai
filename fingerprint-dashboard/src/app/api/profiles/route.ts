@@ -20,10 +20,19 @@ export async function POST(req: Request) {
       lastActive: 'Never',
       tags: body.tags || [],
       proxy: body.proxy || '',
+      proxyType: body.proxyType || 'direct',
+      proxyHost: body.proxyHost || undefined,
+      proxyPort: body.proxyPort || undefined,
+      proxyUsername: body.proxyUsername || undefined,
+      proxyPassword: body.proxyPassword || undefined,
+      expectedProxyIp: body.expectedProxyIp || undefined,
       ua: body.ua || '',
       seed: body.seed || crypto.randomUUID().substring(0, 8),
       isMobile: body.isMobile || false,
       groupId: body.groupId || undefined,
+      expectedProxyCountry: body.expectedProxyCountry || undefined,
+      expectedProxyRegion: body.expectedProxyRegion || undefined,
+      proxyVerification: body.proxyVerification || undefined,
     };
 
     db.profiles.push(newProfile);

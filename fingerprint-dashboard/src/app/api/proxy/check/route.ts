@@ -1,6 +1,41 @@
 import { NextResponse } from 'next/server';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { SocksProxyAgent } from 'socks-proxy-agent';
+import http from 'http';
+import https from 'https';
+import type { ProxyProtocol, ProxyVerificationRecord } from '@/lib/proxyTypes';
+
+type ProxyCheckPayload = {
+  proxy?: string;
+  proxyType?: ProxyProtocol;
+  proxyHost?: string;
+  proxyPort?: string | number;
+  proxyUsername?: string;
+  proxyPassword?: string;
+  expectedIp?: string;
+  expectedCountry?: string;
+  expectedRegion?: string;
+};
+
+type ProxyLocationResponse = {
+  query?: string;
+  ip?: string;
+  country?: string;
+  country_name?: string;
+  regionName?: string;
+  region?: string;
+  city?: string;
+  isp?: string;
+  org?: string;
+  connection?: {
+    isp?: string;
+    org?: string;
+  };
+};
+
+type ControlCheckResult = ProxyVerificationRecord & {
+  layer: 'control';
+};
 
 function normalizeProxy(raw: string) {
   const proxy = raw.trim();
@@ -35,75 +70,270 @@ function normalizeProxy(raw: string) {
   return proxy;
 }
 
+function buildProxyFromPayload(payload: ProxyCheckPayload) {
+  const type = payload.proxyType;
+  const host = String(payload.proxyHost || '').trim();
+  const port = String(payload.proxyPort || '').trim();
+  const username = String(payload.proxyUsername || '').trim();
+  const password = String(payload.proxyPassword || '').trim();
+
+  if (type && type !== 'direct' && host && port) {
+    const auth = username || password
+      ? `${encodeURIComponent(username)}:${encodeURIComponent(password)}@`
+      : '';
+    return `${type}://${auth}${host}:${port}`;
+  }
+
+  return normalizeProxy(payload.proxy || '');
+}
+
 export async function POST(req: Request) {
   try {
-    const { proxy: rawProxy } = await req.json();
-    const proxy = normalizeProxy(rawProxy);
+    const payload = (await req.json()) as ProxyCheckPayload;
+    const proxy = buildProxyFromPayload(payload);
 
     if (!proxy) {
-      return NextResponse.json({ error: '请输入代理地址' }, { status: 400 });
+      return buildControlResult(buildFailure('unknown', '请输入代理地址', 0, { gatewayReachable: false }));
     }
 
-    let agent;
-    try {
-      if (proxy.startsWith('socks')) {
-        agent = new SocksProxyAgent(proxy);
-      } else {
-        agent = new HttpsProxyAgent(proxy);
-      }
-    } catch (e) {
-      return NextResponse.json({ error: '代理格式错误' }, { status: 400 });
+    const proxyInfo = parseProxyUrl(proxy);
+    return proxyInfo.protocol === 'socks5'
+      ? checkViaSocksProxy(proxy, proxyInfo.protocol)
+      : checkViaHttpProxy(proxy, proxyInfo.protocol);
+  } catch (error: unknown) {
+    console.error('Proxy check error:', error);
+    const message = error instanceof Error ? error.message : '未知错误';
+    return buildControlResult(buildFailure('unknown', '系统错误: ' + message, 0, { gatewayReachable: false }));
+  }
+}
+
+function parseProxyUrl(proxy: string) {
+  const url = new URL(proxy);
+  return {
+    protocol: (url.protocol.replace(':', '') || 'http') as ProxyProtocol,
+    host: url.hostname,
+    port: Number(url.port),
+    username: decodeURIComponent(url.username || ''),
+    password: decodeURIComponent(url.password || ''),
+  };
+}
+
+function formatProxyError(err: unknown) {
+  const msg = err instanceof Error ? err.message : '未知错误';
+  if (/407|proxy authentication required|authentication/i.test(msg)) {
+    return { status: 'auth_failed' as const, error: '代理认证失败' };
+  }
+  if (/timed out|timeout/i.test(msg)) {
+    return { status: 'timeout' as const, error: '代理连接超时' };
+  }
+  if (/empty reply|socket hang up|failed to fetch/i.test(msg)) {
+    return { status: 'no_response' as const, error: '代理服务器已连接，但没有返回有效响应' };
+  }
+  return { status: 'unknown' as const, error: '代理连接失败: ' + msg };
+}
+
+function buildControlResult(result: ControlCheckResult) {
+  return NextResponse.json(result);
+}
+
+function buildSuccess(json: ProxyLocationResponse, duration: number, proxyType: ProxyProtocol): ControlCheckResult {
+  return {
+    layer: 'control',
+    status: 'reachable',
+    proxyType,
+    ip: json.query || json.ip,
+    country: json.country || json.country_name,
+    region: json.regionName || json.region,
+    city: json.city,
+    isp: json.isp || json.org || json.connection?.isp || json.connection?.org,
+    latencyMs: duration,
+    gatewayReachable: true,
+    checkedAt: new Date().toISOString(),
+  };
+}
+
+function buildFailure(
+  status: ControlCheckResult['status'],
+  error: string,
+  duration: number,
+  extra: Partial<ControlCheckResult> = {}
+): ControlCheckResult {
+  return {
+    layer: 'control',
+    status,
+    proxyType: extra.proxyType,
+    error,
+    errorType: status,
+    latencyMs: duration,
+    gatewayReachable: status !== 'timeout',
+    checkedAt: new Date().toISOString(),
+    ...extra,
+  };
+}
+
+function checkViaHttpProxy(proxy: string, proxyType: ProxyProtocol) {
+  if (proxyType === 'https') {
+    return checkViaHttpsProxy(proxy, proxyType);
+  }
+  let proxyInfo;
+  try {
+    proxyInfo = parseProxyUrl(proxy);
+  } catch {
+    return Promise.resolve(buildControlResult(buildFailure('unknown', '代理格式错误', 0, { gatewayReachable: false })));
+  }
+
+  return new Promise<Response>((resolve) => {
+    const target = 'http://ip-api.com/json';
+    const startTime = Date.now();
+    const transport = proxyType === 'https' ? https : http;
+    const headers: Record<string, string> = {
+      Host: 'ip-api.com',
+      'User-Agent': 'duokai-proxy-check/1.0',
+      Accept: 'application/json',
+      'Proxy-Connection': 'Keep-Alive',
+    };
+
+    if (proxyInfo.username || proxyInfo.password) {
+      headers['Proxy-Authorization'] =
+        'Basic ' + Buffer.from(`${proxyInfo.username}:${proxyInfo.password}`).toString('base64');
     }
 
-    console.log('[proxy-check] normalizedProxy =', proxy);
-    console.log('[proxy-check] agentType =', agent?.constructor?.name || 'unknown');
-
-    // Attempt to fetch IP info through the proxy
-    // Using ip-api.com (HTTP) because it's simpler for testing connectivity
-    // or ipapi.co (HTTPS)
-    return new Promise<Response>((resolve) => {
-      const http = require('http');
-      const options = {
-        hostname: 'ip-api.com',
-        path: '/json',
-        agent: agent,
-        timeout: 10000
-      };
-
-      const startTime = Date.now();
-      const request = http.get(options, (res: any) => {
+    const request = transport.request(
+      {
+        host: proxyInfo.host,
+        port: proxyInfo.port,
+        method: 'GET',
+        path: target,
+        headers,
+        timeout: 10000,
+        rejectUnauthorized: false,
+      },
+      (res) => {
         let data = '';
-        res.on('data', (chunk: any) => data += chunk);
+        res.on('data', (chunk) => (data += chunk));
         res.on('end', () => {
+          const duration = Date.now() - startTime;
+          if (res.statusCode && res.statusCode >= 400) {
+            const status = res.statusCode === 407 ? 'auth_failed' : 'no_response';
+            resolve(buildControlResult(buildFailure(status, `代理校验失败: HTTP ${res.statusCode}`, duration, { proxyType })));
+            return;
+          }
           try {
             const json = JSON.parse(data);
-            const duration = Date.now() - startTime;
-            resolve(NextResponse.json({
-              success: true,
-              ip: json.query,
-              country: json.country,
-              region: json.regionName,
-              city: json.city,
-              isp: json.isp,
-              delay: duration
-            }));
-          } catch (e) {
-            resolve(NextResponse.json({ error: '解析返回数据失败' }, { status: 500 }));
+            resolve(buildControlResult(buildSuccess(json, duration, proxyType)));
+          } catch {
+            resolve(buildControlResult(buildFailure('no_response', data ? '代理返回了非 JSON 响应' : '代理服务器已连接，但没有返回有效响应', duration, { proxyType })));
           }
         });
-      });
+      }
+    );
 
-      request.on('error', (err: any) => {
-        resolve(NextResponse.json({ error: '代理连接失败: ' + err.message }, { status: 500 }));
-      });
-
-      request.on('timeout', () => {
-        request.destroy();
-        resolve(NextResponse.json({ error: '代理连接超时' }, { status: 500 }));
-      });
+    request.on('error', (err: unknown) => {
+      const formatted = formatProxyError(err);
+      resolve(buildControlResult(buildFailure(formatted.status, formatted.error, Date.now() - startTime, { proxyType })));
     });
-  } catch (error: any) {
-    console.error('Proxy check error:', error);
-    return NextResponse.json({ error: '系统错误: ' + error.message }, { status: 500 });
+
+    request.on('timeout', () => {
+      request.destroy(new Error('timeout'));
+    });
+
+    request.end();
+  });
+}
+
+function checkViaHttpsProxy(proxy: string, proxyType: ProxyProtocol) {
+  let agent;
+  try {
+    agent = new HttpsProxyAgent(proxy);
+  } catch {
+    return Promise.resolve(buildControlResult(buildFailure('unknown', '代理格式错误', 0, { gatewayReachable: false, proxyType })));
   }
+
+  return new Promise<Response>((resolve) => {
+    const startTime = Date.now();
+    const request = https.get(
+      {
+        hostname: 'ipwho.is',
+        path: '/',
+        agent,
+        timeout: 10000,
+        rejectUnauthorized: false,
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          const duration = Date.now() - startTime;
+          if (res.statusCode && res.statusCode >= 400) {
+            const status = res.statusCode === 407 ? 'auth_failed' : 'no_response';
+            resolve(buildControlResult(buildFailure(status, `代理校验失败: HTTP ${res.statusCode}`, duration, { proxyType })));
+            return;
+          }
+          try {
+            const json = JSON.parse(data);
+            resolve(buildControlResult(buildSuccess(json, duration, proxyType)));
+          } catch {
+            resolve(buildControlResult(buildFailure('no_response', data ? '代理返回了非 JSON 响应' : '代理服务器已连接，但没有返回有效响应', duration, { proxyType })));
+          }
+        });
+      }
+    );
+
+    request.on('error', (err: unknown) => {
+      const formatted = formatProxyError(err);
+      resolve(buildControlResult(buildFailure(formatted.status, formatted.error, Date.now() - startTime, { proxyType })));
+    });
+
+    request.on('timeout', () => {
+      request.destroy(new Error('timeout'));
+    });
+  });
+}
+
+function checkViaSocksProxy(proxy: string, proxyType: ProxyProtocol) {
+  let agent;
+  try {
+    agent = new SocksProxyAgent(proxy);
+  } catch {
+    return Promise.resolve(buildControlResult(buildFailure('unknown', '代理格式错误', 0, { gatewayReachable: false })));
+  }
+
+  return new Promise<Response>((resolve) => {
+    const startTime = Date.now();
+    const request = https.get(
+      {
+        hostname: 'api.ipify.org',
+        path: '/?format=json',
+        agent,
+        timeout: 10000,
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          const duration = Date.now() - startTime;
+          if (res.statusCode && res.statusCode >= 400) {
+            const status = res.statusCode === 407 ? 'auth_failed' : 'no_response';
+            resolve(buildControlResult(buildFailure(status, `代理校验失败: HTTP ${res.statusCode}`, duration, { proxyType })));
+            return;
+          }
+          try {
+            const json = JSON.parse(data);
+            resolve(buildControlResult(buildSuccess(json, duration, proxyType)));
+          } catch {
+            resolve(buildControlResult(buildFailure('no_response', '解析返回数据失败', duration, { proxyType })));
+          }
+        });
+      }
+    );
+
+    request.on('error', (err: unknown) => {
+      const formatted = formatProxyError(err);
+      resolve(buildControlResult(buildFailure(formatted.status, formatted.error, Date.now() - startTime, { proxyType })));
+    });
+
+    request.on('timeout', () => {
+      request.destroy(new Error('timeout'));
+    });
+  });
 }
