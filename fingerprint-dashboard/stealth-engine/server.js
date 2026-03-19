@@ -46,7 +46,7 @@ const DB_PATH      = path.join(BASE_DIR, 'db.json');
 // ─────────────────────────────────────────────────────────────────────────────
 // In-memory session store: sessionId → SessionEntry
 // ─────────────────────────────────────────────────────────────────────────────
-/** @type {Map<string, { context: import('playwright').BrowserContext, page: import('playwright').Page, profileId: string, startedAt: number, currentUrl: string }>} */
+/** @type {Map<string, { context: import('playwright').BrowserContext, page: import('playwright').Page, profileId: string, startedAt: number, currentUrl: string, verification?: any }>} */
 const sessions = new Map();
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -115,17 +115,47 @@ function writeDb(data) {
   fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2), 'utf-8');
 }
 
-function parseProxy(proxyString) {
+function normalizeProxyType(type) {
+  const normalized = String(type || '').trim().toLowerCase();
+  if (normalized === 'https') return 'https';
+  if (normalized === 'socks5') return 'socks5';
+  if (normalized === 'direct') return 'direct';
+  return 'http';
+}
+
+function buildProxyUrlFromFields(source) {
+  const proxyType = normalizeProxyType(source?.proxyType);
+  const host = String(source?.proxyHost || '').trim();
+  const port = String(source?.proxyPort || '').trim();
+  const username = String(source?.proxyUsername || '').trim();
+  const password = String(source?.proxyPassword || '').trim();
+
+  if (proxyType === 'direct' || !host || !port) {
+    return null;
+  }
+
+  return {
+    proxyType,
+    server: `${proxyType}://${host}:${port}`,
+    username: username || undefined,
+    password: password || undefined,
+  };
+}
+
+function parseProxyString(proxyString, options = {}) {
   if (!proxyString) return null;
 
   const raw = String(proxyString).trim();
+  const allowImplicitHttp = options.allowImplicitHttp === true;
 
   // 1) 先尝试直接按标准 URL 解析
   try {
     const url = new URL(raw);
     if (url.protocol && url.hostname && url.port) {
+      const proxyType = normalizeProxyType(url.protocol.replace(':', ''));
       return {
-        server: `${url.protocol}//${url.hostname}:${url.port}`,
+        proxyType,
+        server: `${proxyType}://${url.hostname}:${url.port}`,
         username: decodeURIComponent(url.username) || undefined,
         password: decodeURIComponent(url.password) || undefined,
       };
@@ -136,18 +166,24 @@ function parseProxy(proxyString) {
   let m = raw.match(/^(https?|socks5):\/\/([^:]+):(\d+):([^:]+):(.+)$/i);
   if (m) {
     const [, protocol, host, port, user, pass] = m;
+    const proxyType = normalizeProxyType(protocol);
     return {
-      server: `${protocol}://${host}:${port}`,
+      proxyType,
+      server: `${proxyType}://${host}:${port}`,
       username: decodeURIComponent(user) || undefined,
       password: decodeURIComponent(pass) || undefined,
     };
   }
 
-  // 3) 兼容 host:port:user:pass，默认按 http
+  // 3) 兼容 host:port:user:pass，只有明确允许时才默认按 http
   m = raw.match(/^([^:]+):(\d+):([^:]+):(.+)$/);
   if (m) {
+    if (!allowImplicitHttp) {
+      return { ambiguous: true };
+    }
     const [, host, port, user, pass] = m;
     return {
+      proxyType: 'http',
       server: `http://${host}:${port}`,
       username: decodeURIComponent(user) || undefined,
       password: decodeURIComponent(pass) || undefined,
@@ -157,8 +193,12 @@ function parseProxy(proxyString) {
   // 4) 兼容 user:pass@host:port，默认按 http
   m = raw.match(/^([^:]+):([^@]+)@([^:]+):(\d+)$/);
   if (m) {
+    if (!allowImplicitHttp) {
+      return { ambiguous: true };
+    }
     const [, user, pass, host, port] = m;
     return {
+      proxyType: 'http',
       server: `http://${host}:${port}`,
       username: decodeURIComponent(user) || undefined,
       password: decodeURIComponent(pass) || undefined,
@@ -167,11 +207,22 @@ function parseProxy(proxyString) {
 
   // 5) 最后兜底 host:port
   const parts = raw.replace(/^https?:\/\//, '').split(':');
-  if (parts.length >= 2) {
-    return { server: `http://${parts[0]}:${parts[1]}` };
+  if (parts.length >= 2 && allowImplicitHttp) {
+    return { proxyType: 'http', server: `http://${parts[0]}:${parts[1]}` };
   }
 
   return null;
+}
+
+function resolveRuntimeProxy(source, options = {}) {
+  const structured = buildProxyUrlFromFields(source);
+  if (structured) return structured;
+
+  if (source?.proxyType === 'direct') {
+    return null;
+  }
+
+  return parseProxyString(source?.proxy, options);
 }
 
 function getStateFile(profileId) {
@@ -200,15 +251,348 @@ function send(res, status, body) {
   res.end(json);
 }
 
-async function handleBrowserProxyTest(body) {
+function createRuntimeHttpError(status, body) {
+  const err = new Error(body?.error || 'Runtime request failed');
+  err.httpStatus = status;
+  err.body = body;
+  return err;
+}
+
+function buildEnvironmentVerification({
+  status,
+  proxyType,
+  latencyMs,
+  ip,
+  country,
+  region,
+  city,
+  isp,
+  provider,
+  error,
+  detail,
+  expectedIp,
+  expectedCountry,
+  expectedRegion,
+  httpProbe,
+  httpsProbe,
+}) {
+  return {
+    layer: 'environment',
+    status,
+    proxyType,
+    latencyMs,
+    ip,
+    country,
+    region,
+    city,
+    isp,
+    provider,
+    error,
+    errorType: status === 'verified' ? undefined : status,
+    detail,
+    expectedIp,
+    expectedCountry,
+    expectedRegion,
+    httpProbe,
+    httpsProbe,
+    checkedAt: new Date().toISOString(),
+  };
+}
+
+function normalizeGeoValue(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function isExpectedGeoMismatch(verification, expectedIp, expectedCountry, expectedRegion) {
+  const ipExpectation = String(expectedIp || '').trim();
+  const countryExpectation = normalizeGeoValue(expectedCountry);
+  const regionExpectation = normalizeGeoValue(expectedRegion);
+  const actualIp = String(verification.ip || '').trim();
+  const actualCountry = normalizeGeoValue(verification.country);
+  const actualRegion = normalizeGeoValue(verification.region);
+  const actualCity = normalizeGeoValue(verification.city);
+
+  if (ipExpectation && actualIp && actualIp !== ipExpectation) {
+    return true;
+  }
+
+  if (countryExpectation && !actualCountry.includes(countryExpectation)) {
+    return true;
+  }
+
+  if (regionExpectation && !actualRegion.includes(regionExpectation) && !actualCity.includes(regionExpectation)) {
+    return true;
+  }
+
+  return false;
+}
+
+function classifyBrowserProxyError(err) {
+  const message = String(err?.message || err || '');
+  const sanitized = message.replace(/\u001b\[[0-9;]*m/g, '');
+  const normalized = sanitized.toLowerCase();
+
+  if (
+    normalized.includes('timeout') ||
+    normalized.includes('timed out') ||
+    normalized.includes('aborterror') ||
+    normalized.includes('err_timed_out')
+  ) {
+    return { type: 'timeout', message: '连接超时' };
+  }
+
+  if (
+    normalized.includes('407') ||
+    normalized.includes('proxy authentication required') ||
+    normalized.includes('invalid_auth_credentials') ||
+    normalized.includes('err_invalid_auth_credentials') ||
+    normalized.includes('authentication')
+  ) {
+    return { type: 'auth_failed', message: '代理认证失败' };
+  }
+
+  if (
+    normalized.includes('empty reply') ||
+    normalized.includes('err_empty_response') ||
+    normalized.includes('socket hang up') ||
+    normalized.includes('failed to fetch') ||
+    normalized.includes('err_tunnel_connection_failed') ||
+    normalized.includes('err_proxy_connection_failed') ||
+    normalized.includes('err_no_supported_proxies') ||
+    normalized.includes('tunnel connection failed') ||
+    normalized.includes('proxy tunnel request to proxy server failed') ||
+    normalized.includes('target closed') ||
+    normalized.includes('无法通过真实浏览器确认公网 ip') ||
+    normalized.includes('no successful egress provider')
+  ) {
+    return { type: 'no_response', message: '目标站点无响应' };
+  }
+
+  return { type: 'unknown', message: sanitized || '真实浏览器测试失败' };
+}
+
+function parseEgressPayload(provider, payload) {
+  if (provider === 'ipapi' || provider === 'ipapi-http') {
+    if (!payload?.ip && !payload?.query) return null;
+    return {
+      ip: payload.ip || payload.query,
+      country: payload.country_name || payload.country,
+      region: payload.region || payload.region_name,
+      city: payload.city,
+      isp: payload.org || payload.asn,
+    };
+  }
+
+  if (provider === 'ipwhois') {
+    if (payload?.success === false || !payload?.ip) return null;
+    return {
+      ip: payload.ip,
+      country: payload.country,
+      region: payload.region,
+      city: payload.city,
+      isp: payload.connection?.isp || payload.connection?.org,
+    };
+  }
+
+  if (provider === 'ipsb') {
+    if (!payload?.ip) return null;
+    return {
+      ip: payload.ip,
+      country: payload.country,
+      region: payload.region,
+      city: payload.city,
+      isp: payload.isp || payload.organization,
+    };
+  }
+
+  return null;
+}
+
+async function runBrowserProbe(page, providers, transport) {
+  const errors = [];
+
+  for (const provider of providers) {
+    try {
+      const response = await page.goto(provider.url, {
+        waitUntil: 'domcontentloaded',
+        timeout: provider.timeoutMs,
+      });
+
+      if (!response) {
+        errors.push({ provider: provider.name, error: '页面导航没有返回响应对象' });
+        continue;
+      }
+
+      const status = response.status();
+      const text = await response.text();
+      if (status < 200 || status >= 300) {
+        errors.push({ provider: provider.name, error: `HTTP ${status}` });
+        continue;
+      }
+
+      let payload;
+      try {
+        payload = JSON.parse(text);
+      } catch (error) {
+        errors.push({
+          provider: provider.name,
+          error: `返回内容不是合法 JSON: ${String(error)}`,
+        });
+        continue;
+      }
+
+      const normalized = parseEgressPayload(provider.name, payload);
+      if (normalized) {
+        return {
+          transport,
+          status: 'verified',
+          provider: provider.name,
+          ...normalized,
+        };
+      }
+
+      errors.push({
+        provider: provider.name,
+        error: '响应缺少可识别的出口 IP 字段',
+      });
+    } catch (error) {
+      errors.push({
+        provider: provider.name,
+        error: String(error),
+      });
+    }
+  }
+
+  return {
+    transport,
+    status: 'unknown',
+    error: 'No successful egress provider',
+    errors,
+  };
+}
+
+async function runBrowserProbeSuite(page) {
+  const httpProbe = await runBrowserProbe(page, [
+    { name: 'ipapi-http', url: 'http://ip-api.com/json/', timeoutMs: 8000 },
+  ], 'http');
+
+  await page.goto('about:blank', { waitUntil: 'load', timeout: 10000 }).catch(() => {});
+
+  const httpsProbe = await runBrowserProbe(page, [
+    { name: 'ipapi', url: 'https://ipapi.co/json/', timeoutMs: 8000 },
+    { name: 'ipwhois', url: 'https://ipwho.is/', timeoutMs: 8000 },
+    { name: 'ipsb', url: 'https://api.ip.sb/geoip', timeoutMs: 8000 },
+  ], 'https');
+
+  return { httpProbe, httpsProbe };
+}
+
+function probeToRecord(probe) {
+  if (!probe) return undefined;
+  const combinedError = Array.isArray(probe.errors)
+    ? probe.errors.map((entry) => `${entry.provider}: ${entry.error}`).join(' | ')
+    : probe.error;
+  if (probe.status === 'verified') {
+    return {
+      transport: probe.transport,
+      status: 'verified',
+      provider: probe.provider,
+      ip: probe.ip,
+      country: probe.country,
+      region: probe.region,
+      city: probe.city,
+      isp: probe.isp,
+    };
+  }
+  const classified = classifyBrowserProxyError(combinedError || probe.error || '真实浏览器测试失败');
+  return {
+    transport: probe.transport,
+    status: classified.type,
+    provider: probe.provider,
+    error: classified.message,
+    detail: combinedError || probe.error,
+  };
+}
+
+async function verifyBrowserProxyEgress(page, expectations = {}, proxyType = 'direct') {
   const startedAt = Date.now();
-  const proxyRaw = body?.proxy;
-  const proxy = parseProxy(proxyRaw);
-  if (!proxy) throw new Error('代理格式错误');
+  await page.goto('about:blank', { waitUntil: 'load', timeout: 10000 });
+
+  let probes;
+  try {
+    probes = await runBrowserProbeSuite(page);
+  } finally {
+    await page.goto('about:blank', { waitUntil: 'load', timeout: 10000 }).catch(() => {});
+  }
+
+  const httpProbe = probeToRecord(probes?.httpProbe);
+  const httpsProbe = probeToRecord(probes?.httpsProbe);
+  if (httpsProbe?.status !== 'verified') {
+    return buildEnvironmentVerification({
+      status: httpsProbe?.status || 'unknown',
+      proxyType,
+      latencyMs: Date.now() - startedAt,
+      error: httpsProbe?.error || '无法通过真实浏览器确认公网 IP',
+      detail: httpsProbe?.detail,
+      expectedIp: expectations.expectedIp,
+      expectedCountry: expectations.expectedCountry,
+      expectedRegion: expectations.expectedRegion,
+      httpProbe,
+      httpsProbe,
+    });
+  }
+
+  const verification = buildEnvironmentVerification({
+    status: 'verified',
+    proxyType,
+    latencyMs: Date.now() - startedAt,
+    ip: httpsProbe.ip,
+    country: httpsProbe.country,
+    region: httpsProbe.region,
+    city: httpsProbe.city,
+    isp: httpsProbe.isp,
+    provider: httpsProbe.provider,
+    expectedIp: expectations.expectedIp,
+    expectedCountry: expectations.expectedCountry,
+    expectedRegion: expectations.expectedRegion,
+    httpProbe,
+    httpsProbe,
+  });
+
+  if (isExpectedGeoMismatch(verification, expectations.expectedIp, expectations.expectedCountry, expectations.expectedRegion)) {
+    return buildEnvironmentVerification({
+      ...verification,
+      status: 'vpn_leak_suspected',
+      error: '真实浏览器出口与配置的代理信息不一致',
+      detail: `Observed ${verification.ip || '-'} ${verification.country || '-'} ${verification.region || '-'}, expected ${expectations.expectedIp || '-'} ${expectations.expectedCountry || '-'} ${expectations.expectedRegion || '-'}`,
+    });
+  }
+
+  return verification;
+}
+
+async function handleBrowserProxyTest(body) {
+  const proxy = resolveRuntimeProxy(body, { allowImplicitHttp: false });
+  if (proxy?.ambiguous) {
+    return buildEnvironmentVerification({
+      status: 'unknown',
+      proxyType: normalizeProxyType(body?.proxyType),
+      latencyMs: 0,
+      error: '代理协议未明确',
+      detail: '旧代理字符串缺少 scheme，请在界面中明确选择 HTTP / HTTPS / SOCKS5',
+      expectedIp: body?.expectedIp,
+      expectedCountry: body?.expectedCountry,
+      expectedRegion: body?.expectedRegion,
+    });
+  }
+
+  const browserProxy = proxy
+    ? { server: proxy.server, username: proxy.username, password: proxy.password }
+    : undefined;
 
   const browser = await chromium.launch({
     headless: true,
-    proxy,
+    proxy: browserProxy,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -222,82 +606,14 @@ async function handleBrowserProxyTest(body) {
 
   try {
     const page = await browser.newPage();
-    await page.goto('about:blank', { waitUntil: 'load', timeout: 10000 });
-
-    const ipInfo = await page.evaluate(async () => {
-      try {
-        const res = await fetch('https://ip-api.com/json', { cache: 'no-store' });
-        return await res.json();
-      } catch (e) {
-        return { error: String(e) };
-      }
-    });
-
-    if (!ipInfo || ipInfo.error || !ipInfo.query) {
-      const detail = ipInfo?.error ? String(ipInfo.error) : '';
-      throw buildBrowserProxyError(detail || '无法通过真实浏览器确认公网 IP');
-    }
-
-    return {
-      success: true,
-      ip: ipInfo.query,
-      country: ipInfo.country,
-      region: ipInfo.regionName,
-      city: ipInfo.city,
-      isp: ipInfo.isp,
-      elapsedMs: Date.now() - startedAt,
-    };
-  } catch (err) {
-    const browserError = classifyBrowserProxyError(err);
-    return {
-      success: false,
-      error: browserError.message,
-      errorType: browserError.type,
-      elapsedMs: Date.now() - startedAt,
-    };
+    return await verifyBrowserProxyEgress(page, {
+      expectedIp: body?.expectedIp,
+      expectedCountry: body?.expectedCountry,
+      expectedRegion: body?.expectedRegion,
+    }, proxy?.proxyType || normalizeProxyType(body?.proxyType));
   } finally {
     await browser.close().catch(() => {});
   }
-}
-
-function buildBrowserProxyError(message) {
-  const err = new Error(message);
-  return err;
-}
-
-function classifyBrowserProxyError(err) {
-  const message = String(err?.message || err || '');
-  const normalized = message.toLowerCase();
-
-  if (
-    normalized.includes('timeout') ||
-    normalized.includes('timed out') ||
-    normalized.includes('err_timed_out')
-  ) {
-    return { type: 'timeout', message: '连接超时' };
-  }
-
-  if (
-    normalized.includes('407') ||
-    normalized.includes('proxy authentication required') ||
-    normalized.includes('invalid_auth_credentials') ||
-    normalized.includes('err_invalid_auth_credentials') ||
-    normalized.includes('authentication')
-  ) {
-    return { type: 'auth', message: '代理认证失败' };
-  }
-
-  if (
-    normalized.includes('empty reply') ||
-    normalized.includes('socket hang up') ||
-    normalized.includes('failed to fetch') ||
-    normalized.includes('target closed') ||
-    normalized.includes('无法通过真实浏览器确认公网 ip')
-  ) {
-    return { type: 'no_response', message: '目标站点无响应' };
-  }
-
-  return { type: 'unknown', message: message || '真实浏览器测试失败' };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -330,16 +646,30 @@ async function handleStart(body) {
   // ---------- proxy selection: profile override -> proxyPool ----------
   // selectedProxyUrl 保存 “原始代理字符串”，便于向 proxyPool.reportFailure 报告
   let selectedProxyUrl = null;
+  const wantsDirect = normalizeProxyType(profileData.proxyType) === 'direct';
   // proxyStr 为 Playwright 所需的 { server, username, password } 或 null
-  let proxyStr = proxyOverride?.server ? proxyOverride : parseProxy(profileData.proxy);
+  let proxyStr = proxyOverride?.server
+    ? { ...proxyOverride, proxyType: normalizeProxyType(proxyOverride?.proxyType || proxyOverride?.server?.split('://')[0]) }
+    : resolveRuntimeProxy(profileData, { allowImplicitHttp: false });
 
-  if (!proxyStr) {
+  if (proxyStr?.ambiguous) {
+    throw createRuntimeHttpError(400, {
+      error: '代理协议未明确，请在环境设置中显式选择 HTTP / HTTPS / SOCKS5',
+      layer: 'environment',
+      status: 'unknown',
+    });
+  }
+
+  if (!proxyStr && !wantsDirect) {
     // try get from pool (sticky)
     try {
       const poolUrl = await proxyPool.getProxy(profileId);
       if (poolUrl) {
         selectedProxyUrl = poolUrl;
-        proxyStr = parseProxy(poolUrl);
+        proxyStr = parseProxyString(poolUrl, { allowImplicitHttp: false });
+        if (proxyStr?.ambiguous) {
+          throw new Error('Proxy pool returned a proxy without explicit protocol');
+        }
       } else {
         throw new Error('No proxy available from pool and no proxy configured for profile');
       }
@@ -353,6 +683,10 @@ async function handleStart(body) {
 
   // ---------- build Playwright context options ----------
   /** @type {import('playwright').BrowserContextOptions} */
+  const runtimeProxyType = proxyStr?.proxyType || normalizeProxyType(profileData.proxyType);
+  const browserProxy = proxyStr
+    ? { server: proxyStr.server, username: proxyStr.username, password: proxyStr.password }
+    : undefined;
   const ctxOptions = {
     headless,
     userAgent: fingerprint.userAgent,
@@ -380,7 +714,7 @@ async function handleStart(body) {
     ignoreDefaultArgs: ['--enable-automation'],
   };
 
-  if (proxyStr) ctxOptions.proxy = proxyStr;
+  if (browserProxy) ctxOptions.proxy = browserProxy;
 
   // ---------- launch persistent context ----------
   const context = await chromium.launchPersistentContext(userDataDir, ctxOptions);
@@ -417,49 +751,40 @@ async function handleStart(body) {
   // ---------- new page + sessionId ----------
   const page = await context.newPage();
   const sessionId = crypto.randomUUID();
+  let verification = null;
 
   // ---------- verify public IP via browser (ensures proxy actually applied) ----------
   try {
-    await page.goto('about:blank');
+    verification = await verifyBrowserProxyEgress(page, {
+      expectedIp: profileData.expectedProxyIp,
+      expectedCountry: profileData.expectedProxyCountry,
+      expectedRegion: profileData.expectedProxyRegion,
+    }, runtimeProxyType);
 
-    // 在浏览器上下文内请求 ip-api（走代理）
-    const ipInfo = await page.evaluate(async () => {
-      try {
-        const res = await fetch('https://ip-api.com/json', { cache: 'no-store' });
-        return await res.json();
-      } catch (e) {
-        return { error: String(e) };
-      }
-    });
-
-    if (!ipInfo || ipInfo.error || !ipInfo.query) {
+    if (verification.status !== 'verified') {
       metrics.onProxyVerified(false);
       metrics.onProxyFailure();
       if (selectedProxyUrl) proxyPool.reportFailure(selectedProxyUrl);
       await context.close().catch(() => {});
-      throw new Error('代理校验失败：无法通过浏览器确认公网 IP');
+      throw createRuntimeHttpError(400, {
+        error: verification.error || '环境层代理验证未通过',
+        layer: verification.layer,
+        status: verification.status,
+        verification,
+      });
     }
 
     metrics.onProxyVerified(true);
 
-    // ipInfo 结构常包含： query, country, countryCode, regionName, city, isp
     monitor.log(sessionId, profileId, {
       event: 'proxy_verified',
-      ip: ipInfo.query,
-      country: ipInfo.country,
-      countryCode: ipInfo.countryCode || null,
-      region: ipInfo.regionName,
-      city: ipInfo.city,
-      isp: ipInfo.isp
+      ip: verification.ip,
+      country: verification.country,
+      region: verification.region,
+      city: verification.city,
+      isp: verification.isp,
+      provider: verification.provider || null,
     });
-
-    // ---------- geo 校验：国家/时区/语言是否合理 ----------
-    if (!isGeoCompatible(fingerprint, ipInfo)) {
-      metrics.onProxyFailure();
-      if (selectedProxyUrl) proxyPool.reportFailure(selectedProxyUrl);
-      await context.close().catch(() => {});
-      throw new Error('代理地理位置与 profile 不一致，已回收代理');
-    }
 
   } catch (err) {
     // 清理并向上抛
@@ -491,6 +816,7 @@ async function handleStart(body) {
     startedAt: Date.now(),
     currentUrl: 'about:blank',
     fingerprint: { ...fingerprint, userAgent: fingerprint.userAgent.slice(0, 80) },
+    verification,
   });
 
   // Persist sessionId back to db (如原逻辑)
@@ -499,6 +825,7 @@ async function handleStart(body) {
   if (p) {
     p.runtimeSessionId = sessionId;
     p.status = 'Running';
+    p.proxyVerification = verification;
     writeDb(db);
   }
 
@@ -513,7 +840,10 @@ async function handleStart(body) {
     ua: fingerprint.userAgent,
   });
 
-  return { sessionId };
+  return {
+    sessionId,
+    verification: sessions.get(sessionId)?.verification,
+  };
 }
 
 /**
@@ -635,6 +965,7 @@ function handleList() {
       startedAt:  entry.startedAt,
       currentUrl: entry.currentUrl,
       uptime:     Math.round((Date.now() - entry.startedAt) / 1000),
+      verification: entry.verification,
     });
   }
   return list;
@@ -763,14 +1094,28 @@ const server = http.createServer(async (req, res) => {
         try {
           const state = await proxyPool.getState();
           const proxiesList = (state.proxies || []).map(p => ({
-            url: p.url, health: p.health, lastUsed: p.lastUsed, failCount: p.failCount, latency: p.latency
+            url: p.url,
+            gatewayHealth: p.health,
+            health: p.health,
+            layer: 'control',
+            signal: 'gateway',
+            lastUsed: p.lastUsed,
+            failCount: p.failCount,
+            latency: p.latency,
           }));
           const sticky = {};
           for (const [k, v] of (state.sticky || [])) sticky[k] = v;
           const blacklist = {};
           for (const [u, m] of (state.blacklist || [])) blacklist[u] = m;
           
-          return send(res, 200, { ok: true, proxies: proxiesList, stickyMap: sticky, blacklist });
+          return send(res, 200, {
+            ok: true,
+            layer: 'control',
+            meaning: 'proxy gateway health only; not browser egress verification',
+            proxies: proxiesList,
+            stickyMap: sticky,
+            blacklist,
+          });
         } catch (e) {
           return send(res, 500, { error: String(e) });
         }
@@ -828,6 +1173,9 @@ const server = http.createServer(async (req, res) => {
 
   } catch (err) {
     console.error('[Runtime Error]', err.message);
+    if (err?.body) {
+      return send(res, err.httpStatus || 500, err.body);
+    }
     send(res, 500, { error: err.message || 'Internal server error' });
   }
 });

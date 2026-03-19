@@ -9,6 +9,7 @@ import {
   MonitorSmartphone, RefreshCcw, Upload, Settings as SettingsIcon, StopCircle, Command
 } from 'lucide-react'
 import * as runtime from '@/lib/runtimeClient'
+import type { ProxyCheckStatus, ProxyProtocol, ProxyVerificationRecord } from '@/lib/proxyTypes'
 
 export interface Profile {
   id: string;
@@ -17,16 +18,21 @@ export interface Profile {
   lastActive: string;
   tags: string[];
   proxy?: string;
-  proxyType?: 'http' | 'socks5';
+  proxyType?: ProxyProtocol;
   proxyHost?: string;
   proxyPort?: string;
   proxyUsername?: string;
   proxyPassword?: string;
+  proxyTypeSource?: 'explicit' | 'inferred' | 'direct';
+  expectedProxyIp?: string;
+  expectedProxyCountry?: string;
+  expectedProxyRegion?: string;
   ua?: string;
   seed?: string;
   isMobile?: boolean;
   groupId?: string;
   runtimeSessionId?: string;
+  proxyVerification?: ProxyVerificationRecord;
 }
 
 export interface Behavior {
@@ -96,11 +102,12 @@ const EmptyState = ({ icon: Icon, title, desc }: { icon: React.ElementType, titl
 
 function parseProxyToDraft(proxy?: string) {
   const emptyDraft = {
-    proxyType: 'http' as const,
+    proxyType: 'direct' as ProxyProtocol,
     proxyHost: '',
     proxyPort: '',
     proxyUsername: '',
     proxyPassword: '',
+    proxyTypeSource: 'direct' as const,
   };
 
   if (!proxy) return emptyDraft;
@@ -109,12 +116,14 @@ function parseProxyToDraft(proxy?: string) {
 
   try {
     const url = new URL(raw);
+    const protocol = url.protocol.replace(':', '');
     return {
-      proxyType: (url.protocol.replace(':', '') === 'socks5' ? 'socks5' : 'http') as 'http' | 'socks5',
+      proxyType: (protocol === 'https' || protocol === 'socks5' ? protocol : 'http') as ProxyProtocol,
       proxyHost: url.hostname,
       proxyPort: url.port,
       proxyUsername: decodeURIComponent(url.username || ''),
       proxyPassword: decodeURIComponent(url.password || ''),
+      proxyTypeSource: 'explicit' as const,
     };
   } catch {}
 
@@ -122,11 +131,12 @@ function parseProxyToDraft(proxy?: string) {
   if (match) {
     const [, protocol, host, port, username, password] = match;
     return {
-      proxyType: (protocol === 'socks5' ? 'socks5' : 'http') as 'http' | 'socks5',
+      proxyType: (protocol === 'https' || protocol === 'socks5' ? protocol : 'http') as ProxyProtocol,
       proxyHost: host,
       proxyPort: port,
       proxyUsername: username,
       proxyPassword: password,
+      proxyTypeSource: 'explicit' as const,
     };
   }
 
@@ -134,11 +144,12 @@ function parseProxyToDraft(proxy?: string) {
   if (match) {
     const [, host, port, username, password] = match;
     return {
-      ...emptyDraft,
+      proxyType: 'http' as ProxyProtocol,
       proxyHost: host,
       proxyPort: port,
       proxyUsername: username,
       proxyPassword: password,
+      proxyTypeSource: 'inferred' as const,
     };
   }
 
@@ -150,9 +161,9 @@ function buildProxyFromDraft(profile: Pick<Profile, 'proxyType' | 'proxyHost' | 
   const port = profile.proxyPort?.trim() || '';
   const username = profile.proxyUsername?.trim() || '';
   const password = profile.proxyPassword?.trim() || '';
-  const protocol = profile.proxyType === 'socks5' ? 'socks5' : 'http';
+  const protocol = profile.proxyType && profile.proxyType !== 'direct' ? profile.proxyType : 'direct';
 
-  if (!host || !port) return '';
+  if (protocol === 'direct' || !host || !port) return '';
 
   if (username || password) {
     return `${protocol}://${host}:${port}:${username}:${password}`;
@@ -162,8 +173,102 @@ function buildProxyFromDraft(profile: Pick<Profile, 'proxyType' | 'proxyHost' | 
 }
 
 function toEditableProfile(profile: Profile): Profile {
+  if (profile.proxyType && (profile.proxyHost || profile.proxyPort || profile.proxyType === 'direct')) {
+    return {
+      ...profile,
+      proxyTypeSource: profile.proxyTypeSource || (profile.proxy ? 'explicit' : 'direct'),
+      proxyHost: profile.proxyHost || '',
+      proxyPort: profile.proxyPort || '',
+      proxyUsername: profile.proxyUsername || '',
+      proxyPassword: profile.proxyPassword || '',
+    };
+  }
   return { ...profile, ...parseProxyToDraft(profile.proxy) };
 }
+
+function getCheckStatusLabel(status?: ProxyCheckStatus) {
+  switch (status) {
+    case 'reachable':
+      return '网关可达';
+    case 'verified':
+      return '真实出口已验证';
+    case 'auth_failed':
+      return '认证失败';
+    case 'timeout':
+      return '连接超时';
+    case 'no_response':
+      return '目标站点无响应';
+    case 'vpn_leak_suspected':
+      return '出口地区异常';
+    default:
+      return '未知状态';
+  }
+}
+
+function getVerificationTone(result?: ProxyVerificationRecord | null) {
+  if (!result) return 'text-slate-500';
+  if (result.status === 'verified' || result.status === 'reachable') return 'text-green-400';
+  if (result.status === 'vpn_leak_suspected') return 'text-amber-300';
+  return 'text-red-400';
+}
+
+function formatExpectedGeo(profile: Pick<Profile, 'expectedProxyCountry' | 'expectedProxyRegion'>) {
+  return [profile.expectedProxyCountry, profile.expectedProxyRegion].filter(Boolean).join(' / ');
+}
+
+function formatExpectedTarget(profile: Pick<Profile, 'expectedProxyIp' | 'expectedProxyCountry' | 'expectedProxyRegion'>) {
+  const bits = [
+    profile.expectedProxyIp?.trim(),
+    formatExpectedGeo(profile),
+  ].filter(Boolean);
+  return bits.join(' · ');
+}
+
+function getExpectationMismatchMessage(
+  result: ProxyVerificationRecord | null | undefined,
+  profile: Pick<Profile, 'expectedProxyIp' | 'expectedProxyCountry' | 'expectedProxyRegion'>
+) {
+  if (!result) return '';
+  if (result.status === 'vpn_leak_suspected') {
+    return result.error || result.detail || '浏览器出口与期望代理信息不一致';
+  }
+
+  const expectedIp = profile.expectedProxyIp?.trim();
+  if (expectedIp && result.ip && result.ip !== expectedIp) {
+    return `已连通但出口不是预期 IP：当前 ${result.ip}，期望 ${expectedIp}`;
+  }
+
+  const expectedCountry = profile.expectedProxyCountry?.trim().toLowerCase();
+  const expectedRegion = profile.expectedProxyRegion?.trim().toLowerCase();
+  const actualCountry = String(result.country || '').trim().toLowerCase();
+  const actualRegion = String(result.region || '').trim().toLowerCase();
+
+  if (expectedCountry && actualCountry && !actualCountry.includes(expectedCountry)) {
+    return `已连通但地区不符：当前 ${result.country || '-'} ${result.region || ''}，期望 ${formatExpectedGeo(profile)}`;
+  }
+  if (expectedRegion && actualRegion && !actualRegion.includes(expectedRegion)) {
+    return `已连通但地区不符：当前 ${result.country || '-'} ${result.region || ''}，期望 ${formatExpectedGeo(profile)}`;
+  }
+  return '';
+}
+
+const ProxyNodeCell = ({ profile }: { profile: Profile }) => (
+  <div className="space-y-1">
+    <div className="flex items-center space-x-1.5">
+      {profile.proxy
+        ? <><Wifi size={11} className="text-blue-400" /><span className="font-mono text-xs text-blue-400 break-all">{profile.proxy}</span></>
+        : <><WifiOff size={11} className="text-slate-500" /><span className="text-xs text-slate-500">本机直连</span></>
+      }
+    </div>
+    {profile.proxyVerification && (
+      <div className={`text-[10px] ${getVerificationTone(profile.proxyVerification)}`}>
+        环境层: {getCheckStatusLabel(profile.proxyVerification.status)}
+        {profile.proxyVerification.ip ? ` · ${profile.proxyVerification.ip}` : ''}
+        {profile.proxyVerification.country ? ` · ${profile.proxyVerification.country}${profile.proxyVerification.city ? ` ${profile.proxyVerification.city}` : ''}` : ''}
+      </div>
+    )}
+  </div>
+)
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState('浏览器环境')
@@ -176,8 +281,8 @@ export default function Home() {
   const [proxyBrowserResult, setProxyBrowserResult] = useState<any>(null)
 
   const [proxies, setProxies] = useState([
-    { id: '1', host: '45.12.33.1', port: '8080', type: 'HTTP', status: '在线', delay: '120ms', city: '洛杉矶' },
-    { id: '2', host: '103.4.1.22', port: '1080', type: 'SOCKS5', status: '在线', delay: '240ms', city: '伦敦' }
+    { id: '1', host: '45.12.33.1', port: '8080', type: 'HTTP', status: '未检测', delay: '-', city: '洛杉矶' },
+    { id: '2', host: '103.4.1.22', port: '1080', type: 'SOCKS5', status: '未检测', delay: '-', city: '伦敦' }
   ])
   const [groups, setGroups] = useState<any[]>([])
   
@@ -250,7 +355,10 @@ export default function Home() {
         fetch('/api/behaviors'),
         fetch('/api/settings')
       ]);
-      if (resP.ok) setProfiles(await resP.json())
+      if (resP.ok) {
+        const rawProfiles = await resP.json();
+        setProfiles(Array.isArray(rawProfiles) ? rawProfiles.map(toEditableProfile) : []);
+      }
       if (resG.ok) setGroups(await resG.json())
       if (resB.ok) setBehaviors(await resB.json())
       if (resS.ok) setSettings(await resS.json())
@@ -338,20 +446,12 @@ export default function Home() {
         alert('⚠️ Runtime Server 未运行！\n\n请先启动：\n  node stealth-engine/server.js\n\n或使用「日常启动面板」脚本一键启动。');
         return;
       }
-      // Pass the full profile object to the runtime server.
-      // server.js reads proxy from profile.proxy (URL string like http://user:pass@host:port)
       const res = await runtime.startSession(p, undefined, { headless: false });
-      if (res.sessionId) {
-        // Update profile in DB with sessionId
-        await fetch(`/api/profiles/${p.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...p, runtimeSessionId: res.sessionId, status: 'Running' })
-        });
-        fetchProfiles();
-      }
+      if (res.sessionId) fetchProfiles();
     } catch (err: any) {
-      const msg = err?.error || err?.message || JSON.stringify(err);
+      const msg = err?.verification?.status
+        ? `${getCheckStatusLabel(err.verification.status)}${err.verification.detail ? `\n${err.verification.detail}` : ''}`
+        : (err?.error || err?.message || JSON.stringify(err));
       alert('启动失败: ' + msg);
     }
   }
@@ -360,15 +460,9 @@ export default function Home() {
     if (!p.runtimeSessionId) return;
     try {
       await runtime.stopSession(p.runtimeSessionId);
-      await fetch(`/api/profiles/${p.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...p, runtimeSessionId: '', status: 'Ready' })
-      });
       fetchProfiles();
     } catch (err) {
       console.error('Stop failed', err);
-      // Force clear if failed? 
       await fetch(`/api/profiles/${p.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -395,9 +489,25 @@ export default function Home() {
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!editingProfile) return
-    const { proxyType, proxyHost, proxyPort, proxyUsername, proxyPassword, ...rest } = editingProfile
+    const proxyType = editingProfile.proxyType;
+    const proxyHost = editingProfile.proxyHost;
+    const proxyPort = editingProfile.proxyPort;
+    const proxyUsername = editingProfile.proxyUsername;
+    const proxyPassword = editingProfile.proxyPassword;
+    const rest = { ...editingProfile };
+    delete rest.proxyType;
+    delete rest.proxyHost;
+    delete rest.proxyPort;
+    delete rest.proxyUsername;
+    delete rest.proxyPassword;
+    delete rest.proxyTypeSource;
     const payload = {
       ...rest,
+      proxyType: proxyType || 'direct',
+      proxyHost: proxyType === 'direct' ? '' : (proxyHost || ''),
+      proxyPort: proxyType === 'direct' ? '' : (proxyPort || ''),
+      proxyUsername: proxyType === 'direct' ? '' : (proxyUsername || ''),
+      proxyPassword: proxyType === 'direct' ? '' : (proxyPassword || ''),
       proxy: buildProxyFromDraft({ proxyType, proxyHost, proxyPort, proxyUsername, proxyPassword }),
     }
     try {
@@ -418,10 +528,20 @@ export default function Home() {
     try {
       const res = await fetch('/api/proxy/check', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ proxy })
+        body: JSON.stringify({
+          proxy,
+          proxyType: editingProfile.proxyType,
+          proxyHost: editingProfile.proxyHost,
+          proxyPort: editingProfile.proxyPort,
+          proxyUsername: editingProfile.proxyUsername,
+          proxyPassword: editingProfile.proxyPassword,
+          expectedIp: editingProfile.expectedProxyIp,
+          expectedCountry: editingProfile.expectedProxyCountry,
+          expectedRegion: editingProfile.expectedProxyRegion,
+        })
       });
       setProxyResult(await res.json());
-    } catch (err) { setProxyResult({ error: '检查失败' }); }
+    } catch (err) { setProxyResult({ layer: 'control', status: 'unknown', error: '网关检测失败' }); }
     finally { setProxyChecking(false); }
   }
 
@@ -434,11 +554,21 @@ export default function Home() {
       const res = await fetch('/api/proxy/browser-check', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ proxy })
+        body: JSON.stringify({
+          proxy,
+          proxyType: editingProfile.proxyType,
+          proxyHost: editingProfile.proxyHost,
+          proxyPort: editingProfile.proxyPort,
+          proxyUsername: editingProfile.proxyUsername,
+          proxyPassword: editingProfile.proxyPassword,
+          expectedIp: editingProfile.expectedProxyIp,
+          expectedCountry: editingProfile.expectedProxyCountry,
+          expectedRegion: editingProfile.expectedProxyRegion,
+        })
       });
       setProxyBrowserResult(await res.json());
     } catch (err) {
-      setProxyBrowserResult({ error: '真实浏览器测试失败' });
+      setProxyBrowserResult({ layer: 'environment', status: 'unknown', error: '真实浏览器测试失败' });
     } finally {
       setProxyBrowserChecking(false);
     }
@@ -447,7 +577,7 @@ export default function Home() {
   const openProfileEditor = (profile: Profile) => {
     setEditingProfile(toEditableProfile(profile));
     setProxyResult(null);
-    setProxyBrowserResult(null);
+    setProxyBrowserResult(profile.proxyVerification || null);
   }
 
   // New function for testing individual proxy items in the list
@@ -466,25 +596,24 @@ export default function Home() {
       // Update proxy list with result
       setProxies(proxies.map(item => {
         if (item.id === p.id) {
-          if (data.error) {
-            return { ...item, status: '超时', delay: 'N/A' };
-          } else {
+          if (data.status === 'reachable') {
             return { 
               ...item, 
-              status: '在线', 
-              delay: `${data.delay}ms`, 
+              status: '网关可达', 
+              delay: `${data.latencyMs}ms`, 
               city: data.city || item.city 
             };
           }
+          return { ...item, status: getCheckStatusLabel(data.status), delay: `${data.latencyMs ?? 'N/A'}ms` };
         }
         return item;
       }));
       
-      if (data.error) alert(`测试失败: ${data.error}`);
-      else alert(`连接成功！延迟: ${data.delay}ms, 位置: ${data.city}`);
+      if (data.status !== 'reachable') alert(`网关检测失败: ${data.error || getCheckStatusLabel(data.status)}`);
+      else alert(`网关可达！延迟: ${data.latencyMs}ms, 位置: ${data.city}`);
       
     } catch (err) {
-      alert('代理连接超时');
+      alert('网关检测失败');
     } finally {
       setTestingProxyId(null);
     }
@@ -527,19 +656,38 @@ export default function Home() {
     setImportText('');
   };
 
-  const handleCheckAll = () => {
-    // 视觉模拟检测全队列
+  const handleCheckAll = async () => {
     const updated = proxies.map(p => ({ ...p, status: '检测中...', delay: '-' }));
     setProxies(updated);
-    
-    setTimeout(() => {
-      setProxies(updated.map(p => ({
-        ...p,
-        status: Math.random() > 0.1 ? '在线' : '严重超时',
-        delay: Math.random() > 0.1 ? `${Math.floor(Math.random() * 250 + 50)}ms` : 'N/A',
-        city: p.city === '新导入' ? (Math.random() > 0.5 ? '洛杉矶' : '纽约') : p.city
-      })));
-    }, 2500);
+
+    const next = [...updated];
+    for (const proxy of next) {
+      const proxyStr = `${proxy.type.toLowerCase()}://${proxy.host}:${proxy.port}`;
+      try {
+        const res = await fetch('/api/proxy/check', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ proxy: proxyStr })
+        });
+        const data = await res.json();
+        const index = next.findIndex(item => item.id === proxy.id);
+        if (index !== -1) {
+          next[index] = {
+            ...next[index],
+            status: data.status === 'reachable' ? '网关可达' : getCheckStatusLabel(data.status),
+            delay: `${data.latencyMs ?? 'N/A'}ms`,
+            city: data.city || next[index].city,
+          };
+          setProxies([...next]);
+        }
+      } catch {
+        const index = next.findIndex(item => item.id === proxy.id);
+        if (index !== -1) {
+          next[index] = { ...next[index], status: '网关检测失败', delay: 'N/A' };
+          setProxies([...next]);
+        }
+      }
+    }
   };
 
   const handleMockAction = (msg: string) => alert(`「${msg}」功能正在对接中，敬请期待！`)
@@ -805,12 +953,7 @@ export default function Home() {
                              <span>{p.name}</span>
                           </td>
                           <td className="py-3.5">
-                            <div className="flex items-center space-x-1.5">
-                              {p.proxy
-                                ? <><Wifi size={11} className="text-blue-400" /><span className="font-mono text-xs text-blue-400">{p.proxy}</span></>
-                                : <><WifiOff size={11} className="text-slate-500" /><span className="text-xs text-slate-500">本机直连</span></>
-                              }
-                            </div>
+                            <ProxyNodeCell profile={p} />
                           </td>
                           <td className="py-3.5 text-xs text-slate-400 font-mono">{p.seed ? p.seed.slice(0, 8) : '—'}</td>
                           <td className="py-3.5">
@@ -894,12 +1037,7 @@ export default function Home() {
                              <span className="text-purple-100">{p.name}</span>
                           </td>
                           <td className="py-3.5">
-                            <div className="flex items-center space-x-1.5">
-                              {p.proxy
-                                ? <><Wifi size={11} className="text-blue-400" /><span className="font-mono text-xs text-blue-400">{p.proxy}</span></>
-                                : <><WifiOff size={11} className="text-slate-500" /><span className="text-xs text-slate-500">本机直连</span></>
-                              }
-                            </div>
+                            <ProxyNodeCell profile={p} />
                           </td>
                           <td className="py-3.5 text-xs text-slate-400 font-mono">{p.seed ? p.seed.slice(0, 8) : '—'}</td>
                           <td className="py-3.5">
@@ -1032,12 +1170,7 @@ export default function Home() {
                                  <span className={p.isMobile ? "text-purple-100" : ""}>{p.name}</span>
                               </td>
                               <td className="py-3.5">
-                                <div className="flex items-center space-x-1.5">
-                                  {p.proxy
-                                    ? <><Wifi size={11} className="text-blue-400" /><span className="font-mono text-xs text-blue-400">{p.proxy}</span></>
-                                    : <><WifiOff size={11} className="text-slate-500" /><span className="text-xs text-slate-500">本机直连</span></>
-                                  }
-                                </div>
+                                <ProxyNodeCell profile={p} />
                               </td>
                               <td className="py-3.5 text-xs text-slate-400 font-mono">{p.seed ? p.seed.slice(0, 8) : '—'}</td>
                               <td className="py-3.5">
@@ -1132,7 +1265,7 @@ export default function Home() {
                     <Upload size={12} /><span>批量导入</span>
                   </button>
                   <button onClick={handleCheckAll} className="flex items-center space-x-1.5 px-3.5 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs font-bold border border-slate-700 transition-colors">
-                    <RefreshCcw size={12} /><span>全部检测</span>
+                    <RefreshCcw size={12} /><span>全部网关检测</span>
                   </button>
                 </div>
               </div>
@@ -1164,11 +1297,13 @@ export default function Home() {
                         </td>
                         <td className="py-3.5">
                           <span className={`inline-flex items-center space-x-1 px-2 py-0.5 rounded-md text-[10px] font-bold ${
-                            p.status === '在线' 
+                            p.status === '网关可达' 
                               ? 'bg-green-500/10 text-green-400' 
-                              : 'bg-red-500/10 text-red-400'
+                              : p.status === '未检测'
+                                ? 'bg-slate-700/50 text-slate-400'
+                                : 'bg-red-500/10 text-red-400'
                           }`}>
-                            {p.status === '在线' && <div className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />}
+                            {p.status === '网关可达' && <div className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />}
                             <span>{p.status}</span>
                           </span>
                         </td>
@@ -1181,7 +1316,7 @@ export default function Home() {
                             }`}
                           >
                             {testingProxyId === p.id ? <Loader2 size={12} className="animate-spin" /> : null}
-                            <span>{testingProxyId === p.id ? '测试中' : '测试'}</span>
+                            <span>{testingProxyId === p.id ? '检测中' : '网关检测'}</span>
                           </button>
                           <button 
                             onClick={() => setProxies(proxies.filter(item => item.id !== p.id))}
@@ -1398,11 +1533,13 @@ export default function Home() {
                 <label className="block text-xs font-bold text-slate-400 mb-1.5">代理服务器</label>
                 <div className="grid grid-cols-2 gap-3">
                   <select
-                    value={editingProfile.proxyType || 'http'}
-                    onChange={e => { setEditingProfile({ ...editingProfile, proxyType: e.target.value as 'http' | 'socks5' }); setProxyResult(null); setProxyBrowserResult(null); }}
+                    value={editingProfile.proxyType || 'direct'}
+                    onChange={e => { setEditingProfile({ ...editingProfile, proxyType: e.target.value as ProxyProtocol }); setProxyResult(null); setProxyBrowserResult(null); }}
                     className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors text-slate-200"
                   >
+                    <option value="direct">直连（不设置代理）</option>
                     <option value="http">HTTP</option>
+                    <option value="https">HTTPS</option>
                     <option value="socks5">SOCKS5</option>
                   </select>
                   <input
@@ -1410,6 +1547,7 @@ export default function Home() {
                     value={editingProfile.proxyHost || ''}
                     placeholder="代理主机，例如 38.69.171.250"
                     onChange={e => { setEditingProfile({ ...editingProfile, proxyHost: e.target.value }); setProxyResult(null); setProxyBrowserResult(null); }}
+                    disabled={editingProfile.proxyType === 'direct'}
                     className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors"
                   />
                   <input
@@ -1417,6 +1555,7 @@ export default function Home() {
                     value={editingProfile.proxyPort || ''}
                     placeholder="代理端口，例如 44001"
                     onChange={e => { setEditingProfile({ ...editingProfile, proxyPort: e.target.value }); setProxyResult(null); setProxyBrowserResult(null); }}
+                    disabled={editingProfile.proxyType === 'direct'}
                     className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors"
                   />
                   <input
@@ -1424,6 +1563,7 @@ export default function Home() {
                     value={editingProfile.proxyUsername || ''}
                     placeholder="账号"
                     onChange={e => { setEditingProfile({ ...editingProfile, proxyUsername: e.target.value }); setProxyResult(null); setProxyBrowserResult(null); }}
+                    disabled={editingProfile.proxyType === 'direct'}
                     className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors"
                   />
                   <input
@@ -1431,9 +1571,36 @@ export default function Home() {
                     value={editingProfile.proxyPassword || ''}
                     placeholder="密码"
                     onChange={e => { setEditingProfile({ ...editingProfile, proxyPassword: e.target.value }); setProxyResult(null); setProxyBrowserResult(null); }}
+                    disabled={editingProfile.proxyType === 'direct'}
                     className="col-span-2 w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors"
                   />
+                  <input
+                    type="text"
+                    value={editingProfile.expectedProxyIp || ''}
+                    placeholder="代理期望出口 IP，例如 104.241.144.46"
+                    onChange={e => { setEditingProfile({ ...editingProfile, expectedProxyIp: e.target.value }); setProxyResult(null); setProxyBrowserResult(null); }}
+                    className="col-span-2 w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors"
+                  />
+                  <input
+                    type="text"
+                    value={editingProfile.expectedProxyCountry || ''}
+                    placeholder="代理期望国家，例如 Canada"
+                    onChange={e => { setEditingProfile({ ...editingProfile, expectedProxyCountry: e.target.value }); setProxyBrowserResult(null); }}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors"
+                  />
+                  <input
+                    type="text"
+                    value={editingProfile.expectedProxyRegion || ''}
+                    placeholder="代理期望地区，例如 Toronto"
+                    onChange={e => { setEditingProfile({ ...editingProfile, expectedProxyRegion: e.target.value }); setProxyBrowserResult(null); }}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors"
+                  />
                 </div>
+                <p className="mt-2 text-[11px] text-slate-500 leading-relaxed">
+                  控制层流量可以继续走宿主机当前网络/VPN；环境层流量必须通过当前环境代理出网。
+                  {editingProfile.proxyTypeSource === 'inferred' ? ' 当前代理协议来自旧数据推断，默认按 HTTP 处理，可手动切换为 HTTPS / SOCKS5。' : ''}
+                  {formatExpectedTarget(editingProfile) ? ` 当前严格期望出口: ${formatExpectedTarget(editingProfile)}` : ' 如需严格拦截 VPN 串流，请填写期望 IP 和国家/地区。'}
+                </p>
                 <div className="mt-2 flex items-center gap-2">
                   <div className="flex-1 bg-slate-950/80 border border-slate-800 rounded-lg px-3 py-2 text-[11px] font-mono text-slate-400 break-all">
                     {buildProxyFromDraft(editingProfile) || '填写代理主机和端口后，将在这里生成代理串'}
@@ -1445,7 +1612,7 @@ export default function Home() {
                     className="flex items-center space-x-1.5 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-xs font-bold hover:bg-slate-700 disabled:opacity-50 transition-colors"
                   >
                     {proxyChecking ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />}
-                    <span>{proxyChecking ? '检测中' : '校验'}</span>
+                    <span>{proxyChecking ? '检测中' : '网关检测'}</span>
                   </button>
                   <button
                     type="button"
@@ -1454,42 +1621,57 @@ export default function Home() {
                     className="flex items-center space-x-1.5 px-3 py-2 bg-blue-600/80 border border-blue-500/30 rounded-lg text-xs font-bold hover:bg-blue-600 disabled:opacity-50 transition-colors"
                   >
                     {proxyBrowserChecking ? <Loader2 size={12} className="animate-spin" /> : <Globe size={12} />}
-                    <span>{proxyBrowserChecking ? '真测中' : '真测'}</span>
+                    <span>{proxyBrowserChecking ? '检测中' : '真实浏览器检测'}</span>
                   </button>
                 </div>
                 {proxyResult && (
-                  <div className={`mt-2 text-[11px] p-3 rounded-lg ${proxyResult.error ? 'bg-red-500/10 border border-red-500/20 text-red-400' : 'bg-green-500/10 border border-green-500/20 text-green-400'}`}>
-                    {proxyResult.error ? (
-                      <div className="flex items-center space-x-2"><AlertCircle size={12} /><span>{proxyResult.error}</span></div>
-                    ) : (
-                      <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-                        <span className="flex items-center space-x-1"><MapPin size={10} /><span>归属地: {proxyResult.country} {proxyResult.city}</span></span>
-                        <span className="flex items-center space-x-1"><Database size={10} /><span>IP: {proxyResult.ip}</span></span>
-                        <span className="flex items-center space-x-1"><Zap size={10} /><span>延迟: {proxyResult.delay}ms</span></span>
-                        <span className="flex items-center space-x-1"><Building size={10} /><span>{proxyResult.isp}</span></span>
+                  <div className={`mt-2 text-[11px] p-3 rounded-lg ${proxyResult.status === 'reachable' ? 'bg-green-500/10 border border-green-500/20 text-green-400' : 'bg-red-500/10 border border-red-500/20 text-red-400'}`}>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center space-x-2">
+                        {proxyResult.status === 'reachable' ? <CheckCircle size={12} /> : <AlertCircle size={12} />}
+                        <span>控制层 / 网关检测: {getCheckStatusLabel(proxyResult.status)}</span>
+                      </div>
+                      <span className="text-[10px] opacity-80">耗时: {proxyResult.latencyMs ?? '-'}ms</span>
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1">
+                      <span className="flex items-center space-x-1"><ShieldCheck size={10} /><span>协议: {String(proxyResult.proxyType || editingProfile.proxyType || 'direct').toUpperCase()}</span></span>
+                      <span className="flex items-center space-x-1"><Network size={10} /><span>网关状态: {proxyResult.gatewayReachable ? '已触达' : '未触达'}</span></span>
+                      <span className="flex items-center space-x-1"><Database size={10} /><span>IP: {proxyResult.ip || '-'}</span></span>
+                      <span className="flex items-center space-x-1"><MapPin size={10} /><span>归属地: {proxyResult.country || '-'} {proxyResult.city || ''}</span></span>
+                      <span className="flex items-center space-x-1"><Building size={10} /><span>{proxyResult.isp || proxyResult.error || '-'}</span></span>
+                    </div>
+                    {getExpectationMismatchMessage(proxyResult, editingProfile) && (
+                      <div className="mt-2 text-amber-300">
+                        {getExpectationMismatchMessage(proxyResult, editingProfile)}
                       </div>
                     )}
                   </div>
                 )}
                 {proxyBrowserResult && (
-                  <div className={`mt-2 text-[11px] p-3 rounded-lg ${proxyBrowserResult.error ? 'bg-red-500/10 border border-red-500/20 text-red-400' : 'bg-blue-500/10 border border-blue-500/20 text-blue-300'}`}>
-                    {proxyBrowserResult.error ? (
-                      <div className="space-y-1.5">
-                        <div className="flex items-center space-x-2"><AlertCircle size={12} /><span>真实浏览器测试: {proxyBrowserResult.error}</span></div>
-                        <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-red-300/90">
-                          <span>失败类型: {proxyBrowserResult.errorType === 'timeout' ? '超时' : proxyBrowserResult.errorType === 'auth' ? '认证失败' : proxyBrowserResult.errorType === 'no_response' ? '目标站点无响应' : '未知错误'}</span>
-                          <span>耗时: {proxyBrowserResult.elapsedMs ?? '-'}ms</span>
-                        </div>
+                  <div className={`mt-2 text-[11px] p-3 rounded-lg ${proxyBrowserResult.status === 'verified' ? 'bg-blue-500/10 border border-blue-500/20 text-blue-300' : proxyBrowserResult.status === 'vpn_leak_suspected' ? 'bg-amber-500/10 border border-amber-500/20 text-amber-300' : 'bg-red-500/10 border border-red-500/20 text-red-400'}`}>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center space-x-2">
+                        {proxyBrowserResult.status === 'verified' ? <CheckCircle size={12} /> : <AlertCircle size={12} />}
+                        <span>环境层 / 真实浏览器检测: {getCheckStatusLabel(proxyBrowserResult.status)}</span>
                       </div>
-                    ) : (
-                      <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-                        <span className="flex items-center space-x-1"><Globe size={10} /><span>真实浏览器测试已通过</span></span>
-                        <span className="flex items-center space-x-1"><Database size={10} /><span>IP: {proxyBrowserResult.ip}</span></span>
-                        <span className="flex items-center space-x-1"><MapPin size={10} /><span>归属地: {proxyBrowserResult.country} {proxyBrowserResult.city}</span></span>
-                        <span className="flex items-center space-x-1"><Building size={10} /><span>{proxyBrowserResult.isp}</span></span>
-                        <span className="flex items-center space-x-1"><Zap size={10} /><span>耗时: {proxyBrowserResult.elapsedMs ?? '-'}ms</span></span>
-                      </div>
-                    )}
+                      <span className="text-[10px] opacity-80">耗时: {proxyBrowserResult.latencyMs ?? '-'}ms</span>
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1">
+                      <span className="flex items-center space-x-1"><ShieldCheck size={10} /><span>协议: {String(proxyBrowserResult.proxyType || editingProfile.proxyType || 'direct').toUpperCase()}</span></span>
+                      <span className="flex items-center space-x-1"><Database size={10} /><span>IP: {proxyBrowserResult.ip || '-'}</span></span>
+                      <span className="flex items-center space-x-1"><MapPin size={10} /><span>归属地: {proxyBrowserResult.country || '-'} {proxyBrowserResult.city || ''}</span></span>
+                      <span className="flex items-center space-x-1"><Building size={10} /><span>{proxyBrowserResult.isp || '-'}</span></span>
+                      <span className="flex items-center space-x-1"><Globe size={10} /><span>来源: {proxyBrowserResult.provider || '-'}</span></span>
+                      {(proxyBrowserResult.httpProbe || proxyBrowserResult.httpsProbe) && (
+                        <span className="col-span-2">
+                          HTTP 探测: {getCheckStatusLabel(proxyBrowserResult.httpProbe?.status)} · HTTPS 探测: {getCheckStatusLabel(proxyBrowserResult.httpsProbe?.status)}
+                        </span>
+                      )}
+                      <span className="col-span-2">{proxyBrowserResult.error || proxyBrowserResult.detail || '真实浏览器已确认当前环境出口与代理配置一致。'}</span>
+                      {(proxyBrowserResult.expectedIp || proxyBrowserResult.expectedCountry || proxyBrowserResult.expectedRegion) && (
+                        <span className="col-span-2">期望出口: {[proxyBrowserResult.expectedIp, proxyBrowserResult.expectedCountry, proxyBrowserResult.expectedRegion].filter(Boolean).join(' / ')}</span>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>

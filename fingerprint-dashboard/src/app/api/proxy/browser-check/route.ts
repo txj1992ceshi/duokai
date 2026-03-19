@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
+import type { ProxyVerificationRecord } from '@/lib/proxyTypes';
 
 export const runtime = 'nodejs';
 
@@ -20,7 +21,7 @@ export async function POST(req: Request) {
         'x-runtime-key': apiKey,
       },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(45000),
     });
 
     let json: unknown = {};
@@ -31,6 +32,18 @@ export async function POST(req: Request) {
     return NextResponse.json(json, { status: r.status });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : '无法连接到 Runtime Server';
-    return NextResponse.json({ error: message }, { status: 503 });
+    const proxyType = typeof payload?.proxyType === 'string' ? payload.proxyType : undefined;
+    const result: ProxyVerificationRecord = {
+      layer: 'environment',
+      status: 'unknown',
+      proxyType,
+      error: message,
+      errorType: 'unknown',
+      expectedIp: payload?.expectedIp,
+      expectedCountry: payload?.expectedCountry,
+      expectedRegion: payload?.expectedRegion,
+      checkedAt: new Date().toISOString(),
+    };
+    return NextResponse.json(result, { status: 503 });
   }
 }

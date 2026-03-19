@@ -47,22 +47,21 @@ export async function POST(
         'x-runtime-key': apiKey,
       },
       body: JSON.stringify(payload),
-      // Timeout: start may take a few seconds to launch browser
-      signal: AbortSignal.timeout(action === 'start' ? 30000 : 10000),
+      signal: AbortSignal.timeout(action === 'start' ? 60000 : 10000),
     });
 
-    let json: any = {};
+    let json: unknown = {};
     try { json = await r.json(); } catch { /* non-JSON response */ }
 
     // On successful start/stop, always return the runtime's response directly
     // so the frontend can pick up sessionId
     return NextResponse.json(json, { status: r.status });
 
-  } catch (err: any) {
-    const isTimeout = err?.name === 'TimeoutError';
+  } catch (err: unknown) {
+    const isTimeout = err instanceof Error && err.name === 'TimeoutError';
     const message   = isTimeout
       ? 'Runtime server 响应超时 — 请确认 stealth-engine/server.js 已启动'
-      : (err?.message || '无法连接到 Runtime Server');
+      : (err instanceof Error ? err.message : '无法连接到 Runtime Server');
 
     console.error(`[API /runtime/${action}]`, message);
     return NextResponse.json({ error: message }, { status: 503 });
