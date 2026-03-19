@@ -3,7 +3,8 @@ import { HttpsProxyAgent } from 'https-proxy-agent';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 import http from 'http';
 import https from 'https';
-import type { ProxyProtocol, ProxyVerificationRecord } from '@/lib/proxyTypes';
+import os from 'os';
+import type { HostEnvironment, HostNetworkMode, ProxyEntryTransport, ProxyProtocol, ProxyVerificationRecord } from '@/lib/proxyTypes';
 
 type ProxyCheckPayload = {
   proxy?: string;
@@ -36,6 +37,30 @@ type ProxyLocationResponse = {
 type ControlCheckResult = ProxyVerificationRecord & {
   layer: 'control';
 };
+
+function detectHostEnvironment(): HostEnvironment {
+  switch (os.platform()) {
+    case 'darwin':
+      return 'macos';
+    case 'win32':
+      return 'windows';
+    case 'linux':
+      return 'linux';
+    default:
+      return 'unknown';
+  }
+}
+
+function inferNetworkMode(hostEnvironment: HostEnvironment): HostNetworkMode {
+  return hostEnvironment === 'windows' ? 'unknown' : 'system_proxy_only';
+}
+
+function toEntryTransport(proxyType: ProxyProtocol): ProxyEntryTransport {
+  if (proxyType === 'https') return 'https-entry';
+  if (proxyType === 'socks5') return 'socks5-entry';
+  if (proxyType === 'direct') return 'direct';
+  return 'http-entry';
+}
 
 function normalizeProxy(raw: string) {
   const proxy = raw.trim();
@@ -137,10 +162,15 @@ function buildControlResult(result: ControlCheckResult) {
 }
 
 function buildSuccess(json: ProxyLocationResponse, duration: number, proxyType: ProxyProtocol): ControlCheckResult {
+  const hostEnvironment = detectHostEnvironment();
   return {
     layer: 'control',
     status: 'reachable',
     proxyType,
+    candidateTransport: toEntryTransport(proxyType),
+    effectiveProxyTransport: toEntryTransport(proxyType),
+    hostEnvironment,
+    networkMode: inferNetworkMode(hostEnvironment),
     ip: json.query || json.ip,
     country: json.country || json.country_name,
     region: json.regionName || json.region,
@@ -158,10 +188,15 @@ function buildFailure(
   duration: number,
   extra: Partial<ControlCheckResult> = {}
 ): ControlCheckResult {
+  const hostEnvironment = detectHostEnvironment();
   return {
     layer: 'control',
     status,
     proxyType: extra.proxyType,
+    candidateTransport: extra.candidateTransport || toEntryTransport(extra.proxyType || 'http'),
+    effectiveProxyTransport: extra.effectiveProxyTransport,
+    hostEnvironment: extra.hostEnvironment || hostEnvironment,
+    networkMode: extra.networkMode || inferNetworkMode(hostEnvironment),
     error,
     errorType: status,
     latencyMs: duration,

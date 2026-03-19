@@ -26,6 +26,9 @@ export async function POST(req: Request) {
       proxyUsername: body.proxyUsername || undefined,
       proxyPassword: body.proxyPassword || undefined,
       expectedProxyIp: body.expectedProxyIp || undefined,
+      preferredProxyTransport: body.preferredProxyTransport || undefined,
+      lastResolvedProxyTransport: body.lastResolvedProxyTransport || undefined,
+      lastHostEnvironment: body.lastHostEnvironment || undefined,
       ua: body.ua || '',
       seed: body.seed || crypto.randomUUID().substring(0, 8),
       isMobile: body.isMobile || false,
@@ -33,6 +36,9 @@ export async function POST(req: Request) {
       expectedProxyCountry: body.expectedProxyCountry || undefined,
       expectedProxyRegion: body.expectedProxyRegion || undefined,
       proxyVerification: body.proxyVerification || undefined,
+      startupPlatform: body.startupPlatform || undefined,
+      startupUrl: body.startupUrl || undefined,
+      startupNavigation: body.startupNavigation || undefined,
     };
 
     db.profiles.push(newProfile);

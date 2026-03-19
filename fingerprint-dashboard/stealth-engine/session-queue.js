@@ -8,12 +8,18 @@
 const fs = require('fs');
 const path = require('path');
 
+function isNonFatalStreamError(err) {
+  const message = String(err?.message || err || '');
+  return err?.code === 'EIO'
+    || err?.code === 'EPIPE'
+    || message.includes('write EIO')
+    || message.includes('write EPIPE');
+}
+
 function appendJsonLine(file, obj) {
   try {
     fs.appendFileSync(file, JSON.stringify(obj) + '\n');
-  } catch (e) {
-    console.error('audit append fail', e);
-  }
+  } catch (_) {}
 }
 
 module.exports = function createQueue(opts = {}) {
@@ -110,7 +116,7 @@ module.exports = function createQueue(opts = {}) {
   // Graceful exit handlers
   async function gracefulExit() {
     audit('process_exit_begin', { pid: process.pid });
-    try { await saveAllStates(); } catch (e) { console.error('saveAll failed', e); }
+    try { await saveAllStates(); } catch (_) {}
     audit('process_exit_end', { pid: process.pid });
     setTimeout(() => process.exit(0), 500);
   }
@@ -119,6 +125,9 @@ module.exports = function createQueue(opts = {}) {
   process.on('SIGTERM', gracefulExit);
   process.on('uncaughtException', async (err) => {
     audit('uncaughtException', { err: String(err) });
+    if (isNonFatalStreamError(err)) {
+      return;
+    }
     try { await saveAllStates(); } catch (_) {}
     process.exit(1);
   });
