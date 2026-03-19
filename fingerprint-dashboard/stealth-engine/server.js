@@ -303,6 +303,42 @@ function normalizeGeoValue(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+const COUNTRY_ALIASES = new Map([
+  ['canada', ['canada', '加拿大', 'ca']],
+  ['china', ['china', '中国', 'cn', 'mainland china', '中国大陆']],
+  ['hong kong', ['hong kong', '香港', 'hk']],
+  ['united states', ['united states', 'usa', 'us', '美国', '美利坚', '美國']],
+  ['united kingdom', ['united kingdom', 'uk', 'britain', 'england', '英国', '英國']],
+  ['japan', ['japan', '日本', 'jp']],
+  ['singapore', ['singapore', '新加坡', 'sg']],
+  ['taiwan', ['taiwan', '台湾', '台灣', 'tw']],
+  ['south korea', ['south korea', 'korea', '韩国', '韓國', 'kr']],
+  ['australia', ['australia', '澳大利亚', '澳洲', 'au']],
+  ['germany', ['germany', '德国', '德國', 'de']],
+  ['france', ['france', '法国', '法國', 'fr']],
+]);
+
+function expandCountryAliases(value) {
+  const normalized = normalizeGeoValue(value);
+  if (!normalized) return [];
+
+  for (const aliases of COUNTRY_ALIASES.values()) {
+    if (aliases.includes(normalized)) {
+      return aliases;
+    }
+  }
+
+  return [normalized];
+}
+
+function countryMatches(expectedCountry, actualCountry) {
+  const expectedAliases = expandCountryAliases(expectedCountry);
+  const actualAliases = expandCountryAliases(actualCountry);
+  if (!expectedAliases.length) return true;
+  if (!actualAliases.length) return false;
+  return expectedAliases.some((alias) => actualAliases.includes(alias));
+}
+
 function isExpectedGeoMismatch(verification, expectedIp, expectedCountry, expectedRegion) {
   const ipExpectation = String(expectedIp || '').trim();
   const countryExpectation = normalizeGeoValue(expectedCountry);
@@ -316,7 +352,7 @@ function isExpectedGeoMismatch(verification, expectedIp, expectedCountry, expect
     return true;
   }
 
-  if (countryExpectation && !actualCountry.includes(countryExpectation)) {
+  if (countryExpectation && !countryMatches(expectedCountry, verification.country)) {
     return true;
   }
 

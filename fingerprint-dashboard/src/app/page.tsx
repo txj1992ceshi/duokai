@@ -172,10 +172,30 @@ function buildProxyFromDraft(profile: Pick<Profile, 'proxyType' | 'proxyHost' | 
   return `${protocol}://${host}:${port}`;
 }
 
+function deriveExpectedGeoFromVerification(verification?: ProxyVerificationRecord | null) {
+  if (!verification) {
+    return {
+      expectedProxyCountry: '',
+      expectedProxyRegion: '',
+    };
+  }
+
+  return {
+    expectedProxyCountry: verification.country || '',
+    expectedProxyRegion: verification.city || verification.region || '',
+  };
+}
+
 function toEditableProfile(profile: Profile): Profile {
+  const derivedExpectedGeo =
+    profile.expectedProxyCountry || profile.expectedProxyRegion
+      ? {}
+      : deriveExpectedGeoFromVerification(profile.proxyVerification);
+
   if (profile.proxyType && (profile.proxyHost || profile.proxyPort || profile.proxyType === 'direct')) {
     return {
       ...profile,
+      ...derivedExpectedGeo,
       proxyTypeSource: profile.proxyTypeSource || (profile.proxy ? 'explicit' : 'direct'),
       proxyHost: profile.proxyHost || '',
       proxyPort: profile.proxyPort || '',
@@ -183,7 +203,7 @@ function toEditableProfile(profile: Profile): Profile {
       proxyPassword: profile.proxyPassword || '',
     };
   }
-  return { ...profile, ...parseProxyToDraft(profile.proxy) };
+  return { ...profile, ...derivedExpectedGeo, ...parseProxyToDraft(profile.proxy) };
 }
 
 function getCheckStatusLabel(status?: ProxyCheckStatus) {
@@ -224,6 +244,46 @@ function formatExpectedTarget(profile: Pick<Profile, 'expectedProxyIp' | 'expect
   return bits.join(' · ');
 }
 
+const COUNTRY_ALIASES = new Map<string, string[]>([
+  ['canada', ['canada', '加拿大', 'ca']],
+  ['china', ['china', '中国', 'cn', 'mainland china', '中国大陆']],
+  ['hong kong', ['hong kong', '香港', 'hk']],
+  ['united states', ['united states', 'usa', 'us', '美国', '美利坚', '美國']],
+  ['united kingdom', ['united kingdom', 'uk', 'britain', 'england', '英国', '英國']],
+  ['japan', ['japan', '日本', 'jp']],
+  ['singapore', ['singapore', '新加坡', 'sg']],
+  ['taiwan', ['taiwan', '台湾', '台灣', 'tw']],
+  ['south korea', ['south korea', 'korea', '韩国', '韓國', 'kr']],
+  ['australia', ['australia', '澳大利亚', '澳洲', 'au']],
+  ['germany', ['germany', '德国', '德國', 'de']],
+  ['france', ['france', '法国', '法國', 'fr']],
+]);
+
+function normalizeGeoValue(value?: string) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function expandCountryAliases(value?: string) {
+  const normalized = normalizeGeoValue(value);
+  if (!normalized) return [];
+
+  for (const aliases of COUNTRY_ALIASES.values()) {
+    if (aliases.includes(normalized)) {
+      return aliases;
+    }
+  }
+
+  return [normalized];
+}
+
+function countryMatches(expectedCountry?: string, actualCountry?: string) {
+  const expectedAliases = expandCountryAliases(expectedCountry);
+  const actualAliases = expandCountryAliases(actualCountry);
+  if (!expectedAliases.length) return true;
+  if (!actualAliases.length) return false;
+  return expectedAliases.some((alias) => actualAliases.includes(alias));
+}
+
 function getExpectationMismatchMessage(
   result: ProxyVerificationRecord | null | undefined,
   profile: Pick<Profile, 'expectedProxyIp' | 'expectedProxyCountry' | 'expectedProxyRegion'>
@@ -242,11 +302,12 @@ function getExpectationMismatchMessage(
   const expectedRegion = profile.expectedProxyRegion?.trim().toLowerCase();
   const actualCountry = String(result.country || '').trim().toLowerCase();
   const actualRegion = String(result.region || '').trim().toLowerCase();
+  const actualCity = String(result.city || '').trim().toLowerCase();
 
-  if (expectedCountry && actualCountry && !actualCountry.includes(expectedCountry)) {
+  if (expectedCountry && actualCountry && !countryMatches(profile.expectedProxyCountry, result.country)) {
     return `已连通但地区不符：当前 ${result.country || '-'} ${result.region || ''}，期望 ${formatExpectedGeo(profile)}`;
   }
-  if (expectedRegion && actualRegion && !actualRegion.includes(expectedRegion)) {
+  if (expectedRegion && actualRegion && !actualRegion.includes(expectedRegion) && !actualCity.includes(expectedRegion)) {
     return `已连通但地区不符：当前 ${result.country || '-'} ${result.region || ''}，期望 ${formatExpectedGeo(profile)}`;
   }
   return '';
@@ -566,12 +627,33 @@ export default function Home() {
           expectedRegion: editingProfile.expectedProxyRegion,
         })
       });
-      setProxyBrowserResult(await res.json());
+      const result = await res.json();
+      setProxyBrowserResult(result);
+      if (result?.country || result?.region || result?.city) {
+        setEditingProfile((current) => (
+          current
+            ? {
+                ...current,
+                ...deriveExpectedGeoFromVerification(result),
+              }
+            : current
+        ));
+      }
     } catch (err) {
       setProxyBrowserResult({ layer: 'environment', status: 'unknown', error: '真实浏览器测试失败' });
     } finally {
       setProxyBrowserChecking(false);
     }
+  }
+
+  const handleAdoptCurrentProxyResult = () => {
+    if (!editingProfile || !proxyBrowserResult?.ip) return;
+    setEditingProfile({
+      ...editingProfile,
+      expectedProxyIp: proxyBrowserResult.ip || '',
+      expectedProxyCountry: proxyBrowserResult.country || '',
+      expectedProxyRegion: proxyBrowserResult.city || proxyBrowserResult.region || '',
+    });
   }
 
   const openProfileEditor = (profile: Profile) => {
@@ -1534,7 +1616,16 @@ export default function Home() {
                 <div className="grid grid-cols-2 gap-3">
                   <select
                     value={editingProfile.proxyType || 'direct'}
-                    onChange={e => { setEditingProfile({ ...editingProfile, proxyType: e.target.value as ProxyProtocol }); setProxyResult(null); setProxyBrowserResult(null); }}
+                    onChange={e => {
+                      setEditingProfile({
+                        ...editingProfile,
+                        proxyType: e.target.value as ProxyProtocol,
+                        expectedProxyCountry: '',
+                        expectedProxyRegion: '',
+                      });
+                      setProxyResult(null);
+                      setProxyBrowserResult(null);
+                    }}
                     className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors text-slate-200"
                   >
                     <option value="direct">直连（不设置代理）</option>
@@ -1546,7 +1637,16 @@ export default function Home() {
                     type="text"
                     value={editingProfile.proxyHost || ''}
                     placeholder="代理主机，例如 38.69.171.250"
-                    onChange={e => { setEditingProfile({ ...editingProfile, proxyHost: e.target.value }); setProxyResult(null); setProxyBrowserResult(null); }}
+                    onChange={e => {
+                      setEditingProfile({
+                        ...editingProfile,
+                        proxyHost: e.target.value,
+                        expectedProxyCountry: '',
+                        expectedProxyRegion: '',
+                      });
+                      setProxyResult(null);
+                      setProxyBrowserResult(null);
+                    }}
                     disabled={editingProfile.proxyType === 'direct'}
                     className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors"
                   />
@@ -1554,7 +1654,16 @@ export default function Home() {
                     type="text"
                     value={editingProfile.proxyPort || ''}
                     placeholder="代理端口，例如 44001"
-                    onChange={e => { setEditingProfile({ ...editingProfile, proxyPort: e.target.value }); setProxyResult(null); setProxyBrowserResult(null); }}
+                    onChange={e => {
+                      setEditingProfile({
+                        ...editingProfile,
+                        proxyPort: e.target.value,
+                        expectedProxyCountry: '',
+                        expectedProxyRegion: '',
+                      });
+                      setProxyResult(null);
+                      setProxyBrowserResult(null);
+                    }}
                     disabled={editingProfile.proxyType === 'direct'}
                     className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors"
                   />
@@ -1562,7 +1671,16 @@ export default function Home() {
                     type="text"
                     value={editingProfile.proxyUsername || ''}
                     placeholder="账号"
-                    onChange={e => { setEditingProfile({ ...editingProfile, proxyUsername: e.target.value }); setProxyResult(null); setProxyBrowserResult(null); }}
+                    onChange={e => {
+                      setEditingProfile({
+                        ...editingProfile,
+                        proxyUsername: e.target.value,
+                        expectedProxyCountry: '',
+                        expectedProxyRegion: '',
+                      });
+                      setProxyResult(null);
+                      setProxyBrowserResult(null);
+                    }}
                     disabled={editingProfile.proxyType === 'direct'}
                     className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors"
                   />
@@ -1570,7 +1688,16 @@ export default function Home() {
                     type="text"
                     value={editingProfile.proxyPassword || ''}
                     placeholder="密码"
-                    onChange={e => { setEditingProfile({ ...editingProfile, proxyPassword: e.target.value }); setProxyResult(null); setProxyBrowserResult(null); }}
+                    onChange={e => {
+                      setEditingProfile({
+                        ...editingProfile,
+                        proxyPassword: e.target.value,
+                        expectedProxyCountry: '',
+                        expectedProxyRegion: '',
+                      });
+                      setProxyResult(null);
+                      setProxyBrowserResult(null);
+                    }}
                     disabled={editingProfile.proxyType === 'direct'}
                     className="col-span-2 w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors"
                   />
@@ -1584,22 +1711,22 @@ export default function Home() {
                   <input
                     type="text"
                     value={editingProfile.expectedProxyCountry || ''}
-                    placeholder="代理期望国家，例如 Canada"
-                    onChange={e => { setEditingProfile({ ...editingProfile, expectedProxyCountry: e.target.value }); setProxyBrowserResult(null); }}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors"
+                    placeholder="由真实浏览器检测自动生成"
+                    readOnly
+                    className="w-full bg-slate-950/80 border border-slate-800 rounded-lg px-3 py-2.5 text-sm text-slate-400 cursor-default"
                   />
                   <input
                     type="text"
                     value={editingProfile.expectedProxyRegion || ''}
-                    placeholder="代理期望地区，例如 Toronto"
-                    onChange={e => { setEditingProfile({ ...editingProfile, expectedProxyRegion: e.target.value }); setProxyBrowserResult(null); }}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 transition-colors"
+                    placeholder="由真实浏览器检测自动生成"
+                    readOnly
+                    className="w-full bg-slate-950/80 border border-slate-800 rounded-lg px-3 py-2.5 text-sm text-slate-400 cursor-default"
                   />
                 </div>
                 <p className="mt-2 text-[11px] text-slate-500 leading-relaxed">
                   控制层流量可以继续走宿主机当前网络/VPN；环境层流量必须通过当前环境代理出网。
                   {editingProfile.proxyTypeSource === 'inferred' ? ' 当前代理协议来自旧数据推断，默认按 HTTP 处理，可手动切换为 HTTPS / SOCKS5。' : ''}
-                  {formatExpectedTarget(editingProfile) ? ` 当前严格期望出口: ${formatExpectedTarget(editingProfile)}` : ' 如需严格拦截 VPN 串流，请填写期望 IP 和国家/地区。'}
+                  {formatExpectedTarget(editingProfile) ? ` 当前严格期望出口: ${formatExpectedTarget(editingProfile)}` : ' 如需严格拦截 VPN 串流，请填写期望 IP，并先运行一次真实浏览器检测自动生成国家/地区。'}
                 </p>
                 <div className="mt-2 flex items-center gap-2">
                   <div className="flex-1 bg-slate-950/80 border border-slate-800 rounded-lg px-3 py-2 text-[11px] font-mono text-slate-400 break-all">
@@ -1654,7 +1781,17 @@ export default function Home() {
                         {proxyBrowserResult.status === 'verified' ? <CheckCircle size={12} /> : <AlertCircle size={12} />}
                         <span>环境层 / 真实浏览器检测: {getCheckStatusLabel(proxyBrowserResult.status)}</span>
                       </div>
-                      <span className="text-[10px] opacity-80">耗时: {proxyBrowserResult.latencyMs ?? '-'}ms</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] opacity-80">耗时: {proxyBrowserResult.latencyMs ?? '-'}ms</span>
+                        <button
+                          type="button"
+                          disabled={!proxyBrowserResult.ip}
+                          onClick={handleAdoptCurrentProxyResult}
+                          className="px-2 py-1 rounded border border-blue-500/30 bg-blue-500/10 text-[10px] font-bold text-blue-200 hover:bg-blue-500/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                        >
+                          一键采用当前检测结果
+                        </button>
+                      </div>
                     </div>
                     <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1">
                       <span className="flex items-center space-x-1"><ShieldCheck size={10} /><span>协议: {String(proxyBrowserResult.proxyType || editingProfile.proxyType || 'direct').toUpperCase()}</span></span>
