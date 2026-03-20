@@ -1,92 +1,37 @@
 @echo off
-setlocal EnableExtensions EnableDelayedExpansion
+setlocal EnableExtensions
 cd /d "%~dp0"
-set "LOG_DIR=%~dp0logs"
-if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" >nul 2>&1
-set "RUNTIME_LOG=%LOG_DIR%\runtime.log"
-set "DASHBOARD_LOG=%LOG_DIR%\dashboard.log"
 
 if not exist "fingerprint-dashboard\node_modules" (
-    echo [ERROR] Dependencies were not found. Run install_windows.bat first.
+    echo [ERROR] Dashboard dependencies were not found.
+    echo [INFO] Run install_windows.bat first.
     pause
     exit /b 1
 )
 
 if not exist "fingerprint-dashboard\stealth-engine\node_modules" (
-    echo [ERROR] Stealth engine dependencies were not found. Run install_windows.bat first.
+    echo [ERROR] Stealth engine dependencies were not found.
+    echo [INFO] Run install_windows.bat first.
     pause
     exit /b 1
 )
 
-echo [START] Launching services...
-echo [1/2] Starting runtime server on port 3001...
-del /q "%RUNTIME_LOG%" >nul 2>&1
-start "Fingerprint-Runtime" /min cmd /c "cd /d \"%~dp0fingerprint-dashboard\stealth-engine\" && node server.js > \"%RUNTIME_LOG%\" 2>&1"
-set /a RUNTIME_WAIT=0
+echo [START] Launching duokai on Windows...
+echo [1/3] Starting runtime terminal...
+start "duokai-runtime" cmd /k "cd /d \"%~dp0fingerprint-dashboard\stealth-engine\" && node server.js"
 
-:check_runtime
-curl.exe -fsS http://127.0.0.1:3001/health >nul 2>&1
-if %errorlevel% equ 0 goto runtime_ready
-set /a RUNTIME_WAIT+=1
-if !RUNTIME_WAIT! geq 45 (
-    echo.
-    echo [ERROR] Runtime did not become ready within 45 seconds.
-    echo [INFO] Runtime log: %RUNTIME_LOG%
-    if exist "%RUNTIME_LOG%" type "%RUNTIME_LOG%"
-    pause
-    exit /b 1
-)
-if %errorlevel% neq 0 (
-    <nul set /p "=."
-    timeout /t 1 /nobreak >nul
-    goto check_runtime
-)
+echo [2/3] Starting dashboard terminal...
+start "duokai-dashboard" cmd /k "cd /d \"%~dp0fingerprint-dashboard\" && npm.cmd run dev"
 
-:runtime_ready
-echo.
-echo [OK] Runtime is ready.
-
-echo [2/2] Starting dashboard on port 3000...
-del /q "%DASHBOARD_LOG%" >nul 2>&1
-start "Fingerprint-Dashboard" /min cmd /c "cd /d \"%~dp0fingerprint-dashboard\" && npm.cmd run dev > \"%DASHBOARD_LOG%\" 2>&1"
-set /a DASHBOARD_WAIT=0
-
-:check_dashboard
-curl.exe -fsS http://127.0.0.1:3000 >nul 2>&1
-if %errorlevel% equ 0 goto dashboard_ready
-set /a DASHBOARD_WAIT+=1
-if !DASHBOARD_WAIT! geq 60 (
-    echo.
-    echo [ERROR] Dashboard did not become ready within 60 seconds.
-    echo [INFO] Dashboard log: %DASHBOARD_LOG%
-    if exist "%DASHBOARD_LOG%" type "%DASHBOARD_LOG%"
-    pause
-    exit /b 1
-)
-if %errorlevel% neq 0 (
-    <nul set /p "=."
-    timeout /t 1 /nobreak >nul
-    goto check_dashboard
-)
-
-:dashboard_ready
-echo.
-echo [OK] Dashboard is ready.
-echo [OK] Services are ready. Opening the UI...
-
-set "CHROME_BIN="
-if exist "C:\Program Files\Google\Chrome\Application\chrome.exe" set "CHROME_BIN=C:\Program Files\Google\Chrome\Application\chrome.exe"
-if not defined CHROME_BIN if exist "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe" set "CHROME_BIN=C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
-if not defined CHROME_BIN if exist "%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe" set "CHROME_BIN=%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"
-
-if defined CHROME_BIN (
-    start "" "!CHROME_BIN!" --app=http://localhost:3000 --window-size=1280,800
-) else (
-    start http://localhost:3000
-)
+echo [3/3] Opening dashboard in browser...
+start "" powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 6; Start-Process 'http://localhost:3000'"
 
 echo ------------------------------------------------
-echo [DONE] Startup completed successfully.
+echo [DONE] duokai start command sent.
+echo [INFO] Two terminal windows should open:
+echo        - duokai-runtime
+echo        - duokai-dashboard
+echo [INFO] If the page opens too early, refresh the browser once.
 echo ------------------------------------------------
-timeout /t 5 >nul
+timeout /t 3 >nul
 exit /b 0
