@@ -1,4 +1,5 @@
 @echo off
+setlocal EnableExtensions
 cd /d "%~dp0"
-call "日常启动面板_Windows.bat"
+call "%~dp0launcher_windows.bat"
 exit /b %errorlevel%
