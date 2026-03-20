@@ -25,8 +25,8 @@ start "Fingerprint-Runtime" /min cmd /c "cd /d \"%~dp0fingerprint-dashboard\stea
 set /a RUNTIME_WAIT=0
 
 :check_runtime
-netstat -ano | findstr :3001 | findstr LISTENING >nul
-if not errorlevel 1 goto runtime_ready
+curl.exe -fsS http://127.0.0.1:3001/health >nul 2>&1
+if %errorlevel% equ 0 goto runtime_ready
 set /a RUNTIME_WAIT+=1
 if !RUNTIME_WAIT! geq 45 (
     echo.
@@ -52,8 +52,8 @@ start "Fingerprint-Dashboard" /min cmd /c "cd /d \"%~dp0fingerprint-dashboard\" 
 set /a DASHBOARD_WAIT=0
 
 :check_dashboard
-netstat -ano | findstr :3000 | findstr LISTENING >nul
-if not errorlevel 1 goto dashboard_ready
+curl.exe -fsS http://127.0.0.1:3000 >nul 2>&1
+if %errorlevel% equ 0 goto dashboard_ready
 set /a DASHBOARD_WAIT+=1
 if !DASHBOARD_WAIT! geq 60 (
     echo.
