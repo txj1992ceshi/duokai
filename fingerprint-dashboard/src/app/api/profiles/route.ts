@@ -1,51 +1,177 @@
-import { NextResponse } from 'next/server';
-import { getDb, saveDb, Profile } from '@/lib/db';
-import crypto from 'crypto';
+import { NextRequest, NextResponse } from 'next/server';
+import { connectMongo } from '@/lib/mongodb';
+import { requireUser } from '@/lib/requireUser';
+import { ProfileModel } from '@/models/Profile';
+import { ProfileStorageStateModel } from '@/models/ProfileStorageState';
 
-export async function GET() {
-  const db = getDb();
-  return NextResponse.json(db.profiles);
+export async function GET(req: NextRequest) {
+  try {
+    const authUser = requireUser(req);
+    await connectMongo();
+
+    const profiles = await ProfileModel.find({
+      userId: authUser.userId,
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const storageStates = await ProfileStorageStateModel.find({
+      userId: authUser.userId,
+    })
+      .select('profileId')
+      .lean();
+    const syncedProfileIds = new Set(
+      storageStates.map((state) => String(state.profileId))
+    );
+
+    return NextResponse.json({
+      success: true,
+      profiles: profiles.map((profile) => ({
+        id: String(profile._id),
+        userId: String(profile.userId),
+        name: profile.name,
+        status: profile.status,
+        lastActive: profile.lastActive || '',
+        tags: profile.tags || [],
+        proxy: profile.proxy || '',
+        proxyType: profile.proxyType || 'direct',
+        proxyHost: profile.proxyHost || '',
+        proxyPort: profile.proxyPort || '',
+        proxyUsername: profile.proxyUsername || '',
+        proxyPassword: profile.proxyPassword || '',
+        expectedProxyIp: profile.expectedProxyIp || '',
+        expectedProxyCountry: profile.expectedProxyCountry || '',
+        expectedProxyRegion: profile.expectedProxyRegion || '',
+        preferredProxyTransport: profile.preferredProxyTransport || '',
+        lastResolvedProxyTransport: profile.lastResolvedProxyTransport || '',
+        lastHostEnvironment: profile.lastHostEnvironment || '',
+        ua: profile.ua || '',
+        seed: profile.seed || '',
+        isMobile: !!profile.isMobile,
+        groupId: profile.groupId || '',
+        runtimeSessionId: profile.runtimeSessionId || '',
+        startupPlatform: profile.startupPlatform || '',
+        startupUrl: profile.startupUrl || '',
+        startupNavigation: profile.startupNavigation || {
+          ok: false,
+          requestedUrl: '',
+          finalUrl: '',
+          error: '',
+        },
+        storageStateSynced: syncedProfileIds.has(String(profile._id)),
+        proxyVerification: profile.proxyVerification || null,
+        createdAt: profile.createdAt,
+        updatedAt: profile.updatedAt,
+      })),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Request failed';
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: message === 'Unauthorized' ? 'Unauthorized' : 'Failed to fetch profiles',
+      },
+      {
+        status: message === 'Unauthorized' ? 401 : 500,
+      }
+    );
+  }
 }
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   try {
+    const authUser = requireUser(req);
+    await connectMongo();
+
     const body = await req.json();
-    const db = getDb();
-    
-    // Create new profile with deterministic seed if not provided
-    const newProfile: Profile = {
-      id: crypto.randomUUID(),
-      name: body.name || `Profile ${db.profiles.length + 1}`,
-      status: 'Ready',
-      lastActive: 'Never',
-      tags: body.tags || [],
+
+    const profile = await ProfileModel.create({
+      userId: authUser.userId,
+      name: String(body.name || 'New Profile').trim(),
+      status: body.status || 'Ready',
+      lastActive: body.lastActive || '',
+      tags: Array.isArray(body.tags) ? body.tags : [],
+
       proxy: body.proxy || '',
       proxyType: body.proxyType || 'direct',
-      proxyHost: body.proxyHost || undefined,
-      proxyPort: body.proxyPort || undefined,
-      proxyUsername: body.proxyUsername || undefined,
-      proxyPassword: body.proxyPassword || undefined,
-      expectedProxyIp: body.expectedProxyIp || undefined,
-      preferredProxyTransport: body.preferredProxyTransport || undefined,
-      lastResolvedProxyTransport: body.lastResolvedProxyTransport || undefined,
-      lastHostEnvironment: body.lastHostEnvironment || undefined,
+      proxyHost: body.proxyHost || '',
+      proxyPort: body.proxyPort || '',
+      proxyUsername: body.proxyUsername || '',
+      proxyPassword: body.proxyPassword || '',
+
+      expectedProxyIp: body.expectedProxyIp || '',
+      expectedProxyCountry: body.expectedProxyCountry || '',
+      expectedProxyRegion: body.expectedProxyRegion || '',
+
+      preferredProxyTransport: body.preferredProxyTransport || '',
+      lastResolvedProxyTransport: body.lastResolvedProxyTransport || '',
+      lastHostEnvironment: body.lastHostEnvironment || '',
+
       ua: body.ua || '',
-      seed: body.seed || crypto.randomUUID().substring(0, 8),
-      isMobile: body.isMobile || false,
-      groupId: body.groupId || undefined,
-      expectedProxyCountry: body.expectedProxyCountry || undefined,
-      expectedProxyRegion: body.expectedProxyRegion || undefined,
-      proxyVerification: body.proxyVerification || undefined,
-      startupPlatform: body.startupPlatform || undefined,
-      startupUrl: body.startupUrl || undefined,
-      startupNavigation: body.startupNavigation || undefined,
-    };
+      seed: body.seed || '',
+      isMobile: !!body.isMobile,
 
-    db.profiles.push(newProfile);
-    saveDb(db);
+      groupId: body.groupId || '',
+      runtimeSessionId: body.runtimeSessionId || '',
 
-    return NextResponse.json(newProfile, { status: 201 });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+      startupPlatform: body.startupPlatform || '',
+      startupUrl: body.startupUrl || '',
+      startupNavigation: body.startupNavigation || {
+        ok: false,
+        requestedUrl: '',
+        finalUrl: '',
+        error: '',
+      },
+
+      proxyVerification: body.proxyVerification || null,
+    });
+
+    return NextResponse.json({
+      success: true,
+      profile: {
+        id: String(profile._id),
+        userId: String(profile.userId),
+        name: profile.name,
+        status: profile.status,
+        lastActive: profile.lastActive,
+        tags: profile.tags,
+        proxy: profile.proxy,
+        proxyType: profile.proxyType,
+        proxyHost: profile.proxyHost,
+        proxyPort: profile.proxyPort,
+        proxyUsername: profile.proxyUsername,
+        proxyPassword: profile.proxyPassword,
+        expectedProxyIp: profile.expectedProxyIp,
+        expectedProxyCountry: profile.expectedProxyCountry,
+        expectedProxyRegion: profile.expectedProxyRegion,
+        preferredProxyTransport: profile.preferredProxyTransport,
+        lastResolvedProxyTransport: profile.lastResolvedProxyTransport,
+        lastHostEnvironment: profile.lastHostEnvironment,
+        ua: profile.ua,
+        seed: profile.seed,
+        isMobile: profile.isMobile,
+        groupId: profile.groupId,
+        runtimeSessionId: profile.runtimeSessionId,
+        startupPlatform: profile.startupPlatform,
+        startupUrl: profile.startupUrl,
+        startupNavigation: profile.startupNavigation,
+        proxyVerification: profile.proxyVerification,
+        createdAt: profile.createdAt,
+        updatedAt: profile.updatedAt,
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Request failed';
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: message === 'Unauthorized' ? 'Unauthorized' : 'Failed to create profile',
+      },
+      {
+        status: message === 'Unauthorized' ? 401 : 500,
+      }
+    );
   }
 }

@@ -1,0 +1,205 @@
+import { Router } from 'express';
+import { connectMongo } from '../lib/mongodb.js';
+import { asyncHandler } from '../lib/http.js';
+import { serializeProfile } from '../lib/serializers.js';
+import { requireUser } from '../middlewares/auth.js';
+import { ProfileModel } from '../models/Profile.js';
+import { ProfileStorageStateModel } from '../models/ProfileStorageState.js';
+
+const router = Router();
+
+router.use(requireUser);
+
+router.get(
+  '/',
+  asyncHandler(async (req, res) => {
+    await connectMongo();
+    const authUser = req.authUser!;
+
+    const profiles = await ProfileModel.find({ userId: authUser.userId })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const storageStates = await ProfileStorageStateModel.find({ userId: authUser.userId })
+      .select('profileId')
+      .lean();
+    const syncedProfileIds = new Set(storageStates.map((item) => String(item.profileId)));
+
+    res.json({
+      success: true,
+      profiles: profiles.map((profile) =>
+        serializeProfile(profile, syncedProfileIds.has(String(profile._id)))
+      ),
+    });
+  })
+);
+
+router.post(
+  '/',
+  asyncHandler(async (req, res) => {
+    await connectMongo();
+    const authUser = req.authUser!;
+    const body = req.body || {};
+
+    const profile = await ProfileModel.create({
+      userId: authUser.userId,
+      name: String(body.name || 'New Profile').trim(),
+      status: body.status || 'Ready',
+      lastActive: body.lastActive || '',
+      tags: Array.isArray(body.tags) ? body.tags : [],
+      proxy: body.proxy || '',
+      proxyType: body.proxyType || 'direct',
+      proxyHost: body.proxyHost || '',
+      proxyPort: body.proxyPort || '',
+      proxyUsername: body.proxyUsername || '',
+      proxyPassword: body.proxyPassword || '',
+      expectedProxyIp: body.expectedProxyIp || '',
+      expectedProxyCountry: body.expectedProxyCountry || '',
+      expectedProxyRegion: body.expectedProxyRegion || '',
+      preferredProxyTransport: body.preferredProxyTransport || '',
+      lastResolvedProxyTransport: body.lastResolvedProxyTransport || '',
+      lastHostEnvironment: body.lastHostEnvironment || '',
+      ua: body.ua || '',
+      seed: body.seed || '',
+      isMobile: !!body.isMobile,
+      groupId: body.groupId || '',
+      runtimeSessionId: body.runtimeSessionId || '',
+      startupPlatform: body.startupPlatform || '',
+      startupUrl: body.startupUrl || '',
+      startupNavigation: body.startupNavigation || {
+        ok: false,
+        requestedUrl: '',
+        finalUrl: '',
+        error: '',
+      },
+      proxyVerification: body.proxyVerification || null,
+    });
+
+    res.json({
+      success: true,
+      profile: serializeProfile(profile),
+    });
+  })
+);
+
+router.get(
+  '/:id',
+  asyncHandler(async (req, res) => {
+    await connectMongo();
+    const authUser = req.authUser!;
+
+    const profile = await ProfileModel.findOne({
+      _id: req.params.id,
+      userId: authUser.userId,
+    }).lean();
+
+    if (!profile) {
+      res.status(404).json({ success: false, error: 'Profile not found' });
+      return;
+    }
+
+    const storageState = await ProfileStorageStateModel.findOne({
+      userId: authUser.userId,
+      profileId: req.params.id,
+    })
+      .select('_id')
+      .lean();
+
+    res.json({
+      success: true,
+      profile: serializeProfile(profile, !!storageState),
+    });
+  })
+);
+
+router.patch(
+  '/:id',
+  asyncHandler(async (req, res) => {
+    await connectMongo();
+    const authUser = req.authUser!;
+    const body = req.body || {};
+    const updateData: Record<string, unknown> = {};
+
+    if (typeof body.name === 'string') updateData.name = body.name.trim();
+    if (typeof body.status === 'string') updateData.status = body.status;
+    if (Array.isArray(body.tags)) updateData.tags = body.tags;
+    if (typeof body.lastActive === 'string') updateData.lastActive = body.lastActive;
+    if (typeof body.proxy === 'string') updateData.proxy = body.proxy;
+    if (typeof body.proxyType === 'string') updateData.proxyType = body.proxyType;
+    if (typeof body.proxyHost === 'string') updateData.proxyHost = body.proxyHost;
+    if (typeof body.proxyPort === 'string') updateData.proxyPort = body.proxyPort;
+    if (typeof body.proxyUsername === 'string') updateData.proxyUsername = body.proxyUsername;
+    if (typeof body.proxyPassword === 'string') updateData.proxyPassword = body.proxyPassword;
+    if (typeof body.expectedProxyIp === 'string') updateData.expectedProxyIp = body.expectedProxyIp;
+    if (typeof body.expectedProxyCountry === 'string') updateData.expectedProxyCountry = body.expectedProxyCountry;
+    if (typeof body.expectedProxyRegion === 'string') updateData.expectedProxyRegion = body.expectedProxyRegion;
+    if (typeof body.preferredProxyTransport === 'string') {
+      updateData.preferredProxyTransport = body.preferredProxyTransport;
+    }
+    if (typeof body.lastResolvedProxyTransport === 'string') {
+      updateData.lastResolvedProxyTransport = body.lastResolvedProxyTransport;
+    }
+    if (typeof body.lastHostEnvironment === 'string') {
+      updateData.lastHostEnvironment = body.lastHostEnvironment;
+    }
+    if (typeof body.ua === 'string') updateData.ua = body.ua;
+    if (typeof body.seed === 'string') updateData.seed = body.seed;
+    if (typeof body.isMobile === 'boolean') updateData.isMobile = body.isMobile;
+    if (typeof body.groupId === 'string') updateData.groupId = body.groupId;
+    if (typeof body.runtimeSessionId === 'string') updateData.runtimeSessionId = body.runtimeSessionId;
+    if (typeof body.startupPlatform === 'string') updateData.startupPlatform = body.startupPlatform;
+    if (typeof body.startupUrl === 'string') updateData.startupUrl = body.startupUrl;
+    if (body.startupNavigation && typeof body.startupNavigation === 'object') {
+      updateData.startupNavigation = body.startupNavigation;
+    }
+    if (body.proxyVerification !== undefined) updateData.proxyVerification = body.proxyVerification;
+
+    const profile = await ProfileModel.findOneAndUpdate(
+      { _id: req.params.id, userId: authUser.userId },
+      updateData,
+      { new: true }
+    ).lean();
+
+    if (!profile) {
+      res.status(404).json({ success: false, error: 'Profile not found' });
+      return;
+    }
+
+    const storageState = await ProfileStorageStateModel.findOne({
+      userId: authUser.userId,
+      profileId: req.params.id,
+    })
+      .select('_id')
+      .lean();
+
+    res.json({
+      success: true,
+      profile: serializeProfile(profile, !!storageState),
+    });
+  })
+);
+
+router.delete(
+  '/:id',
+  asyncHandler(async (req, res) => {
+    await connectMongo();
+    const authUser = req.authUser!;
+
+    const profile = await ProfileModel.findOneAndDelete({
+      _id: req.params.id,
+      userId: authUser.userId,
+    }).lean();
+
+    if (!profile) {
+      res.status(404).json({ success: false, error: 'Profile not found' });
+      return;
+    }
+
+    res.json({
+      success: true,
+      message: 'Profile deleted successfully',
+    });
+  })
+);
+
+export default router;

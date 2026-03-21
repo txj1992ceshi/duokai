@@ -1,0 +1,156 @@
+'use client';
+
+import { useCallback, useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { adminFetch } from '@/lib/api-client';
+import { readAdminAuth } from '@/lib/require-admin-client';
+import AppButton from '@/components/AppButton';
+import ErrorBanner from '@/components/ErrorBanner';
+import StatCard from '@/components/StatCard';
+import PageHeader from '@/components/PageHeader';
+
+type AdminUser = {
+  id: string;
+  role: 'user' | 'admin';
+  status: 'active' | 'disabled';
+};
+
+type AdminProfile = {
+  id: string;
+  proxyType?: string;
+  proxyHost?: string;
+  proxyPort?: string;
+  ua?: string;
+  seed?: string;
+  isMobile?: boolean;
+  startupPlatform?: string;
+  startupUrl?: string;
+  storageStateSynced?: boolean;
+};
+
+type RuntimeStatusPayload = {
+  online?: boolean;
+  sessions?: Array<{ sessionId?: string }>;
+};
+
+function getProfileSyncSummary(profile: AdminProfile): 'Ready' | 'Partial' | 'Empty' {
+  const hasProxy =
+    profile.proxyType === 'direct' ||
+    Boolean(profile.proxyHost) ||
+    Boolean(profile.proxyPort);
+  const hasFingerprint =
+    Boolean(profile.ua) || Boolean(profile.seed) || typeof profile.isMobile === 'boolean';
+  const hasEnvironment = Boolean(profile.startupPlatform) || Boolean(profile.startupUrl);
+
+  if (hasProxy && hasFingerprint && hasEnvironment) return 'Ready';
+  if (hasProxy || hasFingerprint || hasEnvironment) return 'Partial';
+  return 'Empty';
+}
+
+export default function AdminHomePage() {
+  const router = useRouter();
+  const [authChecked, setAuthChecked] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [profiles, setProfiles] = useState<AdminProfile[]>([]);
+  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatusPayload>({});
+
+  const loadDashboard = useCallback(async () => {
+    if (!authChecked) return;
+
+    setLoading(true);
+    setError('');
+    try {
+      const [usersRes, profilesRes, runtimeRes] = await Promise.all([
+        adminFetch('/api/admin/users'),
+        adminFetch('/api/admin/profiles'),
+        adminFetch('/api/runtime/status'),
+      ]);
+
+      const usersData = await usersRes.json();
+      const profilesData = await profilesRes.json();
+      const runtimeData = await runtimeRes.json();
+
+      if (!usersRes.ok || !usersData.success) {
+        throw new Error(usersData.error || '加载用户统计失败');
+      }
+      if (!profilesRes.ok || !profilesData.success) {
+        throw new Error(profilesData.error || '加载环境统计失败');
+      }
+
+      setUsers(Array.isArray(usersData.users) ? usersData.users : []);
+      setProfiles(Array.isArray(profilesData.profiles) ? profilesData.profiles : []);
+      setRuntimeStatus({
+        online: Boolean(runtimeData?.online),
+        sessions: Array.isArray(runtimeData?.sessions) ? runtimeData.sessions : [],
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '加载统计失败');
+    } finally {
+      setLoading(false);
+    }
+  }, [authChecked]);
+
+  useEffect(() => {
+    const auth = readAdminAuth();
+    if (!auth.ok) {
+      router.replace('/login');
+      return;
+    }
+    setAuthChecked(true);
+  }, [router]);
+
+  useEffect(() => {
+    if (!authChecked) return;
+    loadDashboard();
+  }, [authChecked, loadDashboard]);
+
+  if (!authChecked) return null;
+
+  const totalUsers = users.length;
+  const activeUsers = users.filter((u) => u.status === 'active').length;
+  const disabledUsers = users.filter((u) => u.status === 'disabled').length;
+  const adminUsers = users.filter((u) => u.role === 'admin').length;
+
+  const totalProfiles = profiles.length;
+  const readyProfiles = profiles.filter((p) => getProfileSyncSummary(p) === 'Ready').length;
+  const syncedStorageProfiles = profiles.filter((p) => Boolean(p.storageStateSynced)).length;
+  const sessionCount = runtimeStatus.sessions?.length || 0;
+  const runtimeOnline = Boolean(runtimeStatus.online);
+
+  return (
+    <main className="space-y-6">
+      <PageHeader
+        title="Duokai Admin"
+        description="独立管理中控后台"
+        aside={
+          <AppButton onClick={loadDashboard} variant="secondary">
+            刷新总览
+          </AppButton>
+        }
+      />
+
+      <ErrorBanner message={error} />
+
+      <div className="text-sm text-neutral-400">{loading ? '统计加载中...' : '综合总览'}</div>
+
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-5">
+        <StatCard label="用户总数" value={totalUsers} />
+        <StatCard label="启用中用户" value={activeUsers} accentClassName="text-green-400" />
+        <StatCard label="禁用用户数" value={disabledUsers} accentClassName="text-yellow-400" />
+        <StatCard label="管理员数" value={adminUsers} accentClassName="text-blue-400" />
+        <StatCard label="环境总数" value={totalProfiles} />
+        <StatCard label="Ready 环境数" value={readyProfiles} accentClassName="text-green-400" />
+        <StatCard
+          label="已同步登录态环境数"
+          value={syncedStorageProfiles}
+          accentClassName="text-blue-400"
+        />
+        <StatCard label="运行中 Session 数" value={sessionCount} />
+        <StatCard label="Runtime 在线状态" value={runtimeOnline ? '在线' : '离线'} />
+      </div>
+    </main>
+  );
+}

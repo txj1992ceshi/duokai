@@ -11,7 +11,25 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-echo [1/3] Installing dashboard dependencies...
+echo [1/5] Installing API dependencies...
+pushd "duokai-api"
+call npm.cmd install
+if %errorlevel% neq 0 (
+    popd
+    exit /b %errorlevel%
+)
+popd
+
+echo [2/5] Installing admin frontend dependencies...
+pushd "duokai-admin"
+call npm.cmd install
+if %errorlevel% neq 0 (
+    popd
+    exit /b %errorlevel%
+)
+popd
+
+echo [3/5] Installing frontend dependencies...
 pushd "fingerprint-dashboard"
 call npm.cmd install
 if %errorlevel% neq 0 (
@@ -19,7 +37,7 @@ if %errorlevel% neq 0 (
     exit /b %errorlevel%
 )
 
-echo [2/3] Installing stealth engine dependencies...
+echo [4/5] Installing stealth engine dependencies...
 pushd "stealth-engine"
 call npm.cmd install
 if %errorlevel% neq 0 (
@@ -28,7 +46,7 @@ if %errorlevel% neq 0 (
     exit /b %errorlevel%
 )
 
-echo [3/3] Installing Playwright Chromium...
+echo [5/5] Installing Playwright Chromium...
 call node_modules\.bin\playwright.cmd install chromium
 if %errorlevel% neq 0 (
     popd

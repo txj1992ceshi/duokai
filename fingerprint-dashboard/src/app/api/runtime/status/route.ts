@@ -1,18 +1,31 @@
-import { NextResponse } from 'next/server';
-import { getDb } from '@/lib/db';
+import { NextRequest, NextResponse } from 'next/server';
+import { connectMongo } from '@/lib/mongodb';
+import { requireUser } from '@/lib/requireUser';
+import { ProfileModel } from '@/models/Profile';
+import { SettingModel } from '@/models/Setting';
 
 export const runtime = 'nodejs';
 
 /**
  * GET /api/runtime/status
  * Returns the list of active sessions from the runtime server,
- * merged with profile names from the local DB.
+ * merged with profile names from MongoDB.
  */
-export async function GET() {
-  const db = getDb();
+export async function GET(req: NextRequest) {
+  const authUser = requireUser(req);
+  await connectMongo();
+
+  const settingsDoc = await SettingModel.findOne({ userId: authUser.userId }).lean();
   const runtimeUrl =
-    process.env.RUNTIME_URL || db.settings?.runtimeUrl || 'http://127.0.0.1:3001';
+    process.env.RUNTIME_URL ||
+    String((settingsDoc as Record<string, unknown> | null)?.runtimeUrl || '') ||
+    'http://127.0.0.1:3001';
   const baseUrl = runtimeUrl.replace(/\/$/, '');
+  const profiles = await ProfileModel.find({
+    userId: authUser.userId,
+  })
+    .sort({ createdAt: -1 })
+    .lean();
 
   try {
     const health = await fetch(`${baseUrl}/health`, {
@@ -37,7 +50,7 @@ export async function GET() {
       const sessions = (await r.json()) as Array<{ profileId: string } & Record<string, unknown>>;
 
       const enriched = sessions.map(s => {
-        const profile = db.profiles.find((p) => p.id === s.profileId);
+        const profile = profiles.find((p) => String(p._id) === s.profileId);
         return { ...s, profileName: profile?.name || s.profileId };
       });
 

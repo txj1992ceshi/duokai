@@ -1,19 +1,55 @@
-import { NextResponse } from 'next/server';
-import { getDb } from '@/lib/db';
+import { NextRequest, NextResponse } from 'next/server';
+import { connectMongo } from '@/lib/mongodb';
+import { requireUser } from '@/lib/requireUser';
+import { ProfileModel } from '@/models/Profile';
+import { SettingModel } from '@/models/Setting';
 import type { ProxyVerificationRecord } from '@/lib/proxyTypes';
 
 export const runtime = 'nodejs';
 
-export async function POST(req: Request) {
-  const db = getDb();
-  const runtimeUrl =
-    process.env.RUNTIME_URL || db.settings?.runtimeUrl || 'http://127.0.0.1:3001';
-  const apiKey =
-    process.env.RUNTIME_API_KEY || db.settings?.runtimeApiKey || '';
-
-  const payload = await req.json().catch(() => ({}));
-
+export async function POST(req: NextRequest) {
+  let payload: Record<string, unknown> = {};
   try {
+    const authUser = requireUser(req);
+    await connectMongo();
+    const settingsDoc = await SettingModel.findOne({ userId: authUser.userId }).lean();
+    const runtimeUrl =
+      process.env.RUNTIME_URL ||
+      String((settingsDoc as Record<string, unknown> | null)?.runtimeUrl || '') ||
+      'http://127.0.0.1:3001';
+    const apiKey =
+      process.env.RUNTIME_API_KEY ||
+      String((settingsDoc as Record<string, unknown> | null)?.runtimeApiKey || '') ||
+      '';
+
+    const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+    const profileId = String(body.profileId || '');
+
+    payload = { ...body };
+    if (profileId) {
+      const profile = await ProfileModel.findOne({
+        _id: profileId,
+        userId: authUser.userId,
+      }).lean();
+
+      if (!profile) {
+        return NextResponse.json(
+          { success: false, error: 'Profile not found' },
+          { status: 404 }
+        );
+      }
+
+      payload.proxyType = payload.proxyType || profile.proxyType || 'direct';
+      payload.proxyHost = payload.proxyHost || profile.proxyHost || '';
+      payload.proxyPort = payload.proxyPort || profile.proxyPort || '';
+      payload.proxyUsername = payload.proxyUsername || profile.proxyUsername || '';
+      payload.proxyPassword = payload.proxyPassword || profile.proxyPassword || '';
+      payload.expectedIp = payload.expectedIp || profile.expectedProxyIp || '';
+      payload.expectedCountry = payload.expectedCountry || profile.expectedProxyCountry || '';
+      payload.expectedRegion = payload.expectedRegion || profile.expectedProxyRegion || '';
+      payload.proxy = payload.proxy || profile.proxy || '';
+    }
+
     const r = await fetch(`${runtimeUrl.replace(/\/$/, '')}/proxy/test-browser`, {
       method: 'POST',
       headers: {
@@ -31,6 +67,10 @@ export async function POST(req: Request) {
 
     return NextResponse.json(json, { status: r.status });
   } catch (err: unknown) {
+    const authMessage = err instanceof Error ? err.message : '';
+    if (authMessage === 'Unauthorized') {
+      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+    }
     const message = err instanceof Error ? err.message : '无法连接到 Runtime Server';
     const proxyType = typeof payload?.proxyType === 'string' ? payload.proxyType : undefined;
     const result: ProxyVerificationRecord = {

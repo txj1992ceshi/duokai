@@ -1,3 +1,5 @@
+import { apiFetch } from '@/lib/api-client';
+
 export async function startSession(profile: any, proxy?: any, opts = { headless: false }) {
   const body = { 
     profileId: profile.id, 
@@ -6,9 +8,8 @@ export async function startSession(profile: any, proxy?: any, opts = { headless:
     proxy, 
     headless: !!opts.headless 
   };
-  const r = await fetch('/api/runtime/start', { 
-    method: 'POST', 
-    headers: { 'Content-Type': 'application/json' }, 
+  const r = await apiFetch('/api/runtime/start', {
+    method: 'POST',
     body: JSON.stringify(body) 
   });
   if (r.ok) {
@@ -19,9 +20,8 @@ export async function startSession(profile: any, proxy?: any, opts = { headless:
 }
 
 export async function stopSession(sessionId: string) {
-  const r = await fetch('/api/runtime/stop', { 
-    method: 'POST', 
-    headers: { 'Content-Type': 'application/json' }, 
+  const r = await apiFetch('/api/runtime/stop', {
+    method: 'POST',
     body: JSON.stringify({ sessionId }) 
   });
   if (r.ok) {
@@ -32,9 +32,8 @@ export async function stopSession(sessionId: string) {
 }
 
 export async function doSessionAction(sessionId: string, action: any) {
-  const r = await fetch('/api/runtime/action', { 
-    method: 'POST', 
-    headers: { 'Content-Type': 'application/json' }, 
+  const r = await apiFetch('/api/runtime/action', {
+    method: 'POST',
     body: JSON.stringify({ sessionId, action }) 
   });
   if (r.ok) {

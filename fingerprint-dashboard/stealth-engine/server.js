@@ -48,6 +48,7 @@ const path = require('path');
 const fs   = require('fs');
 const os   = require('os');
 const crypto = require('crypto');
+const { execSync } = require('child_process');
 
 const { chromium }           = require('playwright');
 const { buildInjectionScript } = require('./fingerprint-injector');
@@ -83,7 +84,7 @@ process.stderr?.on?.('error', (err) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // In-memory session store: sessionId → SessionEntry
 // ─────────────────────────────────────────────────────────────────────────────
-/** @type {Map<string, { context: import('playwright').BrowserContext, page: import('playwright').Page, profileId: string, startedAt: number, currentUrl: string, verification?: any }>} */
+/** @type {Map<string, { context: import('playwright').BrowserContext, page: import('playwright').Page, profileId: string, startedAt: number, currentUrl: string, verification?: any, dashboardAuth?: string }>} */
 const sessions = new Map();
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -357,6 +358,46 @@ function resolveRuntimeProxy(source, options = {}) {
 
 function getStateFile(profileId) {
   return path.join(PROFILES_DIR, profileId, 'state.json');
+}
+
+function clearChromeSingletonLocks(userDataDir) {
+  const lockFiles = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
+  for (const file of lockFiles) {
+    const target = path.join(userDataDir, file);
+    try {
+      if (fs.existsSync(target)) {
+        fs.rmSync(target, { force: true });
+      }
+    } catch (error) {
+      console.warn(`[Runtime] Failed to remove lock file ${target}:`, error?.message || error);
+    }
+  }
+}
+
+function killResidualProfileBrowsers(userDataDir) {
+  try {
+    const output = execSync('pgrep -fal "Google Chrome for Testing"', {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const lines = output.split('\n').map((line) => line.trim()).filter(Boolean);
+    for (const line of lines) {
+      const firstSpace = line.indexOf(' ');
+      if (firstSpace <= 0) continue;
+      const pid = Number(line.slice(0, firstSpace));
+      const cmd = line.slice(firstSpace + 1);
+      if (!Number.isFinite(pid) || pid <= 0) continue;
+      if (!cmd.includes(`--user-data-dir=${userDataDir}`)) continue;
+      try {
+        process.kill(pid, 'SIGKILL');
+        console.log(`[Runtime] Killed residual browser process ${pid} for ${userDataDir}`);
+      } catch (error) {
+        console.warn(`[Runtime] Failed to kill residual browser process ${pid}:`, error?.message || error);
+      }
+    }
+  } catch {
+    // No matching process; ignore.
+  }
 }
 
 function readBody(req) {
@@ -1009,6 +1050,14 @@ async function handleStart(body) {
   // ---------- user data dir ----------
   const userDataDir = path.join(PROFILES_DIR, profileId);
   fs.mkdirSync(userDataDir, { recursive: true });
+  killResidualProfileBrowsers(userDataDir);
+  clearChromeSingletonLocks(userDataDir);
+
+  if (body.storageState) {
+    const stateFile = getStateFile(profileId);
+    fs.writeFileSync(stateFile, JSON.stringify(body.storageState, null, 2), 'utf8');
+    console.log(`[Runtime] 💾 storageState injected for profile ${profileId}`);
+  }
 
   // ---------- proxy selection: profile override -> proxyPool ----------
   // selectedProxyUrl 保存 “原始代理字符串”，便于向 proxyPool.reportFailure 报告
@@ -1222,6 +1271,7 @@ async function handleStart(body) {
     currentUrl: startupNavigation?.finalUrl || page.url() || 'about:blank',
     fingerprint: { ...fingerprint, userAgent: fingerprint.userAgent.slice(0, 80) },
     verification,
+    dashboardAuth: typeof body.__dashboardAuth === 'string' ? body.__dashboardAuth : '',
   });
 
   // Persist sessionId back to db (如原逻辑)
@@ -1268,14 +1318,58 @@ async function handleStop(body) {
 
   // Save storageState before closing
   let storedState = false;
+  let latestState = null;
   try {
     const stateFile = getStateFile(entry.profileId);
     const state = await entry.context.storageState();
+    latestState = state;
     fs.writeFileSync(stateFile, JSON.stringify(state, null, 2), 'utf-8');
     storedState = true;
     console.log(`[Runtime] 💾 storageState saved for profile ${entry.profileId}`);
   } catch (e) {
     console.warn(`[Runtime] ⚠️  Could not save storageState: ${e.message}`);
+  }
+
+  // Best-effort sync back to dashboard Mongo (non-blocking for stop flow)
+  if (latestState && entry.dashboardAuth) {
+    const dashboardBaseUrl = (process.env.DASHBOARD_URL || 'http://127.0.0.1:3000').replace(/\/$/, '');
+    try {
+      const syncResp = await fetch(`${dashboardBaseUrl}/api/profile-storage-state/${entry.profileId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          authorization: entry.dashboardAuth,
+        },
+        body: JSON.stringify({
+          stateJson: latestState,
+          encrypted: false,
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!syncResp.ok) {
+        const text = await syncResp.text().catch(() => '');
+        console.warn('[storageState sync failed]', {
+          profileId: entry.profileId,
+          status: syncResp.status,
+          body: text,
+        });
+      } else {
+        const data = await syncResp.json().catch(() => ({}));
+        console.log('[storageState sync ok]', {
+          profileId: entry.profileId,
+          version: data?.storageState?.version,
+          updatedAt: data?.storageState?.updatedAt,
+        });
+      }
+    } catch (e) {
+      console.warn('[storageState sync failed]', {
+        profileId: entry.profileId,
+        status: 'network_error',
+        body: e?.message || String(e),
+      });
+    }
+  } else if (!entry.dashboardAuth) {
+    console.warn(`[Runtime] ⚠️  Skip dashboard storageState sync: missing authorization token for profile ${entry.profileId}`);
   }
 
   await entry.context.close().catch(() => {});
@@ -1539,6 +1633,9 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
 
       if (url === '/session/start') {
+        if (req.headers?.authorization) {
+          body.__dashboardAuth = req.headers.authorization;
+        }
         const result = await queue.enqueueStart(body);
         return send(res, 200, result);
       }
