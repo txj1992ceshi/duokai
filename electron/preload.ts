@@ -17,6 +17,7 @@ import type {
 const api: DesktopApi = {
   meta: {
     getInfo: () => ipcRenderer.invoke('meta.getInfo'),
+    getAgentState: () => ipcRenderer.invoke('meta.getAgentState'),
   },
   dashboard: {
     summary: () => ipcRenderer.invoke('dashboard.summary'),

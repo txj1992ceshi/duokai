@@ -43,6 +43,7 @@ import {
 import { buildFingerprintInitScript } from './services/fingerprint'
 import { applyNetworkDerivedFingerprint } from './services/networkProfileResolver'
 import { RuntimeScheduler } from './services/runtimeScheduler'
+import { AgentService } from './services/agentService'
 import { validateProfileForLaunch } from './services/profileValidator'
 import { ContainerManager } from './services/containerManager'
 import {
@@ -64,6 +65,7 @@ import type {
   ProfileBulkActionPayload,
   ProfileRecord,
   ProxyRecord,
+  RemoteConfigSnapshot,
   SettingsPayload,
   UpdateCloudPhoneInput,
   UpdateTemplateInput,
@@ -79,6 +81,7 @@ const DEFAULT_LAUNCH_RETRIES = 2
 
 let mainWindow: BrowserWindow | null = null
 let db: DatabaseService | null = null
+let agentService: AgentService | null = null
 
 const runtimeContexts = new Map<string, BrowserContext>()
 const MAX_QUEUE = Number(process.env.MAX_QUEUE_LENGTH || 200)
@@ -88,6 +91,74 @@ function resolveAuditLogPath(): string {
     return path.join(app.getPath('userData'), process.env.RUNTIME_AUDIT_FILE || 'runtime-audit.log')
   } catch {
     return path.join(process.cwd(), process.env.RUNTIME_AUDIT_FILE || 'runtime-audit.log')
+  }
+}
+
+function getAgentRuntimeState() {
+  return {
+    runningProfileIds: [...runtimeContexts.keys()],
+    queuedProfileIds: scheduler.getQueuedIds(),
+    startingProfileIds: scheduler.getStartingIds(),
+    retryCounts: scheduler.getRetryCounts(),
+  }
+}
+
+function getAgentStateSnapshot() {
+  return (
+    agentService?.getState() || {
+      enabled: false,
+      writable: true,
+      connected: false,
+      agentId: '',
+      protocolVersion: '1' as const,
+      lastHeartbeatAt: null,
+      lastError: '',
+      consecutiveFailures: 0,
+      lastTaskId: null,
+      lastTaskStatus: null,
+      lastTaskFinishedAt: null,
+    }
+  )
+}
+
+function ensureWritable(action: string): void {
+  const state = getAgentStateSnapshot()
+  if (state.enabled && !state.writable) {
+    throw new Error(`Agent offline, write blocked: ${action}`)
+  }
+}
+
+async function syncConfigFromControlPlane(): Promise<void> {
+  if (!agentService || !agentService.getState().enabled) {
+    return
+  }
+  const snapshot = await agentService.pullConfigSnapshot()
+  if (!snapshot) {
+    return
+  }
+  requireDatabase().applyRemoteConfigSnapshot(snapshot as RemoteConfigSnapshot)
+}
+
+async function syncConfigToControlPlaneOrThrow(mode: 'replace' | 'merge' = 'replace'): Promise<void> {
+  if (!agentService || !agentService.getState().enabled) {
+    return
+  }
+  const snapshot = requireDatabase().exportRemoteConfigSnapshot(agentService.getSyncVersion())
+  try {
+    await agentService.pushConfigSnapshot({
+      profiles: snapshot.profiles,
+      proxies: snapshot.proxies,
+      templates: snapshot.templates,
+      cloudPhones: snapshot.cloudPhones,
+      settings: snapshot.settings,
+    }, { mode })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (/sync version mismatch/i.test(message)) {
+      await syncConfigFromControlPlane()
+      throw new Error('配置版本冲突，已拉取后台最新数据，请重试操作')
+    }
+    throw error
   }
 }
 
@@ -303,6 +374,40 @@ async function launchMany(profileIds: string[]): Promise<void> {
 async function stopMany(profileIds: string[]): Promise<void> {
   for (const profileId of profileIds) {
     await stopRuntime(profileId)
+  }
+}
+
+async function testProxyById(proxyId: string) {
+  const proxy = requireDatabase().getProxyById(proxyId)
+  if (!proxy) {
+    throw new Error('Proxy not found')
+  }
+
+  try {
+    const browser = await chromium.launch({
+      headless: true,
+      executablePath: resolveChromiumExecutable(),
+      proxy: proxyToPlaywrightConfig(proxy) ?? undefined,
+    })
+    const page = await browser.newPage()
+    await page.goto('https://example.com', { waitUntil: 'domcontentloaded', timeout: 20000 })
+    await browser.close()
+
+    const result = requireDatabase().setProxyStatus(proxyId, 'online')
+    logEvent('info', 'proxy', `Proxy "${proxy.name}" is reachable`, null)
+    return {
+      success: true,
+      message: 'Proxy connected successfully',
+      checkedAt: result.lastCheckedAt ?? new Date().toISOString(),
+    }
+  } catch (error) {
+    const result = requireDatabase().setProxyStatus(proxyId, 'offline')
+    logEvent('error', 'proxy', `Proxy "${proxy.name}" test failed`, null)
+    return {
+      success: false,
+      message: error instanceof Error ? error.message : 'Unknown proxy error',
+      checkedAt: result.lastCheckedAt ?? new Date().toISOString(),
+    }
   }
 }
 
@@ -742,6 +847,7 @@ async function registerIpcHandlers(): Promise<void> {
     rendererVersion: app.getVersion(),
     capabilities: CAPABILITIES,
   }))
+  ipcMain.handle('meta.getAgentState', async () => getAgentStateSnapshot())
 
   ipcMain.handle('dashboard.summary', async () => requireDatabase().getDashboardSummary())
 
@@ -754,6 +860,7 @@ async function registerIpcHandlers(): Promise<void> {
     cloudPhoneProviderRegistry.detectLocalDevices(getSettings()),
   )
   ipcMain.handle('cloudPhones.create', async (_event, input: CreateCloudPhoneInput) => {
+    ensureWritable('cloudPhones.create')
     const providerKey = input.providerKey || resolveDefaultCloudPhoneProviderKey()
     const payload = createCloudPhonePayload(
       {
@@ -770,31 +877,40 @@ async function registerIpcHandlers(): Promise<void> {
     })
     requireDatabase().setCloudPhoneProviderInstanceId(record.id, providerResult.providerInstanceId)
     requireDatabase().setCloudPhoneStatus(record.id, providerResult.status)
+    await syncConfigToControlPlaneOrThrow()
     logEvent('info', 'cloud-phone', `Created cloud phone "${record.name}" via ${provider.label}`, null)
     return requireDatabase().getCloudPhoneById(record.id)!
   })
   ipcMain.handle('cloudPhones.update', async (_event, input: UpdateCloudPhoneInput) => {
+    ensureWritable('cloudPhones.update')
     const payload = createCloudPhonePayload(input, input.providerKey)
     const record = requireDatabase().updateCloudPhone(payload)
     const provider = resolveCloudPhoneProvider(record)
     await provider.updateEnvironment(record, getSettings())
+    await syncConfigToControlPlaneOrThrow()
     logEvent('info', 'cloud-phone', `Updated cloud phone "${record.name}" via ${provider.label}`, null)
     return record
   })
   ipcMain.handle('cloudPhones.delete', async (_event, cloudPhoneId: string) => {
+    ensureWritable('cloudPhones.delete')
     const record = requireDatabase().getCloudPhoneById(cloudPhoneId)
     if (record) {
       const provider = resolveCloudPhoneProvider(record)
       await provider.deleteEnvironment(record, getSettings())
     }
     requireDatabase().deleteCloudPhone(cloudPhoneId)
+    await syncConfigToControlPlaneOrThrow()
     logEvent('warn', 'cloud-phone', `Deleted cloud phone ${cloudPhoneId}`, null)
   })
   ipcMain.handle('cloudPhones.start', async (_event, cloudPhoneId: string) => {
+    ensureWritable('cloudPhones.start')
     await startCloudPhone(cloudPhoneId)
+    await syncConfigToControlPlaneOrThrow()
   })
   ipcMain.handle('cloudPhones.stop', async (_event, cloudPhoneId: string) => {
+    ensureWritable('cloudPhones.stop')
     await stopCloudPhone(cloudPhoneId)
+    await syncConfigToControlPlaneOrThrow()
   })
   ipcMain.handle('cloudPhones.getStatus', async (_event, cloudPhoneId: string) => {
     const record = requireDatabase().getCloudPhoneById(cloudPhoneId)
@@ -835,16 +951,21 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('cloudPhones.refreshStatuses', async () => refreshCloudPhoneStatuses())
   ipcMain.handle('cloudPhones.bulkStart', async (_event, payload: CloudPhoneBulkActionPayload) => {
+    ensureWritable('cloudPhones.bulkStart')
     for (const cloudPhoneId of payload.cloudPhoneIds) {
       await startCloudPhone(cloudPhoneId)
     }
+    await syncConfigToControlPlaneOrThrow()
   })
   ipcMain.handle('cloudPhones.bulkStop', async (_event, payload: CloudPhoneBulkActionPayload) => {
+    ensureWritable('cloudPhones.bulkStop')
     for (const cloudPhoneId of payload.cloudPhoneIds) {
       await stopCloudPhone(cloudPhoneId)
     }
+    await syncConfigToControlPlaneOrThrow()
   })
   ipcMain.handle('cloudPhones.bulkDelete', async (_event, payload: CloudPhoneBulkActionPayload) => {
+    ensureWritable('cloudPhones.bulkDelete')
     for (const cloudPhoneId of payload.cloudPhoneIds) {
       const record = requireDatabase().getCloudPhoneById(cloudPhoneId)
       if (record) {
@@ -853,39 +974,50 @@ async function registerIpcHandlers(): Promise<void> {
       }
     }
     requireDatabase().bulkDeleteCloudPhones(payload.cloudPhoneIds)
+    await syncConfigToControlPlaneOrThrow()
     logEvent('warn', 'cloud-phone', `Deleted ${payload.cloudPhoneIds.length} cloud phones`, null)
   })
   ipcMain.handle('cloudPhones.bulkAssignGroup', async (_event, payload: CloudPhoneBulkActionPayload) => {
+    ensureWritable('cloudPhones.bulkAssignGroup')
     requireDatabase().bulkAssignCloudPhoneGroup(payload.cloudPhoneIds, payload.groupName ?? '')
+    await syncConfigToControlPlaneOrThrow()
     logEvent('info', 'cloud-phone', `Updated group for ${payload.cloudPhoneIds.length} cloud phones`, null)
   })
 
   ipcMain.handle('profiles.list', async () => requireDatabase().listProfiles())
   ipcMain.handle('profiles.create', async (_event, input: CreateProfileInput) => {
+    ensureWritable('profiles.create')
     const payload = await applyResolvedNetworkProfileToPayload(
       createProfilePayload(input, createDefaultFingerprint),
       requireDatabase(),
     )
     const profile = requireDatabase().createProfile(payload)
+    await syncConfigToControlPlaneOrThrow()
     logEvent('info', 'profile', `Created profile "${profile.name}"`, profile.id)
     return profile
   })
   ipcMain.handle('profiles.update', async (_event, input: UpdateProfileInput) => {
+    ensureWritable('profiles.update')
     const payload = await applyResolvedNetworkProfileToPayload(
       createProfilePayload(input, createDefaultFingerprint),
       requireDatabase(),
     )
     const profile = requireDatabase().updateProfile(payload)
+    await syncConfigToControlPlaneOrThrow()
     logEvent('info', 'profile', `Updated profile "${profile.name}"`, profile.id)
     return profile
   })
   ipcMain.handle('profiles.delete', async (_event, profileId: string) => {
+    ensureWritable('profiles.delete')
     await stopRuntime(profileId)
     requireDatabase().deleteProfile(profileId)
+    await syncConfigToControlPlaneOrThrow()
     logEvent('warn', 'profile', `Deleted profile ${profileId}`, profileId)
   })
   ipcMain.handle('profiles.clone', async (_event, profileId: string) => {
+    ensureWritable('profiles.clone')
     const profile = requireDatabase().cloneProfile(profileId)
+    await syncConfigToControlPlaneOrThrow()
     logEvent('info', 'profile', `Cloned profile "${profile.name}"`, profile.id)
     return profile
   })
@@ -901,98 +1033,90 @@ async function registerIpcHandlers(): Promise<void> {
     }
   })
   ipcMain.handle('profiles.bulkStart', async (_event, payload: ProfileBulkActionPayload) => {
+    ensureWritable('profiles.bulkStart')
     await launchMany(payload.profileIds)
   })
   ipcMain.handle('profiles.bulkStop', async (_event, payload: ProfileBulkActionPayload) => {
+    ensureWritable('profiles.bulkStop')
     await stopMany(payload.profileIds)
   })
   ipcMain.handle('profiles.bulkDelete', async (_event, payload: ProfileBulkActionPayload) => {
+    ensureWritable('profiles.bulkDelete')
     await stopMany(payload.profileIds)
     requireDatabase().bulkDeleteProfiles(payload.profileIds)
+    await syncConfigToControlPlaneOrThrow()
     logEvent('warn', 'profile', `Deleted ${payload.profileIds.length} profiles`, null)
   })
   ipcMain.handle('profiles.bulkAssignGroup', async (_event, payload: ProfileBulkActionPayload) => {
+    ensureWritable('profiles.bulkAssignGroup')
     requireDatabase().bulkAssignGroup(payload.profileIds, payload.groupName ?? '')
+    await syncConfigToControlPlaneOrThrow()
     logEvent('info', 'profile', `Updated group for ${payload.profileIds.length} profiles`, null)
   })
 
   ipcMain.handle('templates.list', async () => requireDatabase().listTemplates())
   ipcMain.handle('templates.create', async (_event, input: CreateTemplateInput) => {
+    ensureWritable('templates.create')
     const template = requireDatabase().createTemplate(
       createTemplatePayload(input, createDefaultFingerprint),
     )
+    await syncConfigToControlPlaneOrThrow()
     logEvent('info', 'profile', `Created template "${template.name}"`, null)
     return template
   })
   ipcMain.handle('templates.update', async (_event, input: UpdateTemplateInput) => {
+    ensureWritable('templates.update')
     const template = requireDatabase().updateTemplate(
       createTemplatePayload(input, createDefaultFingerprint),
     )
+    await syncConfigToControlPlaneOrThrow()
     logEvent('info', 'profile', `Updated template "${template.name}"`, null)
     return template
   })
   ipcMain.handle('templates.delete', async (_event, templateId: string) => {
+    ensureWritable('templates.delete')
     requireDatabase().deleteTemplate(templateId)
+    await syncConfigToControlPlaneOrThrow()
     logEvent('warn', 'profile', `Deleted template ${templateId}`, null)
   })
   ipcMain.handle('templates.createFromProfile', async (_event, profileId: string) => {
+    ensureWritable('templates.createFromProfile')
     const template = requireDatabase().createTemplateFromProfile(profileId)
+    await syncConfigToControlPlaneOrThrow()
     logEvent('info', 'profile', `Created template from profile "${template.name}"`, null)
     return template
   })
 
   ipcMain.handle('proxies.list', async () => requireDatabase().listProxies())
   ipcMain.handle('proxies.create', async (_event, input: CreateProxyInput) => {
+    ensureWritable('proxies.create')
     const payload = createProxyPayload(input)
     const proxy = requireDatabase().createProxy(payload)
+    await syncConfigToControlPlaneOrThrow()
     logEvent('info', 'proxy', `Created proxy "${proxy.name}"`, null)
     return proxy
   })
   ipcMain.handle('proxies.update', async (_event, input: UpdateProxyInput) => {
+    ensureWritable('proxies.update')
     const payload = createProxyPayload(input)
     const proxy = requireDatabase().updateProxy(payload)
+    await syncConfigToControlPlaneOrThrow()
     logEvent('info', 'proxy', `Updated proxy "${proxy.name}"`, null)
     return proxy
   })
   ipcMain.handle('proxies.delete', async (_event, proxyId: string) => {
+    ensureWritable('proxies.delete')
     requireDatabase().deleteProxy(proxyId)
+    await syncConfigToControlPlaneOrThrow()
     logEvent('warn', 'proxy', `Deleted proxy ${proxyId}`, null)
   })
   ipcMain.handle('proxies.test', async (_event, proxyId: string) => {
-    const proxy = requireDatabase().getProxyById(proxyId)
-    if (!proxy) {
-      throw new Error('Proxy not found')
-    }
-
-    try {
-      const browser = await chromium.launch({
-        headless: true,
-        executablePath: resolveChromiumExecutable(),
-        proxy: proxyToPlaywrightConfig(proxy) ?? undefined,
-      })
-      const page = await browser.newPage()
-      await page.goto('https://example.com', { waitUntil: 'domcontentloaded', timeout: 20000 })
-      await browser.close()
-
-      const result = requireDatabase().setProxyStatus(proxyId, 'online')
-      logEvent('info', 'proxy', `Proxy "${proxy.name}" is reachable`, null)
-      return {
-        success: true,
-        message: 'Proxy connected successfully',
-        checkedAt: result.lastCheckedAt ?? new Date().toISOString(),
-      }
-    } catch (error) {
-      const result = requireDatabase().setProxyStatus(proxyId, 'offline')
-      logEvent('error', 'proxy', `Proxy "${proxy.name}" test failed`, null)
-      return {
-        success: false,
-        message: error instanceof Error ? error.message : 'Unknown proxy error',
-        checkedAt: result.lastCheckedAt ?? new Date().toISOString(),
-      }
-    }
+    ensureWritable('proxies.test')
+    return testProxyById(proxyId)
   })
 
   ipcMain.handle('runtime.launch', async (_event, profileId: string) => {
+    ensureWritable('runtime.launch')
     try {
       await enqueueLaunch(profileId)
     } catch (error) {
@@ -1007,6 +1131,7 @@ async function registerIpcHandlers(): Promise<void> {
     }
   })
   ipcMain.handle('runtime.stop', async (_event, profileId: string) => {
+    ensureWritable('runtime.stop')
     await stopRuntime(profileId)
     await updateProfileStatus(profileId, 'stopped')
   })
@@ -1023,7 +1148,9 @@ async function registerIpcHandlers(): Promise<void> {
 
   ipcMain.handle('settings.get', async () => requireDatabase().getSettings())
   ipcMain.handle('settings.set', async (_event, payload: SettingsPayload) => {
+    ensureWritable('settings.set')
     const data = requireDatabase().setSettings(payload)
+    await syncConfigToControlPlaneOrThrow()
     logEvent('info', 'system', 'Updated application settings', null)
     return data
   })
@@ -1050,6 +1177,7 @@ async function registerIpcHandlers(): Promise<void> {
     return selected.filePath
   })
   ipcMain.handle('data.importBundle', async () => {
+    ensureWritable('data.importBundle')
     const win = BrowserWindow.getFocusedWindow() ?? mainWindow
     const selected = win
       ? await dialog.showOpenDialog(win, {
@@ -1073,11 +1201,126 @@ async function registerIpcHandlers(): Promise<void> {
   })
 }
 
+function initAgentService() {
+  const apiBase = String(process.env.DUOKAI_AGENT_API_BASE || '').trim()
+  const agentId = String(process.env.DUOKAI_AGENT_ID || '').trim()
+  const registrationCode = String(process.env.DUOKAI_AGENT_REGISTRATION_CODE || '').trim()
+
+  agentService = new AgentService({
+    apiBase,
+    agentId,
+    registrationCode,
+    agentVersion: app.getVersion(),
+    capabilities: CAPABILITIES,
+    getHostInfo: () => getRuntimeHostInfo(),
+    getRuntimeStatus: () => getAgentRuntimeState(),
+    onStateChange: (state) => {
+      if (state.lastError) {
+        logEvent('warn', 'system', `Agent channel warning: ${state.lastError}`, null)
+      }
+    },
+    executeTask: async (task) => {
+      const payload = (task.payload || {}) as Record<string, unknown>
+
+      if (task.type === 'PROFILE_START') {
+        const profileId = String(payload.profileId || '').trim()
+        if (!profileId) {
+          return { status: 'FAILED', errorCode: 'INVALID_PAYLOAD', errorMessage: 'profileId is required' }
+        }
+        await enqueueLaunch(profileId)
+        return { status: 'SUCCEEDED' }
+      }
+
+      if (task.type === 'PROFILE_STOP') {
+        const profileId = String(payload.profileId || '').trim()
+        if (!profileId) {
+          return { status: 'FAILED', errorCode: 'INVALID_PAYLOAD', errorMessage: 'profileId is required' }
+        }
+        await stopRuntime(profileId)
+        await updateProfileStatus(profileId, 'stopped')
+        return { status: 'SUCCEEDED' }
+      }
+
+      if (task.type === 'PROXY_TEST') {
+        const proxyId = String(payload.proxyId || '').trim()
+        if (!proxyId) {
+          return { status: 'FAILED', errorCode: 'INVALID_PAYLOAD', errorMessage: 'proxyId is required' }
+        }
+        const result = await testProxyById(proxyId)
+        return result.success
+          ? { status: 'SUCCEEDED', outputRef: result.checkedAt }
+          : { status: 'FAILED', errorCode: 'PROXY_TEST_FAILED', errorMessage: result.message }
+      }
+
+      if (task.type === 'SETTINGS_SYNC') {
+        const action = String(payload.action || '').trim().toLowerCase()
+        if (action === 'pull_snapshot') {
+          await syncConfigFromControlPlane()
+          return { status: 'SUCCEEDED' }
+        }
+        if (action === 'push_snapshot' || action === 'push_snapshot_replace') {
+          await syncConfigToControlPlaneOrThrow('replace')
+          return { status: 'SUCCEEDED' }
+        }
+        if (action === 'push_snapshot_merge') {
+          await syncConfigToControlPlaneOrThrow('merge')
+          return { status: 'SUCCEEDED' }
+        }
+        const settings = (payload.settings || {}) as SettingsPayload
+        requireDatabase().setSettings(settings)
+        await syncConfigToControlPlaneOrThrow('merge')
+        return { status: 'SUCCEEDED' }
+      }
+
+      if (task.type === 'TEMPLATE_APPLY') {
+        const profileId = String(payload.profileId || '').trim()
+        const templateId = String(payload.templateId || '').trim()
+        if (!profileId || !templateId) {
+          return {
+            status: 'FAILED',
+            errorCode: 'INVALID_PAYLOAD',
+            errorMessage: 'profileId and templateId are required',
+          }
+        }
+        const template = requireDatabase().listTemplates().find((item) => item.id === templateId)
+        const profile = requireDatabase().listProfiles().find((item) => item.id === profileId)
+        if (!template || !profile) {
+          return { status: 'FAILED', errorCode: 'NOT_FOUND', errorMessage: 'profile or template not found' }
+        }
+        requireDatabase().updateProfile({
+          id: profile.id,
+          name: profile.name,
+          proxyId: template.proxyId,
+          groupName: template.groupName,
+          tags: template.tags,
+          notes: template.notes,
+          fingerprintConfig: template.fingerprintConfig,
+        })
+        return { status: 'SUCCEEDED' }
+      }
+
+      if (task.type === 'LOG_FLUSH') {
+        return { status: 'SUCCEEDED' }
+      }
+
+      return { status: 'FAILED', errorCode: 'UNSUPPORTED_TASK', errorMessage: `Unsupported task: ${task.type}` }
+    },
+  })
+
+  agentService.start()
+}
+
 async function bootstrap(): Promise<void> {
   await app.whenReady()
   syncTheme()
   db = new DatabaseService(app)
   await registerIpcHandlers()
+  initAgentService()
+  try {
+    await syncConfigFromControlPlane()
+  } catch (error) {
+    logEvent('warn', 'system', `Initial config sync failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
   await createMainWindow()
   logEvent('info', 'system', isDev ? 'Development session started' : 'Application started')
   logEvent(
@@ -1111,6 +1354,9 @@ async function bootstrap(): Promise<void> {
 }
 
 app.on('window-all-closed', async () => {
+  if (agentService) {
+    await agentService.stop()
+  }
   await saveAllElectronSessions()
   for (const profileId of [...runtimeContexts.keys()]) {
     await stopRuntime(profileId)

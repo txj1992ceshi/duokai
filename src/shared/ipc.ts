@@ -33,6 +33,19 @@ import type {
 export interface DesktopApi {
   meta: {
     getInfo: () => Promise<DesktopRuntimeInfo>
+    getAgentState: () => Promise<{
+      enabled: boolean
+      writable: boolean
+      connected: boolean
+      agentId: string
+      protocolVersion: '1'
+      lastHeartbeatAt: string | null
+      lastError: string
+      consecutiveFailures: number
+      lastTaskId: string | null
+      lastTaskStatus: 'RECEIVED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | null
+      lastTaskFinishedAt: string | null
+    }>
   }
   dashboard: {
     summary: () => Promise<DashboardSummary>

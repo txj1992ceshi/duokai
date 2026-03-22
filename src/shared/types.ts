@@ -430,6 +430,15 @@ export interface ExportBundle {
   cloudPhones: CloudPhoneRecord[]
 }
 
+export interface RemoteConfigSnapshot {
+  syncVersion: number
+  profiles: ProfileRecord[]
+  proxies: ProxyRecord[]
+  templates: TemplateRecord[]
+  cloudPhones: CloudPhoneRecord[]
+  settings: SettingsPayload
+}
+
 export interface ImportResult {
   profilesImported: number
   proxiesImported: number

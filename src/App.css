@@ -162,6 +162,12 @@
   color: #e9fff2;
 }
 
+.banner.warning {
+  background: rgba(148, 103, 16, 0.24);
+  border-color: rgba(255, 206, 110, 0.26);
+  color: #fff6dc;
+}
+
 .panel-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

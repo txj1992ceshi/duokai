@@ -42,6 +42,7 @@ type ResourceMode = 'profiles' | 'templates'
 type EditorPageMode = 'list' | 'create' | 'edit'
 type StatusFilter = 'all' | ProfileRecord['status']
 type DesktopRuntimeApi = DesktopApi
+type AgentState = Awaited<ReturnType<DesktopApi['meta']['getAgentState']>>
 type ProfileFormState = {
   name: string
   proxyId: string | null
@@ -386,6 +387,7 @@ function App() {
   const [runtimeInfo, setRuntimeInfo] = useState<DesktopRuntimeInfo | null>(null)
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(null)
   const [runtimeHostInfo, setRuntimeHostInfo] = useState<RuntimeHostInfo | null>(null)
+  const [agentState, setAgentState] = useState<AgentState | null>(null)
   const [busyMessage, setBusyMessage] = useState('')
   const [noticeMessage, setNoticeMessage] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
@@ -447,6 +449,28 @@ function App() {
   }, [profiles])
   const profileBackLabel = locale === 'zh-CN' ? '返回列表' : 'Back to list'
   const cloudPhoneBackLabel = locale === 'zh-CN' ? '返回列表' : 'Back to list'
+  const agentReadOnlyMessage = useMemo(() => {
+    if (!agentState?.enabled || agentState.writable) {
+      return ''
+    }
+    const lastTask =
+      agentState.lastTaskId && agentState.lastTaskStatus
+        ? `${agentState.lastTaskId} (${agentState.lastTaskStatus})`
+        : ''
+    if (locale === 'zh-CN') {
+      const reason = agentState.lastError ? `（${agentState.lastError}）` : ''
+      const taskInfo = lastTask ? `，最近任务：${lastTask}` : ''
+      const failInfo = agentState.consecutiveFailures > 0 ? `，连续失败：${agentState.consecutiveFailures}` : ''
+      return `当前为离线只读模式：配置写操作已暂停，等待与控制面恢复连接${reason}${taskInfo}${failInfo}`
+    }
+    const reason = agentState.lastError ? ` (${agentState.lastError})` : ''
+    const taskInfo = lastTask ? `. Last task: ${lastTask}` : ''
+    const failInfo =
+      agentState.consecutiveFailures > 0
+        ? `. Consecutive failures: ${agentState.consecutiveFailures}`
+        : ''
+    return `Offline read-only mode: config writes are paused until control plane reconnects${reason}${taskInfo}${failInfo}`
+  }, [agentState, locale])
   const showProfileWorkspaceList = resourceMode === 'profiles' && profilePageMode === 'list'
   const showProfileWorkspaceEditor = resourceMode === 'profiles' && profilePageMode !== 'list'
   const showTemplateWorkspace = resourceMode === 'templates'
@@ -580,6 +604,7 @@ function App() {
       nextLogs,
       nextSettings,
       dirInfo,
+      nextAgentState,
     ] =
       await Promise.all([
         api.dashboard.summary(),
@@ -595,6 +620,7 @@ function App() {
         api.logs.list(),
         api.settings.get(),
         api.profiles.getDirectoryInfo(),
+        api.meta.getAgentState(),
       ])
     const info = await api.meta.getInfo()
 
@@ -611,6 +637,7 @@ function App() {
     setLogs(nextLogs)
     setSettings(nextSettings)
     setDirectoryInfo(dirInfo)
+    setAgentState(nextAgentState)
     setRuntimeInfo({
       ...info,
       rendererVersion: __APP_VERSION__,
@@ -634,15 +661,18 @@ function App() {
           'cloudPhones.refreshStatuses',
           'profiles.list',
           'dashboard.summary',
+          'meta.getAgentState',
         ])
-        const [nextCloudPhones, nextProfiles, nextSummary] = await Promise.all([
+        const [nextCloudPhones, nextProfiles, nextSummary, nextAgentState] = await Promise.all([
           api.cloudPhones.refreshStatuses(),
           api.profiles.list(),
           api.dashboard.summary(),
+          api.meta.getAgentState(),
         ])
         setProfiles(nextProfiles)
         setSummary(nextSummary)
         setCloudPhones(nextCloudPhones)
+        setAgentState(nextAgentState)
       } catch (error) {
         setErrorMessage(localizeError(error))
         return
@@ -1296,6 +1326,7 @@ function App() {
         </header>
 
         {errorMessage ? <div className="banner error">{errorMessage}</div> : null}
+        {!errorMessage && agentReadOnlyMessage ? <div className="banner warning">{agentReadOnlyMessage}</div> : null}
         {!errorMessage && noticeMessage ? <div className="banner success">{noticeMessage}</div> : null}
 
         {view === 'dashboard' ? (
