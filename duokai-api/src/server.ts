@@ -14,6 +14,8 @@ import profileStorageStateRouter from './routes/profileStorageState.js';
 import runtimeRouter from './routes/runtime.js';
 import proxyRouter from './routes/proxy.js';
 import launchRouter from './routes/launch.js';
+import adminAgentsRouter from './routes/adminAgents.js';
+import agentV1Router from './routes/agentV1.js';
 import { errorMiddleware } from './middlewares/error.js';
 
 const app = express();
@@ -57,6 +59,8 @@ app.use('/api/profile-storage-state', profileStorageStateRouter);
 app.use('/api/runtime', runtimeRouter);
 app.use('/api/proxy', proxyRouter);
 app.use('/api/launch', launchRouter);
+app.use('/api/admin/agents', adminAgentsRouter);
+app.use('/api/agent/v1', agentV1Router);
 app.use('/health', healthRouter);
 
 app.use(errorMiddleware);

@@ -6,7 +6,12 @@
     "dev": "node --env-file=.env.local --watch --import tsx src/server.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node --env-file=.env.local dist/server.js",
-    "lint": "tsc -p tsconfig.json --noEmit"
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test src/**/*.test.ts",
+    "check:agent-env": "node --env-file=.env.local scripts/agent-env-check.mjs",
+    "verify:agent-phase1": "node --env-file=.env.local scripts/agent-phase1-verify.mjs",
+    "smoke:agent": "node --env-file=.env.local scripts/agent-smoke.mjs",
+    "slo:agent": "node --env-file=.env.local scripts/agent-slo-check.mjs"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

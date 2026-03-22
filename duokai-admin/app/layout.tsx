@@ -76,6 +76,9 @@ export default function RootLayout({
               <Link href="/runtime" className={navClass('/runtime')}>
                 运行状态
               </Link>
+              <Link href="/agents" className={navClass('/agents')}>
+                Agent 管控
+              </Link>
               <Link href="/storage-state" className={navClass('/storage-state')}>
                 登录态同步
               </Link>

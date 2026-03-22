@@ -1,0 +1,45 @@
+name: Agent SLO Guard
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/30 * * * *'
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: duokai-api
+    env:
+      API_BASE: ${{ secrets.AGENT_SMOKE_API_BASE }}
+      ADMIN_IDENTIFIER: ${{ secrets.AGENT_SMOKE_ADMIN_IDENTIFIER }}
+      ADMIN_PASSWORD: ${{ secrets.AGENT_SMOKE_ADMIN_PASSWORD }}
+      WINDOW_MINUTES: '60'
+      RUNNING_TIMEOUT_MINUTES: '10'
+      MIN_HEARTBEAT_RATE: '99'
+      MIN_TASK_SUCCESS_RATE: '95'
+      MAX_STUCK_RUNNING: '0'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: duokai-api/package-lock.json
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Validate secrets
+        run: |
+          if [ -z "$API_BASE" ] || [ -z "$ADMIN_IDENTIFIER" ] || [ -z "$ADMIN_PASSWORD" ]; then
+            echo "Missing AGENT_SMOKE_* secrets"
+            exit 1
+          fi
+
+      - name: Check SLO
+        run: npm run slo:agent
