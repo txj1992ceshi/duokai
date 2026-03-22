@@ -1,0 +1,101 @@
+import { contextBridge, ipcRenderer } from 'electron'
+import type { DesktopApi } from '../src/shared/ipc'
+import type {
+  CloudPhoneBulkActionPayload,
+  CreateCloudPhoneInput,
+  CreateProfileInput,
+  CreateProxyInput,
+  CreateTemplateInput,
+  ProfileBulkActionPayload,
+  SettingsPayload,
+  UpdateCloudPhoneInput,
+  UpdateProfileInput,
+  UpdateProxyInput,
+  UpdateTemplateInput,
+} from '../src/shared/types'
+
+const api: DesktopApi = {
+  meta: {
+    getInfo: () => ipcRenderer.invoke('meta.getInfo'),
+    getAgentState: () => ipcRenderer.invoke('meta.getAgentState'),
+  },
+  dashboard: {
+    summary: () => ipcRenderer.invoke('dashboard.summary'),
+  },
+  cloudPhones: {
+    list: () => ipcRenderer.invoke('cloudPhones.list'),
+    listProviders: () => ipcRenderer.invoke('cloudPhones.listProviders'),
+    getProviderHealth: () => ipcRenderer.invoke('cloudPhones.getProviderHealth'),
+    detectLocalDevices: () => ipcRenderer.invoke('cloudPhones.detectLocalDevices'),
+    create: (input: CreateCloudPhoneInput) => ipcRenderer.invoke('cloudPhones.create', input),
+    update: (input: UpdateCloudPhoneInput) => ipcRenderer.invoke('cloudPhones.update', input),
+    delete: (id: string) => ipcRenderer.invoke('cloudPhones.delete', id),
+    start: (id: string) => ipcRenderer.invoke('cloudPhones.start', id),
+    stop: (id: string) => ipcRenderer.invoke('cloudPhones.stop', id),
+    getStatus: (id: string) => ipcRenderer.invoke('cloudPhones.getStatus', id),
+    getDetails: (id: string) => ipcRenderer.invoke('cloudPhones.getDetails', id),
+    testProxy: (input: CreateCloudPhoneInput) => ipcRenderer.invoke('cloudPhones.testProxy', input),
+    refreshStatuses: () => ipcRenderer.invoke('cloudPhones.refreshStatuses'),
+    bulkStart: (payload: CloudPhoneBulkActionPayload) =>
+      ipcRenderer.invoke('cloudPhones.bulkStart', payload),
+    bulkStop: (payload: CloudPhoneBulkActionPayload) =>
+      ipcRenderer.invoke('cloudPhones.bulkStop', payload),
+    bulkDelete: (payload: CloudPhoneBulkActionPayload) =>
+      ipcRenderer.invoke('cloudPhones.bulkDelete', payload),
+    bulkAssignGroup: (payload: CloudPhoneBulkActionPayload) =>
+      ipcRenderer.invoke('cloudPhones.bulkAssignGroup', payload),
+  },
+  profiles: {
+    list: () => ipcRenderer.invoke('profiles.list'),
+    create: (input: CreateProfileInput) => ipcRenderer.invoke('profiles.create', input),
+    update: (input: UpdateProfileInput) => ipcRenderer.invoke('profiles.update', input),
+    delete: (id: string) => ipcRenderer.invoke('profiles.delete', id),
+    clone: (id: string) => ipcRenderer.invoke('profiles.clone', id),
+    revealDirectory: (id: string) => ipcRenderer.invoke('profiles.revealDirectory', id),
+    getDirectoryInfo: () => ipcRenderer.invoke('profiles.getDirectoryInfo'),
+    bulkStart: (payload: ProfileBulkActionPayload) =>
+      ipcRenderer.invoke('profiles.bulkStart', payload),
+    bulkStop: (payload: ProfileBulkActionPayload) =>
+      ipcRenderer.invoke('profiles.bulkStop', payload),
+    bulkDelete: (payload: ProfileBulkActionPayload) =>
+      ipcRenderer.invoke('profiles.bulkDelete', payload),
+    bulkAssignGroup: (payload: ProfileBulkActionPayload) =>
+      ipcRenderer.invoke('profiles.bulkAssignGroup', payload),
+  },
+  templates: {
+    list: () => ipcRenderer.invoke('templates.list'),
+    create: (input: CreateTemplateInput) => ipcRenderer.invoke('templates.create', input),
+    update: (input: UpdateTemplateInput) => ipcRenderer.invoke('templates.update', input),
+    delete: (id: string) => ipcRenderer.invoke('templates.delete', id),
+    createFromProfile: (profileId: string) =>
+      ipcRenderer.invoke('templates.createFromProfile', profileId),
+  },
+  proxies: {
+    list: () => ipcRenderer.invoke('proxies.list'),
+    create: (input: CreateProxyInput) => ipcRenderer.invoke('proxies.create', input),
+    update: (input: UpdateProxyInput) => ipcRenderer.invoke('proxies.update', input),
+    delete: (id: string) => ipcRenderer.invoke('proxies.delete', id),
+    test: (id: string) => ipcRenderer.invoke('proxies.test', id),
+  },
+  runtime: {
+    launch: (profileId: string) => ipcRenderer.invoke('runtime.launch', profileId),
+    stop: (profileId: string) => ipcRenderer.invoke('runtime.stop', profileId),
+    getStatus: () => ipcRenderer.invoke('runtime.getStatus'),
+    getHostInfo: () => ipcRenderer.invoke('runtime.getHostInfo'),
+  },
+  logs: {
+    list: () => ipcRenderer.invoke('logs.list'),
+    clear: () => ipcRenderer.invoke('logs.clear'),
+  },
+  settings: {
+    get: () => ipcRenderer.invoke('settings.get'),
+    set: (payload: SettingsPayload) => ipcRenderer.invoke('settings.set', payload),
+  },
+  data: {
+    exportBundle: () => ipcRenderer.invoke('data.exportBundle'),
+    importBundle: () => ipcRenderer.invoke('data.importBundle'),
+    previewBundle: () => ipcRenderer.invoke('data.previewBundle'),
+  },
+}
+
+contextBridge.exposeInMainWorld('desktop', api)
