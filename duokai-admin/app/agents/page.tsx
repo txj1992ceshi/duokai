@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { adminFetch } from '@/lib/api-client';
 import { readAdminAuth } from '@/lib/require-admin-client';
@@ -140,7 +140,7 @@ const taskTypes: TaskType[] = [
   'LOG_FLUSH',
 ];
 
-export default function AgentsPage() {
+function AgentsPageContent() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -1095,5 +1095,13 @@ export default function AgentsPage() {
         </table>
       </DataTable>
     </div>
+  );
+}
+
+export default function AgentsPage() {
+  return (
+    <Suspense fallback={<div className="text-sm text-slate-400">加载 Agent 页面...</div>}>
+      <AgentsPageContent />
+    </Suspense>
   );
 }
