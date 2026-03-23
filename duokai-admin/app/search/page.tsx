@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { adminFetch } from '@/lib/api-client';
@@ -48,7 +48,7 @@ function highlightText(text: string, keyword: string) {
   );
 }
 
-export default function SearchPage() {
+function SearchPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const query = String(searchParams.get('q') || '').trim();
@@ -191,5 +191,13 @@ export default function SearchPage() {
         </>
       )}
     </div>
+  );
+}
+
+export default function SearchPage() {
+  return (
+    <Suspense fallback={<div className="text-sm text-neutral-400">加载搜索页面...</div>}>
+      <SearchPageContent />
+    </Suspense>
   );
 }
