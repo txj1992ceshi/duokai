@@ -41,6 +41,10 @@ router.get(
             stateJson: storageState.stateJson,
             version: storageState.version,
             encrypted: storageState.encrypted,
+            deviceId: storageState.deviceId || '',
+            updatedBy: storageState.updatedBy || '',
+            source: storageState.source || 'desktop',
+            stateHash: storageState.stateHash || '',
             createdAt: storageState.createdAt,
             updatedAt: storageState.updatedAt,
           }
@@ -72,11 +76,40 @@ router.put(
       return;
     }
 
+    const baseVersion = Number(body.baseVersion ?? 0);
+    if (!Number.isFinite(baseVersion) || baseVersion < 0) {
+      res.status(400).json({ success: false, error: 'baseVersion must be a non-negative number' });
+      return;
+    }
+
+    const deviceId = String(body.deviceId || '').trim();
+    if (!deviceId) {
+      res.status(400).json({ success: false, error: 'deviceId is required' });
+      return;
+    }
+
     const existing = await ProfileStorageStateModel.findOne({
       userId: authUser.userId,
       profileId,
     }).lean();
-    const nextVersion = existing ? (existing.version || 1) + 1 : 1;
+
+    if ((existing?.version || 0) !== baseVersion) {
+      res.status(409).json({
+        success: false,
+        error: 'Storage state version conflict',
+        conflict: {
+          currentVersion: existing?.version || 0,
+          updatedAt: existing?.updatedAt || null,
+          deviceId: existing?.deviceId || '',
+          updatedBy: existing?.updatedBy || '',
+        },
+      });
+      return;
+    }
+
+    const nextVersion = existing ? (existing.version || 0) + 1 : 1;
+    const source = String(body.source || 'desktop').trim() || 'desktop';
+    const stateHash = String(body.stateHash || '').trim();
 
     const storageState = await ProfileStorageStateModel.findOneAndUpdate(
       {
@@ -89,6 +122,10 @@ router.put(
         stateJson: body.stateJson,
         encrypted: !!body.encrypted,
         version: nextVersion,
+        deviceId,
+        updatedBy: String(authUser.userId),
+        source,
+        stateHash,
       },
       {
         upsert: true,
@@ -103,6 +140,10 @@ router.put(
         userId: String(storageState!.userId),
         profileId: String(storageState!.profileId),
         version: storageState!.version,
+        deviceId: storageState!.deviceId || '',
+        updatedBy: storageState!.updatedBy || '',
+        source: storageState!.source || 'desktop',
+        stateHash: storageState!.stateHash || '',
         updatedAt: storageState!.updatedAt,
       },
     });

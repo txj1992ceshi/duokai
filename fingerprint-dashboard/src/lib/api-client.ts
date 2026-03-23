@@ -1,5 +1,5 @@
 export function getApiBase() {
-  return (process.env.NEXT_PUBLIC_DUOKAI_API_BASE || 'http://localhost:3100').replace(/\/$/, '');
+  return (process.env.NEXT_PUBLIC_DUOKAI_API_BASE || 'http://127.0.0.1:3100').replace(/\/$/, '');
 }
 
 export function getAuthToken() {
@@ -31,6 +31,14 @@ export async function apiFetch(
     ...init,
     headers,
   });
+
+  if (res.status === 401 && typeof window !== 'undefined') {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    if (!window.location.pathname.startsWith('/login')) {
+      window.location.replace('/login');
+    }
+  }
 
   return res;
 }

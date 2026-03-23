@@ -7,16 +7,24 @@ import type { ProxyVerificationRecord } from '@/lib/proxyTypes';
 
 export const runtime = 'nodejs';
 
+function resolveRuntimeUrl(raw: string): string {
+  const value = String(raw || '').trim();
+  if (!value || value === 'http://127.0.0.1:3001') {
+    return 'http://127.0.0.1:3101';
+  }
+  return value;
+}
+
 export async function POST(req: NextRequest) {
   let payload: Record<string, unknown> = {};
   try {
     const authUser = requireUser(req);
     await connectMongo();
     const settingsDoc = await SettingModel.findOne({ userId: authUser.userId }).lean();
-    const runtimeUrl =
+    const runtimeUrl = resolveRuntimeUrl(
       process.env.RUNTIME_URL ||
-      String((settingsDoc as Record<string, unknown> | null)?.runtimeUrl || '') ||
-      'http://127.0.0.1:3001';
+      String((settingsDoc as Record<string, unknown> | null)?.runtimeUrl || '')
+    );
     const apiKey =
       process.env.RUNTIME_API_KEY ||
       String((settingsDoc as Record<string, unknown> | null)?.runtimeApiKey || '') ||

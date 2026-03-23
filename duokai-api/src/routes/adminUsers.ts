@@ -4,6 +4,7 @@ import { hashPassword } from '../lib/auth.js';
 import { connectMongo } from '../lib/mongodb.js';
 import { asyncHandler } from '../lib/http.js';
 import { serializeUser } from '../lib/serializers.js';
+import { isValidSubscriptionStatus, normalizeSubscriptionShape, syncUserSubscriptionState } from '../lib/subscription.js';
 import { requireAdmin } from '../middlewares/auth.js';
 import { UserModel } from '../models/User.js';
 
@@ -15,7 +16,8 @@ router.get(
   '/',
   asyncHandler(async (_req, res) => {
     await connectMongo();
-    const users = await UserModel.find({}).sort({ createdAt: -1 }).lean();
+    const users = await UserModel.find({}).sort({ createdAt: -1 });
+    await Promise.all(users.map((user) => syncUserSubscriptionState(user)));
     res.json({
       success: true,
       users: users.map(serializeUser),
@@ -134,6 +136,24 @@ router.patch(
       }
       updateData.passwordHash = await hashPassword(password);
     }
+    if (req.body?.subscription && typeof req.body.subscription === 'object') {
+      const subscription = req.body.subscription as Record<string, unknown>;
+      const nextPlan = String(subscription.plan || '').trim();
+      const nextStatus = String(subscription.status || '').trim().toLowerCase();
+      const nextExpiresAt = subscription.expiresAt ? new Date(String(subscription.expiresAt)) : null;
+
+      if (nextStatus && !isValidSubscriptionStatus(nextStatus)) {
+        res.status(400).json({ success: false, error: 'Invalid subscription status' });
+        return;
+      }
+
+      updateData.subscription = normalizeSubscriptionShape({
+        plan: nextPlan || 'free',
+        status: nextStatus || (nextPlan === 'free' ? 'free' : 'active'),
+        expiresAt:
+          nextExpiresAt && !Number.isNaN(nextExpiresAt.getTime()) ? nextExpiresAt : null,
+      });
+    }
 
     if (req.params.id === authUser.userId && req.body?.role === 'user') {
       res.status(400).json({ success: false, error: 'You cannot remove your own admin role' });
@@ -178,6 +198,95 @@ router.patch(
         name: user.name,
         role: user.role,
         status: user.status,
+        subscription: user.subscription || null,
+      },
+    });
+
+    res.json({
+      success: true,
+      user: serializeUser(user),
+    });
+  })
+);
+
+router.post(
+  '/:id/devices/:deviceId/revoke',
+  asyncHandler(async (req, res) => {
+    await connectMongo();
+    const authUser = req.authUser!;
+    const user = await UserModel.findById(req.params.id);
+
+    if (!user) {
+      res.status(404).json({ success: false, error: 'User not found' });
+      return;
+    }
+
+    const device = Array.isArray(user.devices)
+      ? user.devices.find((item: any) => String(item.deviceId) === String(req.params.deviceId))
+      : null;
+
+    if (!device) {
+      res.status(404).json({ success: false, error: 'Device not found' });
+      return;
+    }
+
+    device.revokedAt = new Date();
+    device.sessionToken = '';
+    await user.save();
+
+    await logAdminAction({
+      adminUserId: authUser.userId,
+      adminEmail: authUser.email,
+      action: 'revoke_user_device',
+      targetType: 'user',
+      targetId: String(user._id),
+      targetLabel: user.email || user.username || String(user._id),
+      detail: {
+        deviceId: device.deviceId,
+        deviceName: device.deviceName || '',
+      },
+    });
+
+    res.json({
+      success: true,
+      user: serializeUser(user),
+    });
+  })
+);
+
+router.delete(
+  '/:id/devices/:deviceId',
+  asyncHandler(async (req, res) => {
+    await connectMongo();
+    const authUser = req.authUser!;
+    const user = await UserModel.findById(req.params.id);
+
+    if (!user) {
+      res.status(404).json({ success: false, error: 'User not found' });
+      return;
+    }
+
+    const nextDevices = Array.isArray(user.devices)
+      ? user.devices.filter((item: any) => String(item.deviceId) !== String(req.params.deviceId))
+      : [];
+
+    if (nextDevices.length === user.devices.length) {
+      res.status(404).json({ success: false, error: 'Device not found' });
+      return;
+    }
+
+    user.devices = nextDevices as any;
+    await user.save();
+
+    await logAdminAction({
+      adminUserId: authUser.userId,
+      adminEmail: authUser.email,
+      action: 'delete_user_device',
+      targetType: 'user',
+      targetId: String(user._id),
+      targetLabel: user.email || user.username || String(user._id),
+      detail: {
+        deviceId: String(req.params.deviceId),
       },
     });
 

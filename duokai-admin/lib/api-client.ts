@@ -1,5 +1,5 @@
 const API_BASE =
-  (process.env.NEXT_PUBLIC_DUOKAI_API_BASE || 'http://localhost:3100').replace(/\/$/, '');
+  (process.env.NEXT_PUBLIC_DUOKAI_API_BASE || 'http://127.0.0.1:3100').replace(/\/$/, '');
 
 export function getAdminToken() {
   if (typeof window === 'undefined') return '';
@@ -26,8 +26,18 @@ export async function adminFetch(
     headers.set('Content-Type', 'application/json');
   }
 
-  return fetch(`${API_BASE}${input}`, {
+  const res = await fetch(`${API_BASE}${input}`, {
     ...init,
     headers,
   });
+
+  if (res.status === 401 && typeof window !== 'undefined') {
+    localStorage.removeItem('duokai_admin_token');
+    localStorage.removeItem('duokai_admin_user');
+    if (!window.location.pathname.startsWith('/login')) {
+      window.location.replace('/login');
+    }
+  }
+
+  return res;
 }

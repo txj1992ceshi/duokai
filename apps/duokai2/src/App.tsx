@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import './App.css'
 import {
   dictionaries,
@@ -8,8 +8,10 @@ import {
   translateStatus,
 } from './i18n'
 import type {
+  AuthUser,
   CloudPhoneDetails,
   CloudPhoneFingerprintSettings,
+  CloudPhoneProxyRefMode,
   CloudPhoneProviderConfig,
   CloudPhoneProviderHealth,
   CloudPhoneProviderKind,
@@ -17,6 +19,7 @@ import type {
   CloudPhoneRecord,
   CreateCloudPhoneInput,
   DashboardSummary,
+  DesktopAuthState,
   DesktopRuntimeInfo,
   DetectedLocalEmulator,
   FingerprintConfig,
@@ -37,12 +40,14 @@ import {
   normalizeEnvironmentLanguage,
 } from './shared/environmentLanguages'
 
-type ViewKey = 'dashboard' | 'profiles' | 'cloudPhones' | 'proxies' | 'logs' | 'settings'
+type ViewKey = 'dashboard' | 'profiles' | 'cloudPhones' | 'proxies' | 'logs' | 'settings' | 'account'
 type ResourceMode = 'profiles' | 'templates'
 type EditorPageMode = 'list' | 'create' | 'edit'
 type StatusFilter = 'all' | ProfileRecord['status']
+type ProxyPanelMode = 'create' | 'edit'
 type DesktopRuntimeApi = DesktopApi
 type AgentState = Awaited<ReturnType<DesktopApi['meta']['getAgentState']>>
+type AuthState = DesktopAuthState
 type ProfileFormState = {
   name: string
   proxyId: string | null
@@ -54,6 +59,23 @@ type ProfileFormState = {
 
 type TemplateFormState = ProfileFormState
 type CloudPhoneFormState = CreateCloudPhoneInput
+type AccountProfileFormState = {
+  name: string
+  email: string
+  username: string
+  avatarUrl: string
+  bio: string
+}
+type AccountPasswordFormState = {
+  currentPassword: string
+  nextPassword: string
+  confirmPassword: string
+}
+type ProxyRowFeedback = {
+  kind: 'success' | 'error'
+  message: string
+}
+type PendingLaunchState = Record<string, number>
 
 const CLOUD_PHONE_PROVIDER_KIND_MAP: Record<string, CloudPhoneProviderKind> = {
   'self-hosted': 'self-hosted',
@@ -62,9 +84,86 @@ const CLOUD_PHONE_PROVIDER_KIND_MAP: Record<string, CloudPhoneProviderKind> = {
   mock: 'mock',
 }
 
+function detectRendererOperatingSystem(): string {
+  if (typeof navigator === 'undefined') {
+    return 'Windows'
+  }
+  const platform = `${navigator.platform || ''} ${navigator.userAgent || ''}`.toLowerCase()
+  if (platform.includes('mac')) {
+    return 'macOS'
+  }
+  if (platform.includes('linux')) {
+    return 'Linux'
+  }
+  return 'Windows'
+}
+
+const STARTUP_PLATFORM_URLS: Record<string, string> = {
+  amazon: 'https://www.amazon.com/',
+  tiktok: 'https://www.tiktok.com/',
+  google: 'https://www.google.com/',
+  facebook: 'https://www.facebook.com/',
+  linkedin: 'https://www.linkedin.com/',
+  instagram: 'https://www.instagram.com/',
+  x: 'https://x.com/',
+  youtube: 'https://www.youtube.com/',
+}
+
+const OPERATING_SYSTEM_OPTIONS = ['Windows', 'macOS', 'Linux'] as const
+const STARTUP_PLATFORM_OPTIONS = [
+  { value: '', labelZh: '请选择', labelEn: 'Select' },
+  { value: 'amazon', labelZh: 'Amazon', labelEn: 'Amazon' },
+  { value: 'tiktok', labelZh: 'TikTok', labelEn: 'TikTok' },
+  { value: 'google', labelZh: 'Google', labelEn: 'Google' },
+  { value: 'facebook', labelZh: 'Facebook', labelEn: 'Facebook' },
+  { value: 'linkedin', labelZh: 'LinkedIn', labelEn: 'LinkedIn' },
+  { value: 'instagram', labelZh: 'Instagram', labelEn: 'Instagram' },
+  { value: 'x', labelZh: 'X', labelEn: 'X' },
+  { value: 'youtube', labelZh: 'YouTube', labelEn: 'YouTube' },
+  { value: 'custom', labelZh: '自定义平台', labelEn: 'Custom platform' },
+] as const
+
+function buildDesktopUserAgent(operatingSystem: string, browserVersion: string): string {
+  const majorVersion = String(browserVersion || '136').trim() || '136'
+  const os = operatingSystem.toLowerCase()
+  if (os.includes('mac')) {
+    return `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${majorVersion}.0.0.0 Safari/537.36`
+  }
+  if (os.includes('linux')) {
+    return `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${majorVersion}.0.0.0 Safari/537.36`
+  }
+  return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${majorVersion}.0.0.0 Safari/537.36`
+}
+
+function resolvePlatformStartupUrl(platform: string, customPlatformUrl: string): string {
+  if (platform === 'custom') {
+    return customPlatformUrl.trim()
+  }
+  return STARTUP_PLATFORM_URLS[platform] || ''
+}
+
+function normalizeFingerprintForSave(config: FingerprintConfig): FingerprintConfig {
+  const resolvedStartupUrl = resolvePlatformStartupUrl(
+    config.basicSettings.platform,
+    config.basicSettings.customPlatformUrl,
+  )
+  const nextUserAgent = buildDesktopUserAgent(
+    config.advanced.operatingSystem,
+    config.advanced.browserVersion,
+  )
+
+  return {
+    ...config,
+    userAgent: nextUserAgent,
+    basicSettings: {
+      ...config.basicSettings,
+      customPlatformUrl: resolvedStartupUrl,
+    },
+  }
+}
+
 const defaultFingerprint: FingerprintConfig = {
-  userAgent:
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+  userAgent: buildDesktopUserAgent(detectRendererOperatingSystem(), '136'),
   language: DEFAULT_ENVIRONMENT_LANGUAGE,
   timezone: '',
   resolution: '1440x900',
@@ -107,7 +206,7 @@ const defaultFingerprint: FingerprintConfig = {
     browserKernel: 'chrome',
     browserKernelVersion: '140',
     deviceMode: 'desktop',
-    operatingSystem: 'Windows',
+    operatingSystem: detectRendererOperatingSystem(),
     operatingSystemVersion: '',
     browserVersion: '136',
     autoLanguageFromIp: true,
@@ -158,8 +257,23 @@ const defaultFingerprint: FingerprintConfig = {
     lastProxyCheckMessage: '',
     lastValidationLevel: 'unknown',
     lastValidationMessages: [],
+    lastQuickCheckAt: '',
+    lastQuickCheckSuccess: null,
+    lastQuickCheckMessage: '',
+    lastEffectiveProxyTransport: '',
+    trustedSnapshotStatus: 'unknown',
+    configFingerprintHash: '',
+    proxyFingerprintHash: '',
+    launchValidationStage: 'idle',
+    lastQuickIsolationCheck: null,
+    trustedLaunchSnapshot: null,
     launchRetryCount: 0,
     injectedFeatures: [],
+    lastStorageStateVersion: 0,
+    lastStorageStateSyncedAt: '',
+    lastStorageStateDeviceId: '',
+    lastStorageStateSyncStatus: 'idle',
+    lastStorageStateSyncMessage: '',
   },
 }
 
@@ -170,7 +284,10 @@ function randomDesktopFingerprint(current: FingerprintConfig): FingerprintConfig
   return {
     ...current,
     resolution,
-    userAgent: current.userAgent.replace(/Chrome\/\d+\.\d+\.\d+\.\d+/, `Chrome/${136 + Math.floor(Math.random() * 4)}.0.0.0`),
+    userAgent: buildDesktopUserAgent(
+      current.advanced.operatingSystem,
+      String(136 + Math.floor(Math.random() * 4)),
+    ),
     advanced: {
       ...current.advanced,
       windowWidth: width || current.advanced.windowWidth,
@@ -259,6 +376,24 @@ function emptyProxy() {
   }
 }
 
+function emptyAccountProfileForm(user: AuthUser | null): AccountProfileFormState {
+  return {
+    name: user?.name || '',
+    email: user?.email || '',
+    username: user?.username || '',
+    avatarUrl: user?.avatarUrl || '',
+    bio: user?.bio || '',
+  }
+}
+
+function emptyAccountPasswordForm(): AccountPasswordFormState {
+  return {
+    currentPassword: '',
+    nextPassword: '',
+    confirmPassword: '',
+  }
+}
+
 function buildProviderConfig(
   providerKey: string,
   settings: SettingsPayload,
@@ -323,6 +458,8 @@ function emptyCloudPhone(
     providerInstanceId: null,
     computeType: 'basic',
     ipLookupChannel: 'IP2Location',
+    proxyRefMode: 'saved',
+    proxyId: null,
     proxyType: 'socks5',
     ipProtocol: 'ipv4',
     proxyHost: '',
@@ -341,6 +478,16 @@ function getNestedValue(target: unknown, path: string): unknown {
     }
     return (current as Record<string, unknown>)[key]
   }, target)
+}
+
+function resolveSelectedProxy(
+  proxies: ProxyRecord[],
+  proxyId: string | null,
+): ProxyRecord | null {
+  if (!proxyId) {
+    return null
+  }
+  return proxies.find((item) => item.id === proxyId) ?? null
 }
 
 function App() {
@@ -373,6 +520,11 @@ function App() {
   const [cloudPhonePageMode, setCloudPhonePageMode] = useState<EditorPageMode>('list')
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null)
   const [selectedProxyId, setSelectedProxyId] = useState<string | null>(null)
+  const [proxyPanelOpen, setProxyPanelOpen] = useState(false)
+  const [proxyPanelMode, setProxyPanelMode] = useState<ProxyPanelMode>('create')
+  const [testingProxyId, setTestingProxyId] = useState<string | null>(null)
+  const [proxyRowFeedback, setProxyRowFeedback] = useState<Record<string, ProxyRowFeedback>>({})
+  const [pendingProfileLaunches, setPendingProfileLaunches] = useState<PendingLaunchState>({})
   const [selectedProfileIds, setSelectedProfileIds] = useState<string[]>([])
   const [selectedCloudPhoneIds, setSelectedCloudPhoneIds] = useState<string[]>([])
   const [profileForm, setProfileForm] = useState(emptyProfile())
@@ -391,6 +543,17 @@ function App() {
   const [busyMessage, setBusyMessage] = useState('')
   const [noticeMessage, setNoticeMessage] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
+  const [authState, setAuthState] = useState<AuthState | null>(null)
+  const [authReady, setAuthReady] = useState(false)
+  const [authSubmitting, setAuthSubmitting] = useState(false)
+  const [authIdentifier, setAuthIdentifier] = useState('')
+  const [authPassword, setAuthPassword] = useState('')
+  const [accountProfileForm, setAccountProfileForm] = useState<AccountProfileFormState>(
+    emptyAccountProfileForm(null),
+  )
+  const [accountPasswordForm, setAccountPasswordForm] = useState<AccountPasswordFormState>(
+    emptyAccountPasswordForm(),
+  )
   const [importResult, setImportResult] = useState<ImportResult | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [cloudPhoneSearchQuery, setCloudPhoneSearchQuery] = useState('')
@@ -560,6 +723,110 @@ function App() {
     () => new Map(cloudPhoneProviderHealth.map((item) => [item.key, item])),
     [cloudPhoneProviderHealth],
   )
+  const runtimeRunningIds = useMemo(
+    () => new Set(runtimeStatus?.runningProfileIds ?? []),
+    [runtimeStatus],
+  )
+  const runtimeQueuedIds = useMemo(
+    () => new Set(runtimeStatus?.queuedProfileIds ?? []),
+    [runtimeStatus],
+  )
+  const runtimeStartingIds = useMemo(
+    () => new Set(runtimeStatus?.startingProfileIds ?? []),
+    [runtimeStatus],
+  )
+  const runtimeLaunchStages = useMemo(
+    () => runtimeStatus?.launchStages ?? {},
+    [runtimeStatus],
+  )
+
+  function getLaunchPhaseLabel(profile: ProfileRecord): string {
+    const stage = runtimeLaunchStages[profile.id] || profile.fingerprintConfig.runtimeMetadata.launchValidationStage
+    if (stage === 'full-check') {
+      return locale === 'zh-CN' ? '完整校验中' : 'Full check'
+    }
+    if (stage === 'quick-check') {
+      return locale === 'zh-CN' ? '快速隔离校验中' : 'Quick isolation check'
+    }
+    if (stage === 'browser-launch') {
+      return locale === 'zh-CN' ? '隔离环境启动中' : 'Launching isolated environment'
+    }
+    return locale === 'zh-CN' ? '启动中' : 'Starting'
+  }
+
+  function getLaunchPhaseClass(profile: ProfileRecord): string {
+    const stage = runtimeLaunchStages[profile.id] || profile.fingerprintConfig.runtimeMetadata.launchValidationStage
+    if (stage === 'full-check') {
+      return 'launch-phase-full-check'
+    }
+    if (stage === 'quick-check') {
+      return 'launch-phase-quick-check'
+    }
+    if (stage === 'browser-launch') {
+      return 'launch-phase-browser-launch'
+    }
+    return 'launch-phase-generic'
+  }
+
+  function getStorageSyncSummary(profile: ProfileRecord): {
+    label: string
+    detail: string
+    className: string
+  } | null {
+    const metadata = profile.fingerprintConfig.runtimeMetadata
+    const version = metadata.lastStorageStateVersion
+    const syncedAt = metadata.lastStorageStateSyncedAt
+    const baseDetail = [
+      version > 0 ? `${locale === 'zh-CN' ? '版本' : 'Version'} ${version}` : '',
+      syncedAt ? formatDate(syncedAt) : '',
+    ]
+      .filter(Boolean)
+      .join(' · ')
+
+    if (metadata.lastStorageStateSyncStatus === 'conflict') {
+      return {
+        label: locale === 'zh-CN' ? '登录态冲突' : 'Storage conflict',
+        detail:
+          metadata.lastStorageStateSyncMessage ||
+          (locale === 'zh-CN'
+            ? '云端登录态已更新，请重新启动环境同步最新状态'
+            : 'Cloud storage state changed. Restart the profile to sync the latest state.'),
+        className: 'conflict',
+      }
+    }
+    if (metadata.lastStorageStateSyncStatus === 'error') {
+      return {
+        label: locale === 'zh-CN' ? '登录态同步失败' : 'Storage sync failed',
+        detail: metadata.lastStorageStateSyncMessage || baseDetail,
+        className: 'error',
+      }
+    }
+    if (metadata.lastStorageStateSyncStatus === 'pending') {
+      return {
+        label: locale === 'zh-CN' ? '登录态同步中' : 'Storage syncing',
+        detail:
+          metadata.lastStorageStateSyncMessage ||
+          (baseDetail || (locale === 'zh-CN' ? '正在上传云端登录态' : 'Uploading storage state')),
+        className: 'pending',
+      }
+    }
+    if (metadata.lastStorageStateSyncStatus === 'synced' || version > 0) {
+      return {
+        label: locale === 'zh-CN' ? '登录态已同步' : 'Storage synced',
+        detail: baseDetail || metadata.lastStorageStateSyncMessage,
+        className: 'synced',
+      }
+    }
+    return {
+      label: locale === 'zh-CN' ? '登录态未同步' : 'Storage not synced',
+      detail:
+        metadata.lastStorageStateSyncMessage ||
+        (locale === 'zh-CN'
+          ? '当前环境还没有云端登录态版本'
+          : 'No cloud storage state version yet'),
+      className: 'idle',
+    }
+  }
 
   function formatDate(value: string | null) {
     if (!value) {
@@ -571,10 +838,25 @@ function App() {
   const pageHeading =
     view === 'cloudPhones'
       ? { title: t.cloudPhones.title, subtitle: t.cloudPhones.subtitle }
+      : view === 'account'
+        ? {
+            title: locale === 'zh-CN' ? '个人中心' : 'Personal Center',
+            subtitle:
+              locale === 'zh-CN'
+                ? '账号资料与桌面端绑定信息。后续可以在这里继续扩展更多个人设置。'
+                : 'Account profile and desktop bindings. More personal settings can be added here later.',
+          }
       : { title: t.dashboard.title, subtitle: t.dashboard.subtitle }
+  const currentAuthUser: AuthUser | null = authState?.user ?? null
+  const currentDeviceId = authState?.currentDeviceId || ''
+
+  useEffect(() => {
+    setAccountProfileForm(emptyAccountProfileForm(currentAuthUser))
+  }, [currentAuthUser])
 
   const refreshAll = useCallback(async () => {
     const api = requireDesktopApi([
+      'auth.syncProfiles',
       'meta.getInfo',
       'dashboard.summary',
       'runtime.getStatus',
@@ -591,6 +873,7 @@ function App() {
       'profiles.getDirectoryInfo',
     ])
     const [
+      ,
       dashboard,
       nextRuntimeStatus,
       nextRuntimeHostInfo,
@@ -607,6 +890,7 @@ function App() {
       nextAgentState,
     ] =
       await Promise.all([
+        api.auth.syncProfiles(),
         api.dashboard.summary(),
         api.runtime.getStatus(),
         api.runtime.getHostInfo(),
@@ -647,30 +931,46 @@ function App() {
   useEffect(() => {
     void (async () => {
       try {
-        await refreshAll()
+        const api = requireDesktopApi(['auth.getState'])
+        const nextAuthState = await api.auth.getState()
+        setAuthState(nextAuthState)
+        setAuthReady(true)
+        if (nextAuthState.authenticated) {
+          await refreshAll()
+        }
       } catch (error) {
         setErrorMessage(localizeError(error))
+        setAuthReady(true)
       }
     })()
-  }, [localizeError, refreshAll])
+  }, [localizeError, refreshAll, requireDesktopApi])
 
   useEffect(() => {
+    if (!authState?.authenticated) {
+      return
+    }
     const timer = window.setInterval(async () => {
       try {
         const api = requireDesktopApi([
+          'auth.syncProfiles',
           'cloudPhones.refreshStatuses',
           'profiles.list',
           'dashboard.summary',
+          'runtime.getStatus',
           'meta.getAgentState',
         ])
-        const [nextCloudPhones, nextProfiles, nextSummary, nextAgentState] = await Promise.all([
+        const [, nextCloudPhones, nextProfiles, nextSummary, nextRuntimeStatus, nextAgentState] =
+          await Promise.all([
+          api.auth.syncProfiles(),
           api.cloudPhones.refreshStatuses(),
           api.profiles.list(),
           api.dashboard.summary(),
+          api.runtime.getStatus(),
           api.meta.getAgentState(),
         ])
         setProfiles(nextProfiles)
         setSummary(nextSummary)
+        setRuntimeStatus(nextRuntimeStatus)
         setCloudPhones(nextCloudPhones)
         setAgentState(nextAgentState)
       } catch (error) {
@@ -680,7 +980,7 @@ function App() {
     }, 2000)
 
     return () => window.clearInterval(timer)
-  }, [localizeError, requireDesktopApi])
+  }, [authState?.authenticated, localizeError, requireDesktopApi])
 
   useEffect(() => {
     if (!selectedProfileId) {
@@ -698,7 +998,10 @@ function App() {
       notes: profile.notes,
       fingerprintConfig: cloneFingerprintConfig(profile.fingerprintConfig),
     })
-  }, [selectedProfileId, profiles])
+    // Only initialize when selected profile changes.
+    // Polling refresh updates `profiles` frequently and should not overwrite in-progress edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedProfileId])
 
   useEffect(() => {
     if (!selectedCloudPhoneId) {
@@ -720,6 +1023,8 @@ function App() {
       providerInstanceId: cloudPhone.providerInstanceId,
       computeType: cloudPhone.computeType,
       ipLookupChannel: cloudPhone.ipLookupChannel,
+      proxyRefMode: cloudPhone.proxyRefMode,
+      proxyId: cloudPhone.proxyId,
       proxyType: cloudPhone.proxyType,
       ipProtocol: cloudPhone.ipProtocol,
       proxyHost: cloudPhone.proxyHost,
@@ -768,6 +1073,54 @@ function App() {
   }, [selectedProxyId, proxies])
 
   useEffect(() => {
+    if (!noticeMessage) {
+      return
+    }
+    const timer = window.setTimeout(() => {
+      setNoticeMessage('')
+    }, 3000)
+    return () => window.clearTimeout(timer)
+  }, [noticeMessage])
+
+  useEffect(() => {
+    setPendingProfileLaunches((current) => {
+      const next = { ...current }
+      let changed = false
+      for (const profileId of Object.keys(current)) {
+        const profile = profiles.find((item) => item.id === profileId)
+        if (!profile) {
+          delete next[profileId]
+          changed = true
+          continue
+        }
+        const runtimeStillPending = runtimeQueuedIds.has(profileId) || runtimeStartingIds.has(profileId)
+        if (
+          runtimeRunningIds.has(profileId) ||
+          profile.status === 'running' ||
+          profile.status === 'error' ||
+          (!runtimeStillPending && profile.status !== 'starting' && profile.status !== 'queued')
+        ) {
+          delete next[profileId]
+          changed = true
+        }
+      }
+      return changed ? next : current
+    })
+  }, [profiles, runtimeQueuedIds, runtimeRunningIds, runtimeStartingIds])
+
+  useEffect(() => {
+    setNoticeMessage('')
+    if (view !== 'proxies') {
+      setProxyPanelOpen(false)
+      setProxyPanelMode('create')
+      setSelectedProxyId(null)
+      setProxyForm(emptyProxy())
+      setTestingProxyId(null)
+      setProxyRowFeedback({})
+    }
+  }, [view])
+
+  useEffect(() => {
     if (selectedProfileId) {
       return
     }
@@ -796,6 +1149,7 @@ function App() {
         current.groupName.trim().length === 0 &&
         current.tags.length === 0 &&
         current.notes.trim().length === 0 &&
+        current.proxyId === null &&
         current.proxyHost.trim().length === 0 &&
         current.proxyPort === 0 &&
         current.proxyUsername.trim().length === 0 &&
@@ -812,6 +1166,28 @@ function App() {
       }
     })
   }, [defaultCloudPhoneProvider, selectedCloudPhoneId, settings])
+
+  useEffect(() => {
+    if (selectedCloudPhoneId) {
+      return
+    }
+    setCloudPhoneForm((current) => {
+      if (current.proxyRefMode !== 'saved') {
+        return current
+      }
+      if (current.proxyId && proxies.some((item) => item.id === current.proxyId)) {
+        return current
+      }
+      const nextProxyId = proxies[0]?.id ?? null
+      if (nextProxyId === current.proxyId) {
+        return current
+      }
+      return {
+        ...current,
+        proxyId: nextProxyId,
+      }
+    })
+  }, [proxies, selectedCloudPhoneId])
 
   const filteredProfiles = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
@@ -913,7 +1289,10 @@ function App() {
   function openCreateCloudPhonePage() {
     setSelectedCloudPhoneId(null)
     setCloudPhoneDetails(null)
-    setCloudPhoneForm(emptyCloudPhone(settings, defaultCloudPhoneProvider))
+    setCloudPhoneForm({
+      ...emptyCloudPhone(settings, defaultCloudPhoneProvider),
+      proxyId: proxies[0]?.id ?? null,
+    })
     setCloudPhonePageMode('create')
   }
 
@@ -1001,7 +1380,7 @@ function App() {
           groupName: profileForm.groupName,
           tags: normalizeTags(profileForm.tagsText),
           notes: profileForm.notes,
-          fingerprintConfig: {
+          fingerprintConfig: normalizeFingerprintForSave({
             ...profileForm.fingerprintConfig,
             basicSettings: {
               ...profileForm.fingerprintConfig.basicSettings,
@@ -1009,13 +1388,10 @@ function App() {
                 profileForm.fingerprintConfig.basicSettings.platform === 'custom'
                   ? profileForm.fingerprintConfig.basicSettings.customPlatformName.trim()
                   : '',
-              customPlatformUrl:
-                profileForm.fingerprintConfig.basicSettings.platform === 'custom'
-                  ? profileForm.fingerprintConfig.basicSettings.customPlatformUrl.trim()
-                  : '',
+              customPlatformUrl: profileForm.fingerprintConfig.basicSettings.customPlatformUrl.trim(),
             },
             resolution: `${profileForm.fingerprintConfig.advanced.windowWidth}x${profileForm.fingerprintConfig.advanced.windowHeight}`,
-          },
+          }),
         }
 
         if (selectedProfileId) {
@@ -1134,12 +1510,122 @@ function App() {
           await api.proxies.create(payload)
         }
         setSelectedProxyId(null)
+        setProxyPanelOpen(false)
+        setProxyPanelMode('create')
         setProxyForm(emptyProxy())
         setNoticeMessage(
           locale === 'zh-CN' ? '代理已保存，列表已刷新。' : 'Proxy saved and list refreshed.',
         )
       },
     )
+  }
+
+  async function testProxy(proxyId: string) {
+    setTestingProxyId(proxyId)
+    setErrorMessage('')
+    setNoticeMessage('')
+    setProxyRowFeedback((current) => {
+      const next = { ...current }
+      delete next[proxyId]
+      return next
+    })
+    try {
+      const api = requireDesktopApi(['proxies.test'])
+      await api.proxies.test(proxyId)
+      setProxyRowFeedback((current) => ({
+        ...current,
+        [proxyId]: {
+          kind: 'success',
+          message: locale === 'zh-CN' ? '测试通过' : 'Passed',
+        },
+      }))
+    } catch (error) {
+      const message = localizeError(error)
+      setProxyRowFeedback((current) => ({
+        ...current,
+        [proxyId]: {
+          kind: 'error',
+          message: locale === 'zh-CN' ? `测试失败：${message}` : `Failed: ${message}`,
+        },
+      }))
+    } finally {
+      setTestingProxyId(null)
+      window.setTimeout(() => {
+        setProxyRowFeedback((current) => {
+          const next = { ...current }
+          delete next[proxyId]
+          return next
+        })
+      }, 3000)
+      await refreshAll()
+    }
+  }
+
+  async function launchProfile(profileId: string) {
+    setPendingProfileLaunches((current) => ({ ...current, [profileId]: Date.now() }))
+    setErrorMessage('')
+    try {
+      const api = requireDesktopApi(['runtime.launch'])
+      await api.runtime.launch(profileId)
+      setNoticeMessage(locale === 'zh-CN' ? '环境已加入启动队列。' : 'Profile queued for launch.')
+      await refreshAll()
+    } catch (error) {
+      setPendingProfileLaunches((current) => {
+        const next = { ...current }
+        delete next[profileId]
+        return next
+      })
+      setErrorMessage(localizeError(error))
+    }
+  }
+
+  async function stopProfile(profileId: string) {
+    setErrorMessage('')
+    try {
+      const api = requireDesktopApi(['runtime.stop'])
+      await api.runtime.stop(profileId)
+      setPendingProfileLaunches((current) => {
+        const next = { ...current }
+        delete next[profileId]
+        return next
+      })
+      setNoticeMessage(locale === 'zh-CN' ? '环境已停止。' : 'Profile stopped.')
+      await refreshAll()
+    } catch (error) {
+      setErrorMessage(localizeError(error))
+    }
+  }
+
+  function getProfileVisualState(profile: ProfileRecord): ProfileRecord['status'] {
+    if (pendingProfileLaunches[profile.id] || runtimeQueuedIds.has(profile.id) || runtimeStartingIds.has(profile.id)) {
+      return 'starting'
+    }
+    return profile.status
+  }
+
+  function openCreateProxyPanel() {
+    setSelectedProxyId(null)
+    setProxyPanelMode('create')
+    setProxyForm(emptyProxy())
+    setProxyPanelOpen((current) => {
+      if (!current) {
+        return true
+      }
+      return proxyPanelMode === 'create' ? false : true
+    })
+  }
+
+  function openEditProxyPanel(proxyId: string) {
+    setSelectedProxyId(proxyId)
+    setProxyPanelMode('edit')
+    setProxyPanelOpen(true)
+  }
+
+  function closeProxyPanel() {
+    setProxyPanelOpen(false)
+    setProxyPanelMode('create')
+    setSelectedProxyId(null)
+    setProxyForm(emptyProxy())
   }
 
   async function saveSettings() {
@@ -1159,25 +1645,33 @@ function App() {
             `VALIDATION:${locale === 'zh-CN' ? '云手机环境名称不能为空。' : 'Cloud phone name is required.'}`,
           )
         }
-        if (cloudPhoneForm.proxyHost.trim().length === 0) {
-          throw new Error(
-            `VALIDATION:${locale === 'zh-CN' ? '代理主机不能为空。' : 'Proxy host is required.'}`,
-          )
-        }
-        if (cloudPhoneForm.proxyPort <= 0) {
-          throw new Error(
-            `VALIDATION:${locale === 'zh-CN' ? '代理端口必须大于 0。' : 'Proxy port must be greater than 0.'}`,
-          )
-        }
-        if (cloudPhoneForm.proxyUsername.trim().length === 0) {
-          throw new Error(
-            `VALIDATION:${locale === 'zh-CN' ? '代理账号不能为空。' : 'Proxy username is required.'}`,
-          )
-        }
-        if (cloudPhoneForm.proxyPassword.trim().length === 0) {
-          throw new Error(
-            `VALIDATION:${locale === 'zh-CN' ? '代理密码不能为空。' : 'Proxy password is required.'}`,
-          )
+        if (cloudPhoneForm.proxyRefMode === 'saved') {
+          if (!cloudPhoneForm.proxyId) {
+            throw new Error(
+              `VALIDATION:${locale === 'zh-CN' ? '请选择已保存代理。' : 'Select a saved proxy.'}`,
+            )
+          }
+        } else {
+          if (cloudPhoneForm.proxyHost.trim().length === 0) {
+            throw new Error(
+              `VALIDATION:${locale === 'zh-CN' ? '代理主机不能为空。' : 'Proxy host is required.'}`,
+            )
+          }
+          if (cloudPhoneForm.proxyPort <= 0) {
+            throw new Error(
+              `VALIDATION:${locale === 'zh-CN' ? '代理端口必须大于 0。' : 'Proxy port must be greater than 0.'}`,
+            )
+          }
+          if (cloudPhoneForm.proxyUsername.trim().length === 0) {
+            throw new Error(
+              `VALIDATION:${locale === 'zh-CN' ? '代理账号不能为空。' : 'Proxy username is required.'}`,
+            )
+          }
+          if (cloudPhoneForm.proxyPassword.trim().length === 0) {
+            throw new Error(
+              `VALIDATION:${locale === 'zh-CN' ? '代理密码不能为空。' : 'Proxy password is required.'}`,
+            )
+          }
         }
 
         const api = requireDesktopApi(['cloudPhones.create', 'cloudPhones.update'])
@@ -1193,6 +1687,8 @@ function App() {
             settings,
             cloudPhoneForm.providerConfig,
           ),
+          proxyRefMode: cloudPhoneForm.proxyRefMode,
+          proxyId: cloudPhoneForm.proxyRefMode === 'saved' ? cloudPhoneForm.proxyId : null,
           proxyHost: cloudPhoneForm.proxyHost.trim(),
           proxyUsername: cloudPhoneForm.proxyUsername.trim(),
         }
@@ -1220,6 +1716,11 @@ function App() {
 
   async function testCloudPhoneProxy() {
     await withBusy(t.busy.testCloudPhoneProxy, async () => {
+      if (cloudPhoneForm.proxyRefMode === 'saved' && !cloudPhoneForm.proxyId) {
+        throw new Error(
+          `VALIDATION:${locale === 'zh-CN' ? '请选择已保存代理。' : 'Select a saved proxy.'}`,
+        )
+      }
       const api = requireDesktopApi(['cloudPhones.testProxy'])
       const result = await api.cloudPhones.testProxy(cloudPhoneForm)
       setNoticeMessage(result.message)
@@ -1274,6 +1775,23 @@ function App() {
     setCloudPhoneDetails(null)
   }
 
+  function updateCloudPhoneProxyRefMode(proxyRefMode: CloudPhoneProxyRefMode) {
+    setCloudPhoneForm((current) => {
+      if (proxyRefMode === 'saved') {
+        return {
+          ...current,
+          proxyRefMode,
+          proxyId: current.proxyId ?? proxies[0]?.id ?? null,
+        }
+      }
+      return {
+        ...current,
+        proxyRefMode,
+        proxyId: null,
+      }
+    })
+  }
+
   function renderProviderLabel(providerKey: string): string {
     if (locale === 'zh-CN') {
       if (providerKey === 'self-hosted') return t.cloudPhones.providerSelfHosted
@@ -1285,6 +1803,194 @@ function App() {
     return provider?.label ?? providerKey
   }
 
+  async function handleDesktopLogin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setAuthSubmitting(true)
+    setErrorMessage('')
+    try {
+      const api = requireDesktopApi(['auth.login'])
+      const nextAuthState = await api.auth.login({
+        identifier: authIdentifier,
+        password: authPassword,
+      })
+      setAuthState(nextAuthState)
+      setAuthPassword('')
+      await refreshAll()
+    } catch (error) {
+      setErrorMessage(localizeError(error))
+    } finally {
+      setAuthSubmitting(false)
+    }
+  }
+
+  async function handleDesktopLogout() {
+    try {
+      const api = requireDesktopApi(['auth.logout'])
+      const nextAuthState = await api.auth.logout()
+      setAuthState(nextAuthState)
+      setProfiles([])
+      setSummary({
+        totalProfiles: 0,
+        runningProfiles: 0,
+        totalProxies: 0,
+        onlineProxies: 0,
+        totalCloudPhones: 0,
+        runningCloudPhones: 0,
+        cloudPhoneErrors: 0,
+        logCount: 0,
+      })
+    } catch (error) {
+      setErrorMessage(localizeError(error))
+    }
+  }
+
+  async function saveAccountProfile() {
+    await withBusy(locale === 'zh-CN' ? '正在更新个人资料...' : 'Updating account profile...', async () => {
+      if (!accountProfileForm.email.trim() && !accountProfileForm.username.trim()) {
+        throw new Error(
+          `VALIDATION:${locale === 'zh-CN' ? '邮箱和账号至少需要保留一个。' : 'Email or username is required.'}`,
+        )
+      }
+      const api = requireDesktopApi(['auth.updateProfile'])
+      const nextAuthState = await api.auth.updateProfile({
+        name: accountProfileForm.name.trim(),
+        email: accountProfileForm.email.trim(),
+        username: accountProfileForm.username.trim(),
+        avatarUrl: accountProfileForm.avatarUrl.trim(),
+        bio: accountProfileForm.bio.trim(),
+      })
+      setAuthState(nextAuthState)
+      setNoticeMessage(locale === 'zh-CN' ? '个人资料已更新。' : 'Account profile updated.')
+    })
+  }
+
+  async function saveAccountPassword() {
+    await withBusy(locale === 'zh-CN' ? '正在修改密码...' : 'Changing password...', async () => {
+      if (!accountPasswordForm.currentPassword || !accountPasswordForm.nextPassword) {
+        throw new Error(
+          `VALIDATION:${locale === 'zh-CN' ? '请输入当前密码和新密码。' : 'Current password and new password are required.'}`,
+        )
+      }
+      if (accountPasswordForm.nextPassword.length < 6) {
+        throw new Error(
+          `VALIDATION:${locale === 'zh-CN' ? '新密码至少需要 6 位。' : 'New password must be at least 6 characters.'}`,
+        )
+      }
+      if (accountPasswordForm.nextPassword !== accountPasswordForm.confirmPassword) {
+        throw new Error(
+          `VALIDATION:${locale === 'zh-CN' ? '两次输入的新密码不一致。' : 'Password confirmation does not match.'}`,
+        )
+      }
+      const api = requireDesktopApi(['auth.changePassword'])
+      await api.auth.changePassword({
+        currentPassword: accountPasswordForm.currentPassword,
+        nextPassword: accountPasswordForm.nextPassword,
+      })
+      setAccountPasswordForm(emptyAccountPasswordForm())
+      setNoticeMessage(locale === 'zh-CN' ? '密码已修改。' : 'Password changed successfully.')
+    })
+  }
+
+  async function uploadAccountAvatar() {
+    await withBusy(locale === 'zh-CN' ? '正在上传头像...' : 'Uploading avatar...', async () => {
+      const api = requireDesktopApi(['auth.uploadAvatar'])
+      const nextAuthState = await api.auth.uploadAvatar()
+      setAuthState(nextAuthState)
+      setNoticeMessage(locale === 'zh-CN' ? '头像已更新。' : 'Avatar updated.')
+    })
+  }
+
+  async function revokeAccountDevice(deviceId: string) {
+    const confirmMessage =
+      deviceId === currentDeviceId
+        ? locale === 'zh-CN'
+          ? '确认踢下当前设备吗？执行后当前桌面端会立即退出登录。'
+          : 'Revoke current device? This desktop app will be logged out immediately.'
+        : locale === 'zh-CN'
+          ? '确认踢下这个设备吗？'
+          : 'Revoke this device?'
+    if (!window.confirm(confirmMessage)) {
+      return
+    }
+    await withBusy(locale === 'zh-CN' ? '正在踢下线设备...' : 'Revoking device...', async () => {
+      const api = requireDesktopApi(['auth.revokeDevice'])
+      const nextAuthState = await api.auth.revokeDevice(deviceId)
+      setAuthState(nextAuthState)
+      if (deviceId === currentDeviceId) {
+        setProfiles([])
+        setView('dashboard')
+        setNoticeMessage(locale === 'zh-CN' ? '当前设备已被踢下线，请重新登录。' : 'Current device was revoked. Please log in again.')
+        return
+      }
+      setNoticeMessage(locale === 'zh-CN' ? '设备已踢下线。' : 'Device revoked.')
+    })
+  }
+
+  async function deleteAccountDevice(deviceId: string) {
+    const confirmMessage =
+      deviceId === currentDeviceId
+        ? locale === 'zh-CN'
+          ? '确认删除当前设备吗？执行后当前桌面端会立即退出登录。'
+          : 'Delete current device? This desktop app will be logged out immediately.'
+        : locale === 'zh-CN'
+          ? '确认删除这个设备吗？删除后该设备记录会被移除。'
+          : 'Delete this device? Its record will be removed.'
+    if (!window.confirm(confirmMessage)) {
+      return
+    }
+    await withBusy(locale === 'zh-CN' ? '正在删除设备...' : 'Deleting device...', async () => {
+      const api = requireDesktopApi(['auth.deleteDevice'])
+      const nextAuthState = await api.auth.deleteDevice(deviceId)
+      setAuthState(nextAuthState)
+      if (deviceId === currentDeviceId) {
+        setProfiles([])
+        setView('dashboard')
+        setNoticeMessage(locale === 'zh-CN' ? '当前设备已删除，请重新登录。' : 'Current device was deleted. Please log in again.')
+        return
+      }
+      setNoticeMessage(locale === 'zh-CN' ? '设备已删除。' : 'Device deleted.')
+    })
+  }
+
+  if (!authReady) {
+    return <div className="auth-shell">正在初始化桌面端...</div>
+  }
+
+  if (!authState?.authenticated) {
+    return (
+      <div className="auth-shell">
+        <div className="auth-card">
+          <div className="auth-badge">Duokai Desktop</div>
+          <h1>登录桌面工作台</h1>
+          <p>登录后桌面端会与控制台共享同一套云端环境数据。</p>
+          {errorMessage ? <div className="banner error">{errorMessage}</div> : null}
+          <form className="auth-form" onSubmit={handleDesktopLogin}>
+            <label>
+              <span>账号</span>
+              <input
+                value={authIdentifier}
+                onChange={(event) => setAuthIdentifier(event.target.value)}
+                placeholder="请输入邮箱或账号"
+              />
+            </label>
+            <label>
+              <span>密码</span>
+              <input
+                type="password"
+                value={authPassword}
+                onChange={(event) => setAuthPassword(event.target.value)}
+                placeholder="请输入密码"
+              />
+            </label>
+            <button type="submit" disabled={authSubmitting}>
+              {authSubmitting ? '登录中...' : '登录桌面端'}
+            </button>
+          </form>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -1292,7 +1998,7 @@ function App() {
           <div className="brand-mark">B</div>
           <div>
             <strong>{t.appName}</strong>
-            <span>{t.appTagline}</span>
+            <span>{currentAuthUser?.username || currentAuthUser?.email || t.appTagline}</span>
           </div>
         </div>
 
@@ -1308,10 +2014,22 @@ function App() {
           ))}
         </nav>
 
-        <section className="sidebar-card">
-          <h3>{t.settings.profiles}</h3>
-          <p>{directoryInfo?.profilesDir ?? t.common.loading}</p>
-        </section>
+        <button
+          type="button"
+          className="sidebar-card sidebar-user-card"
+          onClick={() => setView('account')}
+        >
+          <span className="sidebar-user-avatar">
+            {(currentAuthUser?.name || currentAuthUser?.username || currentAuthUser?.email || 'U')
+              .slice(0, 1)
+              .toUpperCase()}
+          </span>
+          <div className="sidebar-user-meta">
+            <h3>{currentAuthUser?.name || currentAuthUser?.username || currentAuthUser?.email}</h3>
+            <p>{currentAuthUser?.email || currentAuthUser?.username || t.common.loading}</p>
+            <p>{locale === 'zh-CN' ? '点击进入个人中心' : 'Open personal center'}</p>
+          </div>
+        </button>
       </aside>
 
       <main className="content">
@@ -1320,14 +2038,19 @@ function App() {
             <h1>{pageHeading.title}</h1>
             <p>{pageHeading.subtitle}</p>
           </div>
-          <div className="status-pill">
-            {busyMessage || t.common.runningSummary(summary.runningProfiles, summary.totalProfiles)}
+          <div className="topbar-actions">
+            <div className="status-pill">
+              {busyMessage || t.common.runningSummary(summary.runningProfiles, summary.totalProfiles)}
+            </div>
+            <button type="button" className="secondary-button logout-button" onClick={handleDesktopLogout}>
+              退出登录
+            </button>
           </div>
         </header>
 
         {errorMessage ? <div className="banner error">{errorMessage}</div> : null}
         {!errorMessage && agentReadOnlyMessage ? <div className="banner warning">{agentReadOnlyMessage}</div> : null}
-        {!errorMessage && noticeMessage ? <div className="banner success">{noticeMessage}</div> : null}
+        {!errorMessage && noticeMessage ? <div className="toast success">{noticeMessage}</div> : null}
 
         {view === 'dashboard' ? (
           <section className="panel-grid">
@@ -1586,81 +2309,95 @@ function App() {
                   {Object.entries(groupedProfiles).map(([groupName, items]) => (
                     <div key={groupName} className="profile-group">
                       <h3>{groupName}</h3>
-                      {items.map((profile) => (
-                        <article key={profile.id} className="list-row list-row-compact">
-                          <label className="check-cell">
-                            <input
-                              type="checkbox"
-                              checked={selectedProfileIds.includes(profile.id)}
-                              onChange={() => toggleProfileSelection(profile.id)}
-                            />
-                          </label>
-                          <div className="list-main">
-                            <strong>{profile.name}</strong>
-                            <p>
-                              {profile.tags.join(', ') || t.common.noTags}
-                              {profile.fingerprintConfig.runtimeMetadata.lastResolvedIp
-                                ? ` · IP ${profile.fingerprintConfig.runtimeMetadata.lastResolvedIp} · ${profile.fingerprintConfig.runtimeMetadata.lastResolvedCountry || profile.fingerprintConfig.runtimeMetadata.lastResolvedRegion || profile.fingerprintConfig.runtimeMetadata.lastResolvedTimezone}`
-                                : ''}
-                            </p>
-                          </div>
-                          <div className="list-meta">
-                            <span className={`badge ${profile.status}`}>
-                              {translateStatus(locale, profile.status)}
-                            </span>
-                            <button className="ghost" onClick={() => openEditProfilePage(profile.id)}>
-                              {t.common.edit}
-                            </button>
-                            <button
-                              className="ghost"
-                              onClick={() =>
-                                void withBusy(t.busy.cloneProfile, async () => {
-                                  const api = requireDesktopApi(['profiles.clone'])
-                                  await api.profiles.clone(profile.id)
-                                  setNoticeMessage(
-                                    locale === 'zh-CN' ? '环境已克隆。' : 'Profile cloned.',
-                                  )
-                                })
-                              }
-                            >
-                              {t.common.clone}
-                            </button>
-                            {profile.status === 'running' || profile.status === 'starting' || profile.status === 'queued' ? (
+                      {items.map((profile) => {
+                        const visualStatus = getProfileVisualState(profile)
+                        const showLaunching = visualStatus === 'starting' || visualStatus === 'queued'
+                        const isActive =
+                          visualStatus === 'running' || visualStatus === 'starting' || visualStatus === 'queued'
+                        const launchPhaseLabel = getLaunchPhaseLabel(profile)
+                        const launchPhaseClass = getLaunchPhaseClass(profile)
+                        const storageSyncSummary = getStorageSyncSummary(profile)
+
+                        return (
+                          <article key={profile.id} className="list-row list-row-compact">
+                            <label className="check-cell">
+                              <input
+                                type="checkbox"
+                                checked={selectedProfileIds.includes(profile.id)}
+                                onChange={() => toggleProfileSelection(profile.id)}
+                              />
+                            </label>
+                            <div className="list-main">
+                              <strong>{profile.name}</strong>
+                              <p>
+                                {profile.tags.join(', ') || t.common.noTags}
+                                {profile.fingerprintConfig.runtimeMetadata.lastResolvedIp
+                                  ? ` · IP ${profile.fingerprintConfig.runtimeMetadata.lastResolvedIp} · ${profile.fingerprintConfig.runtimeMetadata.lastResolvedCountry || profile.fingerprintConfig.runtimeMetadata.lastResolvedRegion || profile.fingerprintConfig.runtimeMetadata.lastResolvedTimezone}`
+                                  : ''}
+                              </p>
+                              {storageSyncSummary ? (
+                                <div className={`storage-sync-note ${storageSyncSummary.className}`}>
+                                  <span className="storage-sync-note-label">{storageSyncSummary.label}</span>
+                                  <span>{storageSyncSummary.detail}</span>
+                                </div>
+                              ) : null}
+                            </div>
+                            <div className="list-meta">
+                              <span className={`badge ${showLaunching ? launchPhaseClass : visualStatus}`}>
+                                {showLaunching ? (
+                                  <span className="status-with-spinner">
+                                    <span className={`status-spinner ${launchPhaseClass}`} />
+                                    {launchPhaseLabel}
+                                  </span>
+                                ) : (
+                                  translateStatus(locale, visualStatus)
+                                )}
+                              </span>
+                              <button className="ghost" onClick={() => openEditProfilePage(profile.id)}>
+                                {t.common.edit}
+                              </button>
                               <button
-                                className="danger"
+                                className="ghost"
                                 onClick={() =>
-                                  void withBusy(t.busy.stopProfile, async () => {
-                                    const api = requireDesktopApi(['runtime.stop'])
-                                    await api.runtime.stop(profile.id)
+                                  void withBusy(t.busy.cloneProfile, async () => {
+                                    const api = requireDesktopApi(['profiles.clone'])
+                                    await api.profiles.clone(profile.id)
                                     setNoticeMessage(
-                                      locale === 'zh-CN' ? '环境已停止。' : 'Profile stopped.',
+                                      locale === 'zh-CN' ? '环境已克隆。' : 'Profile cloned.',
                                     )
                                   })
                                 }
                               >
-                                {t.common.stop}
+                                {t.common.clone}
                               </button>
-                            ) : (
-                              <button
-                                className="primary"
-                                onClick={() =>
-                                  void withBusy(t.busy.launchProfile, async () => {
-                                    const api = requireDesktopApi(['runtime.launch'])
-                                    await api.runtime.launch(profile.id)
-                                    setNoticeMessage(
-                                      locale === 'zh-CN' ? '环境已加入启动队列。' : 'Profile queued for launch.',
-                                    )
-                                  })
-                                }
-                              >
-                                {profile.status === 'error'
-                                  ? (locale === 'zh-CN' ? '重试启动' : 'Retry launch')
-                                  : t.common.launch}
-                              </button>
-                            )}
-                          </div>
-                        </article>
-                      ))}
+                              {showLaunching ? (
+                                <button
+                                  className="primary launch-button is-launching"
+                                  disabled
+                                >
+                                  <span className="status-with-spinner">
+                                    <span className="status-spinner" />
+                                    {locale === 'zh-CN' ? '启动中' : 'Starting'}
+                                  </span>
+                                </button>
+                              ) : isActive ? (
+                                <button className="danger" onClick={() => void stopProfile(profile.id)}>
+                                  {t.common.stop}
+                                </button>
+                              ) : (
+                                <button
+                                  className={`primary launch-button ${showLaunching ? 'is-launching' : ''}`}
+                                  onClick={() => void launchProfile(profile.id)}
+                                >
+                                  {profile.status === 'error'
+                                    ? (locale === 'zh-CN' ? '重试启动' : 'Retry launch')
+                                    : t.common.launch}
+                                </button>
+                              )}
+                            </div>
+                          </article>
+                        )
+                      })}
                     </div>
                   ))}
 
@@ -1751,6 +2488,27 @@ function App() {
                       {profileForm.fingerprintConfig.runtimeMetadata.lastValidationMessages.join(' ')}
                     </div>
                   ) : null}
+                  {(() => {
+                    const storageSyncSummary = getStorageSyncSummary({
+                      id: selectedProfileId || 'draft',
+                      name: profileForm.name || 'draft',
+                      proxyId: profileForm.proxyId,
+                      groupName: profileForm.groupName,
+                      tags: normalizeTags(profileForm.tagsText),
+                      notes: profileForm.notes,
+                      fingerprintConfig: profileForm.fingerprintConfig,
+                      status: 'stopped',
+                      lastStartedAt: null,
+                      createdAt: '',
+                      updatedAt: '',
+                    })
+                    return storageSyncSummary ? (
+                      <div className={`section-note storage-sync-banner ${storageSyncSummary.className}`}>
+                        <strong>{storageSyncSummary.label}</strong>
+                        <span>{storageSyncSummary.detail}</span>
+                      </div>
+                    ) : null
+                  })()}
                   <div className="section-title section-title-sub">
                     <h2>{locale === 'zh-CN' ? '基础设置' : 'Basic settings'}</h2>
                   </div>
@@ -1792,12 +2550,11 @@ function App() {
                           }))
                         }
                       >
-                        <option value="">{locale === 'zh-CN' ? '请选择' : 'Select'}</option>
-                        <option value="amazon">Amazon</option>
-                        <option value="tiktok">TikTok</option>
-                        <option value="google">Google</option>
-                        <option value="facebook">Facebook</option>
-                        <option value="custom">{locale === 'zh-CN' ? '自定义平台' : 'Custom platform'}</option>
+                        {STARTUP_PLATFORM_OPTIONS.map((item) => (
+                          <option key={item.value || 'none'} value={item.value}>
+                            {locale === 'zh-CN' ? item.labelZh : item.labelEn}
+                          </option>
+                        ))}
                       </select>
                     </label>
                   </div>
@@ -2179,11 +2936,53 @@ function App() {
                   <div className="split">
                     <label>
                       <span>{locale === 'zh-CN' ? '操作系统' : 'Operating system'}</span>
-                      <input value={profileForm.fingerprintConfig.advanced.operatingSystem} onChange={(event) => setProfileForm((current) => ({ ...current, fingerprintConfig: { ...current.fingerprintConfig, advanced: { ...current.fingerprintConfig.advanced, operatingSystem: event.target.value } } }))} />
+                      <select
+                        value={profileForm.fingerprintConfig.advanced.operatingSystem}
+                        onChange={(event) =>
+                          setProfileForm((current) => ({
+                            ...current,
+                            fingerprintConfig: {
+                              ...current.fingerprintConfig,
+                              userAgent: buildDesktopUserAgent(
+                                event.target.value,
+                                current.fingerprintConfig.advanced.browserVersion,
+                              ),
+                              advanced: {
+                                ...current.fingerprintConfig.advanced,
+                                operatingSystem: event.target.value,
+                              },
+                            },
+                          }))
+                        }
+                      >
+                        {OPERATING_SYSTEM_OPTIONS.map((item) => (
+                          <option key={item} value={item}>
+                            {item}
+                          </option>
+                        ))}
+                      </select>
                     </label>
                     <label>
                       <span>{locale === 'zh-CN' ? '浏览器版本' : 'Browser version'}</span>
-                      <input value={profileForm.fingerprintConfig.advanced.browserVersion} onChange={(event) => setProfileForm((current) => ({ ...current, fingerprintConfig: { ...current.fingerprintConfig, advanced: { ...current.fingerprintConfig.advanced, browserVersion: event.target.value } } }))} />
+                      <input
+                        value={profileForm.fingerprintConfig.advanced.browserVersion}
+                        onChange={(event) =>
+                          setProfileForm((current) => ({
+                            ...current,
+                            fingerprintConfig: {
+                              ...current.fingerprintConfig,
+                              userAgent: buildDesktopUserAgent(
+                                current.fingerprintConfig.advanced.operatingSystem,
+                                event.target.value,
+                              ),
+                              advanced: {
+                                ...current.fingerprintConfig.advanced,
+                                browserVersion: event.target.value,
+                              },
+                            },
+                          }))
+                        }
+                      />
                     </label>
                   </div>
                   <label>
@@ -2504,12 +3303,11 @@ function App() {
                         }))
                       }
                     >
-                      <option value="">{locale === 'zh-CN' ? '请选择' : 'Select'}</option>
-                      <option value="amazon">Amazon</option>
-                      <option value="tiktok">TikTok</option>
-                      <option value="google">Google</option>
-                      <option value="facebook">Facebook</option>
-                      <option value="custom">{locale === 'zh-CN' ? '自定义平台' : 'Custom platform'}</option>
+                      {STARTUP_PLATFORM_OPTIONS.map((item) => (
+                        <option key={item.value || 'none'} value={item.value}>
+                          {locale === 'zh-CN' ? item.labelZh : item.labelEn}
+                        </option>
+                      ))}
                     </select>
                   </label>
                   {templateForm.fingerprintConfig.basicSettings.platform === 'custom' ? (
@@ -3248,6 +4046,54 @@ function App() {
                   }
                 />
               </label>
+              <label>
+                <span>{locale === 'zh-CN' ? '代理来源' : 'Proxy source'}</span>
+                <select
+                  value={cloudPhoneForm.proxyRefMode}
+                  onChange={(event) =>
+                    updateCloudPhoneProxyRefMode(event.target.value as CloudPhoneProxyRefMode)
+                  }
+                >
+                  <option value="saved">{locale === 'zh-CN' ? '已保存代理' : 'Saved proxy'}</option>
+                  <option value="custom">{locale === 'zh-CN' ? '自定义代理' : 'Custom proxy'}</option>
+                </select>
+              </label>
+              {cloudPhoneForm.proxyRefMode === 'saved' ? (
+                <>
+                  <label>
+                    <span>{locale === 'zh-CN' ? '选择代理' : 'Select proxy'}</span>
+                    <select
+                      value={cloudPhoneForm.proxyId ?? ''}
+                      onChange={(event) =>
+                        setCloudPhoneForm((current) => ({
+                          ...current,
+                          proxyId: event.target.value || null,
+                        }))
+                      }
+                    >
+                      <option value="">{locale === 'zh-CN' ? '请选择已保存代理' : 'Select a saved proxy'}</option>
+                      {proxies.map((proxy) => (
+                        <option key={proxy.id} value={proxy.id}>
+                          {proxy.name} · {proxy.type.toUpperCase()} {proxy.host}:{proxy.port}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {resolveSelectedProxy(proxies, cloudPhoneForm.proxyId) ? (
+                    <div className="section-note">
+                      {(() => {
+                        const selectedProxy = resolveSelectedProxy(proxies, cloudPhoneForm.proxyId)
+                        if (!selectedProxy) return null
+                        return locale === 'zh-CN'
+                          ? `当前引用代理：${selectedProxy.name} · ${selectedProxy.type.toUpperCase()} ${selectedProxy.host}:${selectedProxy.port}`
+                          : `Using saved proxy: ${selectedProxy.name} · ${selectedProxy.type.toUpperCase()} ${selectedProxy.host}:${selectedProxy.port}`
+                      })()}
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
+              {cloudPhoneForm.proxyRefMode === 'custom' ? (
+                <div className="cloud-phone-custom-proxy-fields">
               <div className="split">
                 <label>
                   <span>{t.cloudPhones.proxyType}</span>
@@ -3350,6 +4196,12 @@ function App() {
               <button className="secondary" onClick={() => void testCloudPhoneProxy()}>
                 {t.cloudPhones.testProxy}
               </button>
+                </div>
+              ) : (
+                <button className="secondary" onClick={() => void testCloudPhoneProxy()}>
+                  {t.cloudPhones.testProxy}
+                </button>
+              )}
 
               <div className="section-title section-title-sub">
                 <h2>{t.cloudPhones.fingerprint}</h2>
@@ -3517,18 +4369,19 @@ function App() {
         ) : null}
 
         {view === 'proxies' ? (
-          <section className="workspace">
+          <section className="workspace workspace-single proxy-workspace">
             <div className="list-card">
               <div className="section-title">
                 <h2>{t.proxies.title}</h2>
                 <button
                   className="secondary"
-                  onClick={() => {
-                    setSelectedProxyId(null)
-                    setProxyForm(emptyProxy())
-                  }}
+                  onClick={openCreateProxyPanel}
                 >
-                  {t.proxies.newProxy}
+                  {proxyPanelOpen && proxyPanelMode === 'create'
+                    ? locale === 'zh-CN'
+                      ? '收起新建'
+                      : 'Close create'
+                    : t.proxies.newProxy}
                 </button>
               </div>
 
@@ -3544,22 +4397,27 @@ function App() {
                     <span className={`badge ${proxy.status}`}>
                       {translateStatus(locale, proxy.status)}
                     </span>
-                    <button className="ghost" onClick={() => setSelectedProxyId(proxy.id)}>
+                    {proxyRowFeedback[proxy.id] ? (
+                      <span className={`proxy-inline-feedback ${proxyRowFeedback[proxy.id].kind}`}>
+                        {proxyRowFeedback[proxy.id].message}
+                      </span>
+                    ) : null}
+                    <button className="ghost" onClick={() => openEditProxyPanel(proxy.id)}>
                       {t.common.edit}
                     </button>
                     <button
-                      className="primary"
-                      onClick={() =>
-                        void withBusy(t.busy.testProxy, async () => {
-                          const api = requireDesktopApi(['proxies.test'])
-                          await api.proxies.test(proxy.id)
-                          setNoticeMessage(
-                            locale === 'zh-CN' ? '代理测试已完成。' : 'Proxy test finished.',
-                          )
-                        })
-                      }
+                      className={`primary proxy-test-button ${testingProxyId === proxy.id ? 'is-testing' : ''}`}
+                      disabled={testingProxyId === proxy.id}
+                      onClick={() => void testProxy(proxy.id)}
                     >
-                      {t.common.test}
+                      {testingProxyId === proxy.id ? (
+                        <span className="proxy-test-button-content">
+                          <span className="proxy-test-spinner" />
+                          {locale === 'zh-CN' ? '测试中' : 'Testing'}
+                        </span>
+                      ) : (
+                        t.common.test
+                      )}
                     </button>
                   </div>
                 </article>
@@ -3567,104 +4425,113 @@ function App() {
               {proxies.length === 0 ? <p className="empty">{t.proxies.empty}</p> : null}
             </div>
 
-            <div className="editor-card">
-              <div className="section-title">
-                <h2>{selectedProxyId ? t.proxies.editProxy : t.proxies.createProxy}</h2>
+            {proxyPanelOpen ? (
+              <div className="drawer-backdrop" onClick={closeProxyPanel}>
+                <aside
+                  className="drawer-panel editor-card"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <div className="section-title">
+                    <h2>{proxyPanelMode === 'edit' ? t.proxies.editProxy : t.proxies.createProxy}</h2>
+                    <button className="ghost editor-close-button" onClick={closeProxyPanel}>
+                      {locale === 'zh-CN' ? '关闭' : 'Close'}
+                    </button>
+                  </div>
+                  <label>
+                    <span>{t.proxies.name}</span>
+                    <input
+                      value={proxyForm.name}
+                      onChange={(event) =>
+                        setProxyForm((current) => ({ ...current, name: event.target.value }))
+                      }
+                    />
+                  </label>
+                  <div className="split">
+                    <label>
+                      <span>{t.proxies.type}</span>
+                      <select
+                        value={proxyForm.type}
+                        onChange={(event) =>
+                          setProxyForm((current) => ({
+                            ...current,
+                            type: event.target.value as ProxyRecord['type'],
+                          }))
+                        }
+                      >
+                        <option value="http">HTTP</option>
+                        <option value="https">HTTPS</option>
+                        <option value="socks5">SOCKS5</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>{t.proxies.port}</span>
+                      <input
+                        type="number"
+                        value={proxyForm.port}
+                        onChange={(event) =>
+                          setProxyForm((current) => ({
+                            ...current,
+                            port: Number(event.target.value),
+                          }))
+                        }
+                      />
+                    </label>
+                  </div>
+                  <label>
+                    <span>{t.proxies.host}</span>
+                    <input
+                      value={proxyForm.host}
+                      onChange={(event) =>
+                        setProxyForm((current) => ({ ...current, host: event.target.value }))
+                      }
+                    />
+                  </label>
+                  <div className="split">
+                    <label>
+                      <span>{t.proxies.username}</span>
+                      <input
+                        value={proxyForm.username}
+                        onChange={(event) =>
+                          setProxyForm((current) => ({ ...current, username: event.target.value }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>{t.proxies.password}</span>
+                      <input
+                        type="password"
+                        value={proxyForm.password}
+                        onChange={(event) =>
+                          setProxyForm((current) => ({ ...current, password: event.target.value }))
+                        }
+                      />
+                    </label>
+                  </div>
+                  <div className="actions">
+                    <button className="primary" onClick={() => void saveProxy()}>
+                      {proxyPanelMode === 'edit' ? t.proxies.updateProxy : t.proxies.createProxy}
+                    </button>
+                    {proxyPanelMode === 'edit' && selectedProxyId ? (
+                      <button
+                        className="danger"
+                        onClick={() =>
+                          void withBusy(t.busy.deleteProxy, async () => {
+                            const api = requireDesktopApi(['proxies.delete'])
+                            await api.proxies.delete(selectedProxyId)
+                            closeProxyPanel()
+                            setNoticeMessage(
+                              locale === 'zh-CN' ? '代理已删除。' : 'Proxy deleted.',
+                            )
+                          })
+                        }
+                      >
+                        {t.proxies.deleteProxy}
+                      </button>
+                    ) : null}
+                  </div>
+                </aside>
               </div>
-              <label>
-                <span>{t.proxies.name}</span>
-                <input
-                  value={proxyForm.name}
-                  onChange={(event) =>
-                    setProxyForm((current) => ({ ...current, name: event.target.value }))
-                  }
-                />
-              </label>
-              <div className="split">
-                <label>
-                  <span>{t.proxies.type}</span>
-                  <select
-                    value={proxyForm.type}
-                    onChange={(event) =>
-                      setProxyForm((current) => ({
-                        ...current,
-                        type: event.target.value as ProxyRecord['type'],
-                      }))
-                    }
-                  >
-                    <option value="http">HTTP</option>
-                    <option value="https">HTTPS</option>
-                    <option value="socks5">SOCKS5</option>
-                  </select>
-                </label>
-                <label>
-                  <span>{t.proxies.port}</span>
-                  <input
-                    type="number"
-                    value={proxyForm.port}
-                    onChange={(event) =>
-                      setProxyForm((current) => ({
-                        ...current,
-                        port: Number(event.target.value),
-                      }))
-                    }
-                  />
-                </label>
-              </div>
-              <label>
-                <span>{t.proxies.host}</span>
-                <input
-                  value={proxyForm.host}
-                  onChange={(event) =>
-                    setProxyForm((current) => ({ ...current, host: event.target.value }))
-                  }
-                />
-              </label>
-              <div className="split">
-                <label>
-                  <span>{t.proxies.username}</span>
-                  <input
-                    value={proxyForm.username}
-                    onChange={(event) =>
-                      setProxyForm((current) => ({ ...current, username: event.target.value }))
-                    }
-                  />
-                </label>
-                <label>
-                  <span>{t.proxies.password}</span>
-                  <input
-                    type="password"
-                    value={proxyForm.password}
-                    onChange={(event) =>
-                      setProxyForm((current) => ({ ...current, password: event.target.value }))
-                    }
-                  />
-                </label>
-              </div>
-              <div className="actions">
-                <button className="primary" onClick={() => void saveProxy()}>
-                  {selectedProxyId ? t.proxies.updateProxy : t.proxies.createProxy}
-                </button>
-                {selectedProxyId ? (
-                  <button
-                    className="danger"
-                    onClick={() =>
-                      void withBusy(t.busy.deleteProxy, async () => {
-                        const api = requireDesktopApi(['proxies.delete'])
-                        await api.proxies.delete(selectedProxyId)
-                        setSelectedProxyId(null)
-                        setProxyForm(emptyProxy())
-                        setNoticeMessage(
-                          locale === 'zh-CN' ? '代理已删除。' : 'Proxy deleted.',
-                        )
-                      })
-                    }
-                  >
-                    {t.proxies.deleteProxy}
-                  </button>
-                ) : null}
-              </div>
-            </div>
+            ) : null}
           </section>
         ) : null}
 
@@ -4058,6 +4925,244 @@ function App() {
                   <dd>{runtimeInfo?.capabilities.join(', ') ?? t.common.loading}</dd>
                 </div>
               </dl>
+            </div>
+          </section>
+        ) : null}
+
+        {view === 'account' ? (
+          <section className="workspace workspace-single">
+            <div className="editor-card account-card">
+              <div className="section-title">
+                <h2>{locale === 'zh-CN' ? '个人中心' : 'Personal Center'}</h2>
+              </div>
+              <div className="account-hero">
+                {currentAuthUser?.avatarUrl ? (
+                  <img className="account-avatar account-avatar-image" src={currentAuthUser.avatarUrl} alt="avatar" />
+                ) : (
+                  <span className="account-avatar">
+                    {(currentAuthUser?.name || currentAuthUser?.username || currentAuthUser?.email || 'U')
+                      .slice(0, 1)
+                      .toUpperCase()}
+                  </span>
+                )}
+                <div>
+                  <strong>{currentAuthUser?.name || currentAuthUser?.username || currentAuthUser?.email}</strong>
+                  <p>{currentAuthUser?.email || currentAuthUser?.username}</p>
+                </div>
+              </div>
+              <dl className="details-list">
+                <div>
+                  <dt>{locale === 'zh-CN' ? '账号 ID' : 'Account ID'}</dt>
+                  <dd>{currentAuthUser?.id || '-'}</dd>
+                </div>
+                <div>
+                  <dt>{locale === 'zh-CN' ? '用户名' : 'Username'}</dt>
+                  <dd>{currentAuthUser?.username || '-'}</dd>
+                </div>
+                <div>
+                  <dt>{locale === 'zh-CN' ? '邮箱' : 'Email'}</dt>
+                  <dd>{currentAuthUser?.email || '-'}</dd>
+                </div>
+                <div>
+                  <dt>{locale === 'zh-CN' ? '角色' : 'Role'}</dt>
+                  <dd>{currentAuthUser?.role || '-'}</dd>
+                </div>
+                <div>
+                  <dt>{locale === 'zh-CN' ? '状态' : 'Status'}</dt>
+                  <dd>{currentAuthUser?.status || '-'}</dd>
+                </div>
+              </dl>
+              <div className="section-title section-title-sub">
+                <h2>{locale === 'zh-CN' ? '基础资料' : 'Basic profile'}</h2>
+              </div>
+              <div className="split">
+                <label>
+                  <span>{locale === 'zh-CN' ? '名称' : 'Name'}</span>
+                  <input
+                    value={accountProfileForm.name}
+                    onChange={(event) =>
+                      setAccountProfileForm((current) => ({ ...current, name: event.target.value }))
+                    }
+                  />
+                </label>
+                <label>
+                  <span>{locale === 'zh-CN' ? '账号' : 'Username'}</span>
+                  <input
+                    value={accountProfileForm.username}
+                    onChange={(event) =>
+                      setAccountProfileForm((current) => ({
+                        ...current,
+                        username: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+              </div>
+              <label>
+                <span>{locale === 'zh-CN' ? '头像' : 'Avatar'}</span>
+                <div className="account-avatar-row">
+                  <input
+                    value={accountProfileForm.avatarUrl}
+                    onChange={(event) =>
+                      setAccountProfileForm((current) => ({
+                        ...current,
+                        avatarUrl: event.target.value,
+                      }))
+                    }
+                    placeholder="https://example.com/avatar.png"
+                  />
+                  <button className="secondary" type="button" onClick={() => void uploadAccountAvatar()}>
+                    {locale === 'zh-CN' ? '上传图片' : 'Upload image'}
+                  </button>
+                </div>
+              </label>
+              <label>
+                <span>{locale === 'zh-CN' ? '邮箱' : 'Email'}</span>
+                <input
+                  value={accountProfileForm.email}
+                  onChange={(event) =>
+                    setAccountProfileForm((current) => ({ ...current, email: event.target.value }))
+                  }
+                />
+              </label>
+              <label>
+                <span>{locale === 'zh-CN' ? '备注' : 'Bio / Notes'}</span>
+                <textarea
+                  rows={4}
+                  value={accountProfileForm.bio}
+                  onChange={(event) =>
+                    setAccountProfileForm((current) => ({ ...current, bio: event.target.value }))
+                  }
+                />
+              </label>
+              <div className="actions">
+                <button className="primary" onClick={() => void saveAccountProfile()}>
+                  {locale === 'zh-CN' ? '保存资料' : 'Save profile'}
+                </button>
+              </div>
+              <div className="section-title section-title-sub">
+                <h2>{locale === 'zh-CN' ? '登录设备' : 'Logged-in devices'}</h2>
+              </div>
+              {currentAuthUser?.devices && currentAuthUser.devices.length > 0 ? (
+                <div className="device-list">
+                  {currentAuthUser.devices.map((device) => (
+                    <div key={device.deviceId} className="device-card">
+                      <strong>{device.deviceName || device.deviceId}</strong>
+                      <p>
+                        {(device.platform || '-') +
+                          ' · ' +
+                          (device.source || '-')}
+                      </p>
+                      {device.isCurrent ? (
+                        <span className="device-badge">
+                          {locale === 'zh-CN' ? '当前设备' : 'Current device'}
+                        </span>
+                      ) : null}
+                      <p>
+                        {locale === 'zh-CN' ? '最近登录' : 'Last login'}: {formatDate(device.lastLoginAt)}
+                      </p>
+                      <p>
+                        {locale === 'zh-CN' ? '最近在线' : 'Last seen'}: {formatDate(device.lastSeenAt)}
+                      </p>
+                      {device.revokedAt ? (
+                        <p>
+                          {locale === 'zh-CN' ? '已失效' : 'Revoked'}: {formatDate(device.revokedAt)}
+                        </p>
+                      ) : null}
+                      <div className="device-actions">
+                        <button
+                          className="secondary"
+                          type="button"
+                          onClick={() => void revokeAccountDevice(device.deviceId)}
+                        >
+                          {device.isCurrent
+                            ? locale === 'zh-CN'
+                              ? '踢下当前设备'
+                              : 'Revoke current'
+                            : locale === 'zh-CN'
+                              ? '踢下线'
+                              : 'Revoke'}
+                        </button>
+                        <button
+                          className="ghost danger"
+                          type="button"
+                          onClick={() => void deleteAccountDevice(device.deviceId)}
+                        >
+                          {locale === 'zh-CN' ? '删除设备' : 'Delete'}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="empty">{locale === 'zh-CN' ? '暂无设备记录。' : 'No device records yet.'}</p>
+              )}
+              <div className="section-title section-title-sub">
+                <h2>{locale === 'zh-CN' ? '订阅信息' : 'Subscription'}</h2>
+              </div>
+              <dl className="details-list">
+                <div>
+                  <dt>{locale === 'zh-CN' ? '套餐' : 'Plan'}</dt>
+                  <dd>{currentAuthUser?.subscription?.plan || 'free'}</dd>
+                </div>
+                <div>
+                  <dt>{locale === 'zh-CN' ? '状态' : 'Status'}</dt>
+                  <dd>{currentAuthUser?.subscription?.status || 'free'}</dd>
+                </div>
+                <div>
+                  <dt>{locale === 'zh-CN' ? '到期时间' : 'Expires at'}</dt>
+                  <dd>{formatDate(currentAuthUser?.subscription?.expiresAt || null)}</dd>
+                </div>
+              </dl>
+              <div className="section-title section-title-sub">
+                <h2>{locale === 'zh-CN' ? '密码安全' : 'Password security'}</h2>
+              </div>
+              <div className="split">
+                <label>
+                  <span>{locale === 'zh-CN' ? '当前密码' : 'Current password'}</span>
+                  <input
+                    type="password"
+                    value={accountPasswordForm.currentPassword}
+                    onChange={(event) =>
+                      setAccountPasswordForm((current) => ({
+                        ...current,
+                        currentPassword: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  <span>{locale === 'zh-CN' ? '新密码' : 'New password'}</span>
+                  <input
+                    type="password"
+                    value={accountPasswordForm.nextPassword}
+                    onChange={(event) =>
+                      setAccountPasswordForm((current) => ({
+                        ...current,
+                        nextPassword: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+              </div>
+              <label>
+                <span>{locale === 'zh-CN' ? '确认新密码' : 'Confirm new password'}</span>
+                <input
+                  type="password"
+                  value={accountPasswordForm.confirmPassword}
+                  onChange={(event) =>
+                    setAccountPasswordForm((current) => ({
+                      ...current,
+                      confirmPassword: event.target.value,
+                    }))
+                  }
+                />
+              </label>
+              <div className="actions">
+                <button className="secondary" onClick={() => void saveAccountPassword()}>
+                  {locale === 'zh-CN' ? '修改密码' : 'Change password'}
+                </button>
+              </div>
             </div>
           </section>
         ) : null}

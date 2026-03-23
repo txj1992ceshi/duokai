@@ -1,5 +1,7 @@
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -53,6 +55,7 @@ import {
 import { checkNetworkHealth, type NetworkHealthResult } from './services/networkCheck'
 import { buildNetworkDiagnosticsSummary } from './services/networkDiagnostics'
 import type {
+  AuthUser,
   CloudPhoneBulkActionPayload,
   CloudPhoneRecord,
   CreateCloudPhoneInput,
@@ -60,13 +63,17 @@ import type {
   CreateProxyInput,
   CreateTemplateInput,
   DesktopRuntimeInfo,
+  DesktopAuthState,
   ExportBundle,
+  FingerprintConfig,
   LogLevel,
   ProfileBulkActionPayload,
   ProfileRecord,
   ProxyRecord,
   RemoteConfigSnapshot,
   SettingsPayload,
+  TrustedIsolationCheck,
+  TrustedLaunchSnapshot,
   UpdateCloudPhoneInput,
   UpdateTemplateInput,
   UpdateProfileInput,
@@ -78,13 +85,44 @@ const DEFAULT_TIMEZONE_FALLBACK = 'America/Los_Angeles'
 const DEFAULT_CONCURRENT_STARTS = 2
 const DEFAULT_ACTIVE_LIMIT = 6
 const DEFAULT_LAUNCH_RETRIES = 2
+const DEFAULT_CONTROL_PLANE_API_BASE = 'http://127.0.0.1:3100'
+const TRUSTED_SNAPSHOT_VERSION = 1
+const PROFILE_STORAGE_SYNC_INTERVAL_MS = 5 * 60 * 1000
+const CONTROL_PLANE_API_BASE_KEY = 'controlPlaneApiBase'
+const CONTROL_PLANE_DEVICE_ID_KEY = 'controlPlaneDeviceId'
+const CONTROL_PLANE_AUTH_TOKEN_KEY = 'controlPlaneAuthToken'
+const CONTROL_PLANE_AUTH_USER_KEY = 'controlPlaneAuthUser'
 
 let mainWindow: BrowserWindow | null = null
 let db: DatabaseService | null = null
 let agentService: AgentService | null = null
 
 const runtimeContexts = new Map<string, BrowserContext>()
+const runtimeStorageSyncTimers = new Map<string, NodeJS.Timeout>()
 const MAX_QUEUE = Number(process.env.MAX_QUEUE_LENGTH || 200)
+
+type ControlPlaneStorageState = {
+  id: string
+  userId: string
+  profileId: string
+  stateJson: unknown
+  version: number
+  encrypted: boolean
+  deviceId: string
+  updatedBy: string
+  source: string
+  stateHash: string
+  createdAt: string
+  updatedAt: string
+}
+
+type BrowserStorageState = {
+  cookies?: Array<Record<string, unknown>>
+  origins?: Array<{
+    origin: string
+    localStorage?: Array<{ name: string; value: string }>
+  }>
+}
 
 function resolveAuditLogPath(): string {
   try {
@@ -95,10 +133,16 @@ function resolveAuditLogPath(): string {
 }
 
 function getAgentRuntimeState() {
+  const launchStages = Object.fromEntries(
+    requireDatabase()
+      .listProfiles()
+      .map((profile) => [profile.id, profile.fingerprintConfig.runtimeMetadata.launchValidationStage]),
+  )
   return {
     runningProfileIds: [...runtimeContexts.keys()],
     queuedProfileIds: scheduler.getQueuedIds(),
     startingProfileIds: scheduler.getStartingIds(),
+    launchStages,
     retryCounts: scheduler.getRetryCounts(),
   }
 }
@@ -175,14 +219,63 @@ function audit(action: string, payload: Record<string, unknown> = {}) {
   }
 }
 
+function getProfileStorageStatePath(profileId: string): string {
+  return path.join(getProfilePath(app, profileId), 'storageState.json')
+}
+
+function normalizeStorageState(stateJson: unknown): BrowserStorageState | null {
+  if (!stateJson || typeof stateJson !== 'object') {
+    return null
+  }
+  return stateJson as BrowserStorageState
+}
+
+function hashStorageState(stateJson: unknown): string {
+  return createHash('sha256').update(JSON.stringify(stateJson)).digest('hex')
+}
+
+async function readProfileStorageStateFromDisk(profileId: string): Promise<BrowserStorageState | null> {
+  try {
+    const content = await readFile(getProfileStorageStatePath(profileId), 'utf8')
+    return normalizeStorageState(JSON.parse(content))
+  } catch {
+    return null
+  }
+}
+
+async function writeProfileStorageStateToDisk(profileId: string, stateJson: unknown): Promise<void> {
+  const profilePath = getProfilePath(app, profileId)
+  mkdirSync(profilePath, { recursive: true })
+  await writeFile(getProfileStorageStatePath(profileId), JSON.stringify(stateJson, null, 2), 'utf8')
+}
+
+async function saveProfileStorageStateToDisk(
+  profileId: string,
+  context: BrowserContext,
+): Promise<BrowserStorageState> {
+  const stateJson = (await context.storageState()) as BrowserStorageState
+  await writeProfileStorageStateToDisk(profileId, stateJson)
+  return stateJson
+}
+
+async function fetchRemoteProfileStorageState(profileId: string): Promise<ControlPlaneStorageState | null> {
+  if (!getDesktopAuthState().authenticated) {
+    return null
+  }
+  const payload = await requestControlPlane(`/api/profile-storage-state/${encodeURIComponent(profileId)}`)
+  return (payload.storageState || null) as ControlPlaneStorageState | null
+}
+
 async function saveAllElectronSessions(): Promise<void> {
   audit('save_all_begin', { count: runtimeContexts.size })
   for (const [profileId, context] of runtimeContexts.entries()) {
     try {
-      const profilePath = getProfilePath(app, profileId)
-      mkdirSync(profilePath, { recursive: true })
-      const storagePath = path.join(profilePath, 'storageState.json')
-      await context.storageState({ path: storagePath })
+      const storagePath = getProfileStorageStatePath(profileId)
+      await saveProfileStorageStateToDisk(profileId, context)
+      await uploadProfileStorageStateToControlPlane(profileId, {
+        context,
+        reason: 'graceful-shutdown',
+      })
       audit('save_ok', { profileId, storagePath })
     } catch (error) {
       audit('save_err', { profileId, err: String(error) })
@@ -294,8 +387,800 @@ function requireDatabase(): DatabaseService {
   return db
 }
 
+function getSettingValue(key: string, fallback = ''): string {
+  return requireDatabase().getSettings()[key] || fallback
+}
+
+function getControlPlaneApiBase(): string {
+  return (
+    getSettingValue(CONTROL_PLANE_API_BASE_KEY) ||
+    String(process.env.DUOKAI_API_BASE || '').trim() ||
+    DEFAULT_CONTROL_PLANE_API_BASE
+  ).replace(/\/$/, '')
+}
+
+function getStoredAuthToken(): string {
+  return getSettingValue(CONTROL_PLANE_AUTH_TOKEN_KEY).trim()
+}
+
+function getControlPlaneDeviceId(): string {
+  const value = getSettingValue(CONTROL_PLANE_DEVICE_ID_KEY).trim()
+  if (value) {
+    return value
+  }
+  const generated = randomUUID()
+  requireDatabase().setSettings({
+    ...getSettings(),
+    [CONTROL_PLANE_DEVICE_ID_KEY]: generated,
+  })
+  return generated
+}
+
+function getStoredAuthUser(): AuthUser | null {
+  const raw = getSettingValue(CONTROL_PLANE_AUTH_USER_KEY)
+  if (!raw) {
+    return null
+  }
+  try {
+    return JSON.parse(raw) as AuthUser
+  } catch {
+    return null
+  }
+}
+
+function getDesktopAuthState(): DesktopAuthState {
+  const user = getStoredAuthUser()
+  const currentDeviceId = getControlPlaneDeviceId()
+  return {
+    apiBase: getControlPlaneApiBase(),
+    authenticated: Boolean(getStoredAuthToken() && user),
+    currentDeviceId,
+    user: user
+      ? {
+          ...user,
+          devices: Array.isArray(user.devices)
+            ? user.devices.map((device) => ({
+                ...device,
+                isCurrent: device.deviceId === currentDeviceId,
+              }))
+            : [],
+        }
+      : null,
+  }
+}
+
+function saveDesktopAuth(apiBase: string, token: string, user: AuthUser): DesktopAuthState {
+  requireDatabase().setSettings({
+    ...getSettings(),
+    [CONTROL_PLANE_API_BASE_KEY]: apiBase.replace(/\/$/, ''),
+    [CONTROL_PLANE_AUTH_TOKEN_KEY]: token,
+    [CONTROL_PLANE_AUTH_USER_KEY]: JSON.stringify(user),
+  })
+  return getDesktopAuthState()
+}
+
+function clearDesktopAuth(): DesktopAuthState {
+  requireDatabase().setSettings({
+    ...getSettings(),
+    [CONTROL_PLANE_AUTH_TOKEN_KEY]: '',
+    [CONTROL_PLANE_AUTH_USER_KEY]: '',
+  })
+  return getDesktopAuthState()
+}
+
+async function requestControlPlane(
+  pathName: string,
+  init: RequestInit = {},
+  includeAuth = true,
+): Promise<Record<string, unknown>> {
+  const headers = new Headers(init.headers || {})
+  if (!(init.body instanceof FormData) && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
+  if (includeAuth) {
+    const token = getStoredAuthToken()
+    if (!token) {
+      throw new Error('请先登录桌面端')
+    }
+    headers.set('Authorization', `Bearer ${token}`)
+  }
+  const response = await fetch(`${getControlPlaneApiBase()}${pathName}`, {
+    ...init,
+    headers,
+  })
+  const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>
+  if (!response.ok || payload.success === false) {
+    const message = String(payload.error || `${response.status} ${response.statusText}` || 'Control plane request failed')
+    if (response.status === 401) {
+      clearDesktopAuth()
+    }
+    throw new Error(message)
+  }
+  return payload
+}
+
 function getSettings(): SettingsPayload {
   return requireDatabase().getSettings()
+}
+
+type ControlPlaneProfile = {
+  id: string
+  name: string
+  status?: string
+  tags?: string[]
+  proxyType?: string
+  proxyHost?: string
+  proxyPort?: string
+  proxyUsername?: string
+  proxyPassword?: string
+  ua?: string
+  seed?: string
+  isMobile?: boolean
+  groupId?: string
+  startupPlatform?: string
+  startupUrl?: string
+  lastResolvedProxyTransport?: string
+  configFingerprintHash?: string
+  proxyFingerprintHash?: string
+  lastQuickIsolationCheck?: TrustedIsolationCheck | null
+  trustedLaunchSnapshot?: TrustedLaunchSnapshot | null
+}
+
+type ProxyEntryTransport = 'https-entry' | 'http-entry' | 'socks5-entry' | 'direct'
+type NegotiatedNetworkHealthResult = NetworkHealthResult & {
+  effectiveProxyTransport?: ProxyEntryTransport
+}
+
+function mapControlPlaneStatus(status: string | undefined): ProfileRecord['status'] {
+  if (status === 'Running') {
+    return 'running'
+  }
+  if (status === 'Error') {
+    return 'error'
+  }
+  return 'stopped'
+}
+
+function getBuiltInStartupUrl(platform: string): string {
+  const normalized = platform.trim().toLowerCase()
+  if (normalized === 'amazon') return 'https://www.amazon.com/'
+  if (normalized === 'tiktok') return 'https://www.tiktok.com/'
+  if (normalized === 'google') return 'https://www.google.com/'
+  if (normalized === 'facebook') return 'https://www.facebook.com/'
+  if (normalized === 'linkedin') return 'https://www.linkedin.com/'
+  if (normalized === 'instagram') return 'https://www.instagram.com/'
+  if (normalized === 'x') return 'https://x.com/'
+  if (normalized === 'youtube') return 'https://www.youtube.com/'
+  return ''
+}
+
+function resolveProfileStartupUrl(profile: Pick<ProfileRecord, 'fingerprintConfig'>): string {
+  const basicSettings = profile.fingerprintConfig.basicSettings
+  if (basicSettings.platform === 'custom') {
+    return basicSettings.customPlatformUrl.trim()
+  }
+  return (
+    basicSettings.customPlatformUrl.trim() ||
+    getBuiltInStartupUrl(basicSettings.platform) ||
+    ''
+  )
+}
+
+function mapLocalStatusToControlPlaneStatus(
+  status: ProfileRecord['status'] | 'queued' | 'starting' | 'idle',
+): 'Ready' | 'Running' | 'Error' {
+  if (status === 'error') {
+    return 'Error'
+  }
+  if (status === 'running' || status === 'queued' || status === 'starting') {
+    return 'Running'
+  }
+  return 'Ready'
+}
+
+function hashStructuredPayload(input: unknown): string {
+  return createHash('sha256').update(JSON.stringify(input)).digest('hex')
+}
+
+function detectDesktopHostEnvironment(): string {
+  if (process.platform === 'darwin') {
+    return 'macOS'
+  }
+  if (process.platform === 'linux') {
+    return 'Linux'
+  }
+  return 'Windows'
+}
+
+function resolveChromiumMajorForProfile(profile: ProfileRecord): string {
+  const browserVersion = String(profile.fingerprintConfig.advanced.browserVersion || '').trim()
+  if (browserVersion) {
+    return browserVersion.split('.')[0] || browserVersion
+  }
+  const matched = profile.fingerprintConfig.userAgent.match(/Chrome\/(\d+)/i)
+  return matched?.[1] || ''
+}
+
+function buildConfigFingerprintHash(profile: ProfileRecord): string {
+  return hashStructuredPayload({
+    userAgent: profile.fingerprintConfig.userAgent,
+    operatingSystem: profile.fingerprintConfig.advanced.operatingSystem,
+    browserVersion: profile.fingerprintConfig.advanced.browserVersion,
+    language: profile.fingerprintConfig.language,
+    timezone: profile.fingerprintConfig.timezone,
+    geolocation: profile.fingerprintConfig.advanced.geolocation,
+    webrtcMode: profile.fingerprintConfig.webrtcMode,
+    deviceMode: profile.fingerprintConfig.advanced.deviceMode,
+    startupPlatform: profile.fingerprintConfig.basicSettings.platform,
+    startupUrl: resolveProfileStartupUrl(profile),
+  })
+}
+
+function buildProxyFingerprintHash(profile: ProfileRecord, proxy: ProxyRecord | null): string {
+  return hashStructuredPayload({
+    proxyMode: profile.fingerprintConfig.proxySettings.proxyMode,
+    proxyType: proxy?.type || 'direct',
+    host: proxy?.host || '',
+    port: proxy?.port || 0,
+    username: proxy?.username || '',
+    expectedIp: profile.fingerprintConfig.runtimeMetadata.lastResolvedIp,
+    expectedCountry: profile.fingerprintConfig.runtimeMetadata.lastResolvedCountry,
+    expectedRegion: profile.fingerprintConfig.runtimeMetadata.lastResolvedRegion,
+    preferredTransport: profile.fingerprintConfig.runtimeMetadata.lastEffectiveProxyTransport,
+  })
+}
+
+function buildTrustedLaunchSnapshot(
+  profile: ProfileRecord,
+  check: NetworkHealthResult,
+  configFingerprintHash: string,
+  proxyFingerprintHash: string,
+  effectiveProxyTransport: string,
+): TrustedLaunchSnapshot {
+  return {
+    configFingerprintHash,
+    proxyFingerprintHash,
+    snapshotVersion: TRUSTED_SNAPSHOT_VERSION,
+    verificationLevel: 'full',
+    verifiedAt: new Date().toISOString(),
+    effectiveProxyTransport,
+    verifiedEgressIp: check.ip,
+    verifiedCountry: check.country,
+    verifiedRegion: check.region,
+    verifiedTimezone: check.timezone,
+    verifiedLanguage: check.languageHint,
+    verifiedGeolocation: check.geolocation,
+    verifiedHostEnvironment: detectDesktopHostEnvironment(),
+    verifiedChromiumMajor: resolveChromiumMajorForProfile(profile),
+    verifiedDesktopAppVersion: app.getVersion(),
+    httpsCheckPassed: check.ok,
+    leakCheckPassed: check.ok,
+    startupNavigationPassed: true,
+    status: 'trusted',
+  }
+}
+
+function buildQuickIsolationCheck(
+  check: NetworkHealthResult,
+  effectiveProxyTransport: string,
+  success: boolean,
+  message: string,
+): TrustedIsolationCheck {
+  return {
+    checkedAt: new Date().toISOString(),
+    success,
+    message,
+    egressIp: check.ip,
+    country: check.country,
+    region: check.region,
+    timezone: check.timezone,
+    language: check.languageHint,
+    geolocation: check.geolocation,
+    effectiveProxyTransport,
+  }
+}
+
+function compareSnapshotWithCheck(
+  snapshot: TrustedLaunchSnapshot,
+  check: NetworkHealthResult,
+  effectiveProxyTransport: string,
+): { ok: boolean; message: string } {
+  if (!check.ok) {
+    return { ok: false, message: check.message || '快速隔离校验失败' }
+  }
+  if (snapshot.effectiveProxyTransport && snapshot.effectiveProxyTransport !== effectiveProxyTransport) {
+    return { ok: false, message: '当前代理入口与可信快照不一致' }
+  }
+  if (snapshot.verifiedEgressIp && snapshot.verifiedEgressIp !== check.ip) {
+    return { ok: false, message: '当前出口 IP 与可信快照不一致' }
+  }
+  if (snapshot.verifiedCountry && snapshot.verifiedCountry !== check.country) {
+    return { ok: false, message: '当前出口国家与可信快照不一致' }
+  }
+  if (snapshot.verifiedRegion && snapshot.verifiedRegion !== check.region) {
+    return { ok: false, message: '当前出口地区与可信快照不一致' }
+  }
+  if (snapshot.verifiedTimezone && check.timezone && snapshot.verifiedTimezone !== check.timezone) {
+    return { ok: false, message: '当前时区与可信快照不一致' }
+  }
+  if (snapshot.verifiedLanguage && check.languageHint && snapshot.verifiedLanguage !== check.languageHint) {
+    return { ok: false, message: '当前语言与可信快照不一致' }
+  }
+  if (snapshot.verifiedGeolocation && check.geolocation && snapshot.verifiedGeolocation !== check.geolocation) {
+    return { ok: false, message: '当前地理位置与可信快照不一致' }
+  }
+  return { ok: true, message: '快速隔离校验通过' }
+}
+
+function shouldUseTrustedSnapshot(
+  profile: ProfileRecord,
+  snapshot: TrustedLaunchSnapshot | null,
+  configFingerprintHash: string,
+  proxyFingerprintHash: string,
+): boolean {
+  if (!snapshot || snapshot.status !== 'trusted') {
+    return false
+  }
+  if (snapshot.snapshotVersion !== TRUSTED_SNAPSHOT_VERSION) {
+    return false
+  }
+  if (snapshot.configFingerprintHash !== configFingerprintHash) {
+    return false
+  }
+  if (snapshot.proxyFingerprintHash !== proxyFingerprintHash) {
+    return false
+  }
+  if (snapshot.verifiedDesktopAppVersion !== app.getVersion()) {
+    return false
+  }
+  if (snapshot.verifiedChromiumMajor !== resolveChromiumMajorForProfile(profile)) {
+    return false
+  }
+  if (snapshot.verifiedHostEnvironment !== detectDesktopHostEnvironment()) {
+    return false
+  }
+  return true
+}
+
+function buildFingerprintFromRemoteProfile(
+  remoteProfile: ControlPlaneProfile,
+  existing?: ProfileRecord | null,
+): FingerprintConfig {
+  const fingerprint = existing
+    ? createDefaultFingerprint()
+    : createDefaultFingerprint()
+  const next = existing?.fingerprintConfig
+    ? {
+        ...existing.fingerprintConfig,
+        basicSettings: { ...existing.fingerprintConfig.basicSettings },
+        proxySettings: { ...existing.fingerprintConfig.proxySettings },
+        commonSettings: { ...existing.fingerprintConfig.commonSettings },
+        advanced: { ...existing.fingerprintConfig.advanced },
+        runtimeMetadata: { ...existing.fingerprintConfig.runtimeMetadata },
+      }
+    : fingerprint
+
+  next.userAgent = remoteProfile.ua || next.userAgent
+  next.basicSettings.platform = remoteProfile.startupPlatform || next.basicSettings.platform
+  next.basicSettings.customPlatformUrl = remoteProfile.startupUrl || next.basicSettings.customPlatformUrl
+  next.proxySettings.proxyMode =
+    remoteProfile.proxyType === 'direct' || !remoteProfile.proxyHost ? 'direct' : 'custom'
+  next.proxySettings.proxyType =
+    remoteProfile.proxyType === 'http' ||
+    remoteProfile.proxyType === 'https' ||
+    remoteProfile.proxyType === 'socks5'
+      ? remoteProfile.proxyType
+      : next.proxySettings.proxyType
+  next.proxySettings.host = remoteProfile.proxyHost || ''
+  next.proxySettings.port = Number(remoteProfile.proxyPort || 0)
+  next.proxySettings.username = remoteProfile.proxyUsername || ''
+  next.proxySettings.password = remoteProfile.proxyPassword || ''
+  next.advanced.deviceMode = remoteProfile.isMobile ? 'android' : 'desktop'
+  next.runtimeMetadata.lastEffectiveProxyTransport =
+    remoteProfile.lastResolvedProxyTransport ||
+    remoteProfile.trustedLaunchSnapshot?.effectiveProxyTransport ||
+    next.runtimeMetadata.lastEffectiveProxyTransport
+  next.runtimeMetadata.trustedSnapshotStatus =
+    remoteProfile.trustedLaunchSnapshot?.status || next.runtimeMetadata.trustedSnapshotStatus
+  next.runtimeMetadata.configFingerprintHash =
+    remoteProfile.configFingerprintHash ||
+    remoteProfile.trustedLaunchSnapshot?.configFingerprintHash ||
+    next.runtimeMetadata.configFingerprintHash
+  next.runtimeMetadata.proxyFingerprintHash =
+    remoteProfile.proxyFingerprintHash ||
+    remoteProfile.trustedLaunchSnapshot?.proxyFingerprintHash ||
+    next.runtimeMetadata.proxyFingerprintHash
+  next.runtimeMetadata.lastQuickIsolationCheck =
+    remoteProfile.lastQuickIsolationCheck || next.runtimeMetadata.lastQuickIsolationCheck
+  next.runtimeMetadata.trustedLaunchSnapshot =
+    remoteProfile.trustedLaunchSnapshot || next.runtimeMetadata.trustedLaunchSnapshot
+  return next
+}
+
+function mapRemoteProfileToLocalInput(remoteProfile: ControlPlaneProfile): UpdateProfileInput {
+  const existing = requireDatabase().getProfileById(remoteProfile.id)
+  return {
+    id: remoteProfile.id,
+    name: remoteProfile.name || 'Remote Profile',
+    proxyId: existing?.proxyId || null,
+    groupName: remoteProfile.groupId || existing?.groupName || '',
+    tags: Array.isArray(remoteProfile.tags) ? remoteProfile.tags : existing?.tags || [],
+    notes: existing?.notes || '',
+    fingerprintConfig: buildFingerprintFromRemoteProfile(remoteProfile, existing),
+  }
+}
+
+function mapLocalProfileToRemotePayload(profile: UpdateProfileInput | ProfileRecord) {
+  const proxySettings = profile.fingerprintConfig.proxySettings
+  const startupUrl = resolveProfileStartupUrl(profile)
+  return {
+    name: profile.name,
+    tags: profile.tags,
+    status: 'Ready',
+    proxyType: proxySettings.proxyMode === 'direct' ? 'direct' : proxySettings.proxyType,
+    proxyHost: proxySettings.host,
+    proxyPort: proxySettings.port > 0 ? String(proxySettings.port) : '',
+    proxyUsername: proxySettings.username,
+    proxyPassword: proxySettings.password,
+    ua: profile.fingerprintConfig.userAgent,
+    seed: profile.fingerprintConfig.basicSettings.cookieSeed,
+    isMobile: profile.fingerprintConfig.advanced.deviceMode !== 'desktop',
+    groupId: profile.groupName,
+    startupPlatform: profile.fingerprintConfig.basicSettings.platform,
+    startupUrl: startupUrl || getSettings().defaultHomePage || '',
+    configFingerprintHash: profile.fingerprintConfig.runtimeMetadata.configFingerprintHash,
+    proxyFingerprintHash: profile.fingerprintConfig.runtimeMetadata.proxyFingerprintHash,
+    lastQuickIsolationCheck: profile.fingerprintConfig.runtimeMetadata.lastQuickIsolationCheck,
+    trustedLaunchSnapshot: profile.fingerprintConfig.runtimeMetadata.trustedLaunchSnapshot,
+  }
+}
+
+function syncRemoteProfileIntoLocal(remoteProfile: ControlPlaneProfile): ProfileRecord {
+  const database = requireDatabase()
+  const localInput = mapRemoteProfileToLocalInput(remoteProfile)
+  const profile = database.updateProfile(localInput)
+  database.setProfileStatus(profile.id, mapControlPlaneStatus(remoteProfile.status))
+  return database.getProfileById(profile.id) || profile
+}
+
+async function syncProfilesFromControlPlane(): Promise<number> {
+  const payload = await requestControlPlane('/api/profiles')
+  const remoteProfiles = Array.isArray(payload.profiles)
+    ? (payload.profiles as ControlPlaneProfile[])
+    : []
+  const database = requireDatabase()
+  const remoteIds = new Set(remoteProfiles.map((item) => item.id))
+  const remoteNames = new Set(remoteProfiles.map((item) => item.name))
+
+  for (const localProfile of database.listProfiles()) {
+    if (remoteIds.has(localProfile.id) || remoteNames.has(localProfile.name)) {
+      continue
+    }
+    const createdPayload = await requestControlPlane('/api/profiles', {
+      method: 'POST',
+      body: JSON.stringify(mapLocalProfileToRemotePayload(localProfile)),
+    })
+    const createdRemote = (createdPayload.profile || {}) as ControlPlaneProfile
+    remoteProfiles.push(createdRemote)
+    remoteIds.add(createdRemote.id)
+    remoteNames.add(createdRemote.name)
+    if (createdRemote.id && createdRemote.id !== localProfile.id) {
+      database.deleteProfile(localProfile.id)
+    }
+  }
+
+  for (const remoteProfile of remoteProfiles) {
+    syncRemoteProfileIntoLocal(remoteProfile)
+  }
+  return remoteProfiles.length
+}
+
+async function syncProfileStatusToControlPlane(
+  profileId: string,
+  status: ProfileRecord['status'] | 'queued' | 'starting' | 'idle',
+): Promise<void> {
+  if (!getDesktopAuthState().authenticated) {
+    return
+  }
+  try {
+    await requestControlPlane(`/api/profiles/${encodeURIComponent(profileId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        status: mapLocalStatusToControlPlaneStatus(status),
+        lastActive: status === 'running' ? new Date().toISOString() : '',
+      }),
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    logEvent('warn', 'runtime', `Failed syncing runtime status for ${profileId}: ${message}`, profileId)
+  }
+}
+
+async function syncProfileLaunchTrustToControlPlane(profile: ProfileRecord): Promise<void> {
+  if (!getDesktopAuthState().authenticated) {
+    return
+  }
+  try {
+    await requestControlPlane(`/api/profiles/${encodeURIComponent(profile.id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        configFingerprintHash: profile.fingerprintConfig.runtimeMetadata.configFingerprintHash,
+        proxyFingerprintHash: profile.fingerprintConfig.runtimeMetadata.proxyFingerprintHash,
+        lastQuickIsolationCheck: profile.fingerprintConfig.runtimeMetadata.lastQuickIsolationCheck,
+        trustedLaunchSnapshot: profile.fingerprintConfig.runtimeMetadata.trustedLaunchSnapshot,
+        lastResolvedProxyTransport: profile.fingerprintConfig.runtimeMetadata.lastEffectiveProxyTransport,
+      }),
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    logEvent('warn', 'runtime', `Failed syncing launch trust for ${profile.id}: ${message}`, profile.id)
+  }
+}
+
+async function applyStorageStateToContext(
+  context: BrowserContext,
+  stateJson: BrowserStorageState | null,
+): Promise<void> {
+  if (!stateJson) {
+    return
+  }
+  await context.clearCookies()
+  if (Array.isArray(stateJson.cookies) && stateJson.cookies.length > 0) {
+    await context.addCookies(stateJson.cookies as unknown as Parameters<BrowserContext['addCookies']>[0])
+  }
+  if (!Array.isArray(stateJson.origins) || stateJson.origins.length === 0) {
+    return
+  }
+
+  const page = context.pages()[0] ?? (await context.newPage())
+  for (const originState of stateJson.origins) {
+    if (!originState?.origin || !Array.isArray(originState.localStorage) || originState.localStorage.length === 0) {
+      continue
+    }
+    try {
+      await page.goto(originState.origin, { waitUntil: 'domcontentloaded', timeout: 15000 })
+      await page.evaluate((entries: Array<{ name: string; value: string }>) => {
+        const storage = (globalThis as unknown as {
+          localStorage: {
+            clear(): void
+            setItem(name: string, value: string): void
+          }
+        }).localStorage
+        storage.clear()
+        for (const entry of entries) {
+          storage.setItem(entry.name, entry.value)
+        }
+      }, originState.localStorage)
+    } catch (error) {
+      logEvent(
+        'warn',
+        'runtime',
+        `Failed applying localStorage for ${originState.origin}: ${error instanceof Error ? error.message : String(error)}`,
+        null,
+      )
+    }
+  }
+}
+
+function clearProfileStorageSyncTimer(profileId: string): void {
+  const existing = runtimeStorageSyncTimers.get(profileId)
+  if (existing) {
+    clearInterval(existing)
+    runtimeStorageSyncTimers.delete(profileId)
+  }
+}
+
+type StorageStateUploadReason = 'periodic' | 'stop' | 'graceful-shutdown' | 'context-close'
+
+async function uploadProfileStorageStateToControlPlane(
+  profileId: string,
+  options: {
+    context?: BrowserContext | null
+    reason: StorageStateUploadReason
+  },
+): Promise<void> {
+  if (!getDesktopAuthState().authenticated) {
+    return
+  }
+  const profile = requireDatabase().getProfileById(profileId)
+  if (!profile) {
+    return
+  }
+
+  let stateJson: BrowserStorageState | null = null
+  if (options.context) {
+    stateJson = await saveProfileStorageStateToDisk(profileId, options.context)
+  } else {
+    stateJson = await readProfileStorageStateFromDisk(profileId)
+  }
+  if (!stateJson) {
+    return
+  }
+
+  const stateHash = hashStorageState(stateJson)
+  const pendingProfile = updateRuntimeMetadata(profile, {
+    lastStorageStateSyncStatus: 'pending',
+    lastStorageStateSyncMessage: '正在同步云端登录态',
+  })
+
+  try {
+    const remoteState = await fetchRemoteProfileStorageState(profileId)
+    const localVersion = Math.max(
+      0,
+      Number(pendingProfile.fingerprintConfig.runtimeMetadata.lastStorageStateVersion || 0),
+    )
+    const baseVersion = remoteState ? localVersion : 0
+    if (remoteState && remoteState.version > localVersion) {
+      updateRuntimeMetadata(pendingProfile, {
+        lastStorageStateVersion: remoteState.version,
+        lastStorageStateSyncedAt: remoteState.updatedAt || new Date().toISOString(),
+        lastStorageStateDeviceId: remoteState.deviceId || '',
+        lastStorageStateSyncStatus: 'conflict',
+        lastStorageStateSyncMessage: '云端登录态已更新，请重新启动环境以同步最新状态',
+      })
+      audit('storage_state_conflict', {
+        profileId,
+        reason: options.reason,
+        localVersion,
+        remoteVersion: remoteState.version,
+      })
+      return
+    }
+    if (
+      remoteState &&
+      remoteState.version === localVersion &&
+      remoteState.stateHash &&
+      remoteState.stateHash === stateHash
+    ) {
+      updateRuntimeMetadata(pendingProfile, {
+        lastStorageStateSyncStatus: 'synced',
+        lastStorageStateSyncMessage: '云端登录态已同步',
+      })
+      return
+    }
+
+    const token = getStoredAuthToken()
+    if (!token) {
+      return
+    }
+    const response = await fetch(
+      `${getControlPlaneApiBase()}/api/profile-storage-state/${encodeURIComponent(profileId)}`,
+      {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          stateJson,
+          encrypted: false,
+          baseVersion,
+          deviceId: getControlPlaneDeviceId(),
+          source: 'desktop',
+          stateHash,
+        }),
+      },
+    )
+    const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>
+    if (response.status === 409) {
+      const conflict = (payload.conflict || {}) as Record<string, unknown>
+      updateRuntimeMetadata(pendingProfile, {
+        lastStorageStateVersion: Number(conflict.currentVersion || localVersion),
+        lastStorageStateSyncedAt: String(conflict.updatedAt || ''),
+        lastStorageStateDeviceId: String(conflict.deviceId || ''),
+        lastStorageStateSyncStatus: 'conflict',
+        lastStorageStateSyncMessage: '云端登录态已更新，请重新启动环境以同步最新状态',
+      })
+      audit('storage_state_conflict', {
+        profileId,
+        reason: options.reason,
+        localVersion,
+        remoteVersion: Number(conflict.currentVersion || 0),
+      })
+      return
+    }
+    if (!response.ok || payload.success === false) {
+      throw new Error(String(payload.error || `${response.status} ${response.statusText}`))
+    }
+
+    const storageState = (payload.storageState || {}) as Record<string, unknown>
+    updateRuntimeMetadata(pendingProfile, {
+      lastStorageStateVersion: Number(storageState.version || localVersion),
+      lastStorageStateSyncedAt: String(storageState.updatedAt || new Date().toISOString()),
+      lastStorageStateDeviceId: String(storageState.deviceId || getControlPlaneDeviceId()),
+      lastStorageStateSyncStatus: 'synced',
+      lastStorageStateSyncMessage: '云端登录态已同步',
+    })
+    audit('storage_state_uploaded', {
+      profileId,
+      reason: options.reason,
+      version: Number(storageState.version || 0),
+    })
+  } catch (error) {
+    updateRuntimeMetadata(pendingProfile, {
+      lastStorageStateSyncStatus: 'error',
+      lastStorageStateSyncMessage: error instanceof Error ? error.message : String(error),
+    })
+    audit('storage_state_upload_failed', {
+      profileId,
+      reason: options.reason,
+      err: String(error),
+    })
+    logEvent(
+      'warn',
+      'runtime',
+      `Failed syncing storage state for ${profile.name}: ${error instanceof Error ? error.message : String(error)}`,
+      profileId,
+    )
+  }
+}
+
+function startProfileStorageSyncTimer(profileId: string, context: BrowserContext): void {
+  clearProfileStorageSyncTimer(profileId)
+  const timer = setInterval(() => {
+    void uploadProfileStorageStateToControlPlane(profileId, {
+      context,
+      reason: 'periodic',
+    })
+  }, PROFILE_STORAGE_SYNC_INTERVAL_MS)
+  runtimeStorageSyncTimers.set(profileId, timer)
+}
+
+async function downloadProfileStorageStateFromControlPlane(profileId: string): Promise<boolean> {
+  if (!getDesktopAuthState().authenticated) {
+    return false
+  }
+  const profile = requireDatabase().getProfileById(profileId)
+  if (!profile) {
+    return false
+  }
+  try {
+    const remoteState = await fetchRemoteProfileStorageState(profileId)
+    if (!remoteState) {
+      return false
+    }
+    const localVersion = Math.max(
+      0,
+      Number(profile.fingerprintConfig.runtimeMetadata.lastStorageStateVersion || 0),
+    )
+    if (remoteState.version <= localVersion) {
+      return false
+    }
+    const normalizedState = normalizeStorageState(remoteState.stateJson)
+    if (!normalizedState) {
+      return false
+    }
+    await writeProfileStorageStateToDisk(profileId, normalizedState)
+    updateRuntimeMetadata(profile, {
+      lastStorageStateVersion: remoteState.version,
+      lastStorageStateSyncedAt: remoteState.updatedAt || new Date().toISOString(),
+      lastStorageStateDeviceId: remoteState.deviceId || '',
+      lastStorageStateSyncStatus: 'synced',
+      lastStorageStateSyncMessage: '已下载云端登录态',
+    })
+    audit('storage_state_downloaded', {
+      profileId,
+      version: remoteState.version,
+      deviceId: remoteState.deviceId,
+    })
+    return true
+  } catch (error) {
+    updateRuntimeMetadata(profile, {
+      lastStorageStateSyncStatus: 'error',
+      lastStorageStateSyncMessage: error instanceof Error ? error.message : String(error),
+    })
+    audit('storage_state_download_failed', {
+      profileId,
+      err: String(error),
+    })
+    logEvent(
+      'warn',
+      'runtime',
+      `Failed downloading cloud storage state for ${profile.name}: ${error instanceof Error ? error.message : String(error)}`,
+      profileId,
+    )
+    return false
+  }
 }
 
 function resolveDefaultCloudPhoneProviderKey(): string {
@@ -348,17 +1233,114 @@ async function updateProfileStatus(
   status: ProfileRecord['status'],
 ): Promise<void> {
   requireDatabase().setProfileStatus(profileId, status)
+  await syncProfileStatusToControlPlane(profileId, status)
+}
+
+async function checkNetworkHealthViaControlPlane(
+  profile: ProfileRecord,
+  proxy: ProxyRecord,
+): Promise<NegotiatedNetworkHealthResult | null> {
+  if (!getDesktopAuthState().authenticated) {
+    return null
+  }
+
+  try {
+    const result = await requestControlPlane('/api/proxy/browser-check', {
+      method: 'POST',
+      body: JSON.stringify({
+        profileId: profile.id,
+        proxyType: proxy.type,
+        proxyHost: proxy.host,
+        proxyPort: String(proxy.port),
+        proxyUsername: proxy.username,
+        proxyPassword: proxy.password,
+      }),
+    })
+
+    const ok = Boolean(result.status === 'verified' || result.browserVerified === true)
+    return {
+      ok,
+      ip: String(result.ip || ''),
+      country: String(result.country || ''),
+      region: String(result.region || ''),
+      city: String(result.city || ''),
+      timezone: profile.fingerprintConfig.timezone || DEFAULT_TIMEZONE_FALLBACK,
+      languageHint: profile.fingerprintConfig.language || 'en-US',
+      geolocation: profile.fingerprintConfig.advanced.geolocation || '',
+      message: String(
+        result.detail ||
+          result.error ||
+          (ok ? 'Proxy verified successfully via control plane' : 'Proxy verification failed'),
+      ),
+      source: proxy ? 'proxy' : 'local',
+      checkedAt: String(result.checkedAt || new Date().toISOString()),
+      effectiveProxyTransport:
+        result.effectiveProxyTransport === 'https-entry' ||
+        result.effectiveProxyTransport === 'http-entry' ||
+        result.effectiveProxyTransport === 'socks5-entry' ||
+        result.effectiveProxyTransport === 'direct'
+          ? (result.effectiveProxyTransport as ProxyEntryTransport)
+          : undefined,
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    logEvent(
+      'warn',
+      'runtime',
+      `Control plane proxy preflight failed for "${profile.name}", falling back to local check: ${message}`,
+      profile.id,
+    )
+    return null
+  }
+}
+
+function toCandidateProxy(
+  proxy: ProxyRecord | null,
+  candidateTransport?: ProxyEntryTransport,
+): ProxyRecord | null {
+  if (!proxy || !candidateTransport || candidateTransport === 'direct') {
+    return proxy
+  }
+  if (candidateTransport === 'https-entry') {
+    return { ...proxy, type: 'https' }
+  }
+  if (candidateTransport === 'http-entry') {
+    return { ...proxy, type: 'http' }
+  }
+  if (candidateTransport === 'socks5-entry') {
+    return { ...proxy, type: 'socks5' }
+  }
+  return proxy
+}
+
+function toEntryTransport(proxy: ProxyRecord | null): ProxyEntryTransport {
+  if (!proxy) {
+    return 'direct'
+  }
+  if (proxy.type === 'https') {
+    return 'https-entry'
+  }
+  if (proxy.type === 'socks5') {
+    return 'socks5-entry'
+  }
+  return 'http-entry'
 }
 
 async function stopRuntime(profileId: string): Promise<void> {
   scheduler.cancel(profileId)
   const context = runtimeContexts.get(profileId)
   if (!context) {
+    clearProfileStorageSyncTimer(profileId)
     await runtimeHostManager.stopEnvironment(profileId)
     await updateProfileStatus(profileId, 'stopped')
     return
   }
 
+  clearProfileStorageSyncTimer(profileId)
+  await uploadProfileStorageStateToControlPlane(profileId, {
+    context,
+    reason: 'stop',
+  })
   runtimeContexts.delete(profileId)
   await context.close()
   await runtimeHostManager.stopEnvironment(profileId)
@@ -377,10 +1359,48 @@ async function stopMany(profileIds: string[]): Promise<void> {
   }
 }
 
-async function testProxyById(proxyId: string) {
-  const proxy = requireDatabase().getProxyById(proxyId)
-  if (!proxy) {
-    throw new Error('Proxy not found')
+async function performProxyConnectivityTest(
+  proxy: ProxyRecord,
+  options: {
+    label: string
+    syncStoredProxyId?: string
+    category?: 'proxy' | 'cloud-phone'
+  },
+) {
+  const category = options.category ?? 'proxy'
+  if (getDesktopAuthState().authenticated) {
+    try {
+      const result = await requestControlPlane('/api/proxy/browser-check', {
+        method: 'POST',
+        body: JSON.stringify({
+          proxyType: proxy.type,
+          proxyHost: proxy.host,
+          proxyPort: String(proxy.port),
+          proxyUsername: proxy.username,
+          proxyPassword: proxy.password,
+        }),
+      })
+      const success = Boolean(result.status === 'verified' || result.browserVerified === true)
+      const checkedAt = String(result.checkedAt || new Date().toISOString())
+      if (options.syncStoredProxyId) {
+        requireDatabase().setProxyStatus(options.syncStoredProxyId, success ? 'online' : 'offline')
+      }
+      logEvent(
+        success ? 'info' : 'warn',
+        category,
+        success
+          ? `Proxy "${options.label}" verified via control plane browser check`
+          : `Proxy "${options.label}" failed control plane browser check`,
+        null,
+      )
+      return {
+        success,
+        message: String(result.detail || result.error || (success ? 'Proxy verified successfully' : 'Proxy verification failed')),
+        checkedAt,
+      }
+    } catch {
+      logEvent('warn', category, `Control plane proxy check failed for "${options.label}", falling back to local test`, null)
+    }
   }
 
   try {
@@ -393,21 +1413,79 @@ async function testProxyById(proxyId: string) {
     await page.goto('https://example.com', { waitUntil: 'domcontentloaded', timeout: 20000 })
     await browser.close()
 
-    const result = requireDatabase().setProxyStatus(proxyId, 'online')
-    logEvent('info', 'proxy', `Proxy "${proxy.name}" is reachable`, null)
+    const checkedAt = new Date().toISOString()
+    if (options.syncStoredProxyId) {
+      requireDatabase().setProxyStatus(options.syncStoredProxyId, 'online')
+    }
+    logEvent('info', category, `Proxy "${options.label}" is reachable`, null)
     return {
       success: true,
       message: 'Proxy connected successfully',
-      checkedAt: result.lastCheckedAt ?? new Date().toISOString(),
+      checkedAt,
     }
   } catch (error) {
-    const result = requireDatabase().setProxyStatus(proxyId, 'offline')
-    logEvent('error', 'proxy', `Proxy "${proxy.name}" test failed`, null)
+    const checkedAt = new Date().toISOString()
+    if (options.syncStoredProxyId) {
+      requireDatabase().setProxyStatus(options.syncStoredProxyId, 'offline')
+    }
+    logEvent('error', category, `Proxy "${options.label}" test failed`, null)
     return {
       success: false,
       message: error instanceof Error ? error.message : 'Unknown proxy error',
-      checkedAt: result.lastCheckedAt ?? new Date().toISOString(),
+      checkedAt,
     }
+  }
+}
+
+async function testProxyById(proxyId: string) {
+  const proxy = requireDatabase().getProxyById(proxyId)
+  if (!proxy) {
+    throw new Error('Proxy not found')
+  }
+  return performProxyConnectivityTest(proxy, {
+    label: proxy.name,
+    syncStoredProxyId: proxyId,
+    category: 'proxy',
+  })
+}
+
+function resolveCloudPhoneProxyConfig(
+  input: CreateCloudPhoneInput | UpdateCloudPhoneInput,
+): Pick<
+  CreateCloudPhoneInput,
+  'proxyRefMode' | 'proxyId' | 'proxyType' | 'ipProtocol' | 'proxyHost' | 'proxyPort' | 'proxyUsername' | 'proxyPassword' | 'udpEnabled'
+> {
+  if (input.proxyRefMode === 'saved') {
+    if (!input.proxyId) {
+      throw new Error('请选择已保存代理')
+    }
+    const proxy = requireDatabase().getProxyById(input.proxyId)
+    if (!proxy) {
+      throw new Error('所选代理不存在，请重新选择')
+    }
+    return {
+      proxyRefMode: 'saved',
+      proxyId: proxy.id,
+      proxyType: proxy.type,
+      ipProtocol: input.ipProtocol,
+      proxyHost: proxy.host,
+      proxyPort: proxy.port,
+      proxyUsername: proxy.username,
+      proxyPassword: proxy.password,
+      udpEnabled: input.udpEnabled,
+    }
+  }
+
+  return {
+    proxyRefMode: 'custom',
+    proxyId: null,
+    proxyType: input.proxyType,
+    ipProtocol: input.ipProtocol,
+    proxyHost: input.proxyHost.trim(),
+    proxyPort: Number(input.proxyPort),
+    proxyUsername: input.proxyUsername.trim(),
+    proxyPassword: input.proxyPassword,
+    udpEnabled: input.udpEnabled,
   }
 }
 
@@ -626,8 +1704,12 @@ async function runProxyPreflight(
   profile: ProfileRecord,
   database: DatabaseService,
 ): Promise<{ proxy: ProxyRecord | null; check: NetworkHealthResult }> {
-  const proxy = resolveProfileProxy(profile, database)
-  const check = await checkNetworkHealth(profile, proxy)
+  const originalProxy = resolveProfileProxy(profile, database)
+  const controlPlaneCheck = originalProxy
+    ? await checkNetworkHealthViaControlPlane(profile, originalProxy)
+    : null
+  const check = controlPlaneCheck || (await checkNetworkHealth(profile, originalProxy))
+  const proxy = toCandidateProxy(originalProxy, controlPlaneCheck?.effectiveProxyTransport)
   updateRuntimeMetadata(profile, {
     lastResolvedIp: check.ip,
     lastResolvedCountry: check.country,
@@ -683,16 +1765,83 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
   }
   const proxy = resolveProfileProxy(profile, database)
   const validation = validateProfileForLaunch(profile, proxy)
+  const configFingerprintHash = buildConfigFingerprintHash(profile)
+  const proxyFingerprintHash = buildProxyFingerprintHash(profile, proxy)
+  const existingSnapshot = profile.fingerprintConfig.runtimeMetadata.trustedLaunchSnapshot
   profile = updateRuntimeMetadata(profile, {
     lastValidationLevel: validation.level,
     lastValidationMessages: validation.messages,
+    configFingerprintHash,
+    proxyFingerprintHash,
+    launchValidationStage: 'idle',
     launchRetryCount: scheduler.getRetryCounts()[profileId] ?? 0,
   })
   if (validation.level === 'block') {
     throw new Error(validation.messages.join(' '))
   }
 
-  const { proxy: resolvedProxy, check } = await runProxyPreflight(profile, database)
+  let resolvedProxy: ProxyRecord | null = proxy
+  let check: NetworkHealthResult
+  let effectiveProxyTransport = toEntryTransport(proxy)
+  let usedTrustedSnapshot = false
+
+  if (shouldUseTrustedSnapshot(profile, existingSnapshot, configFingerprintHash, proxyFingerprintHash)) {
+    usedTrustedSnapshot = true
+    audit('quick_check_start', { profileId })
+    profile = updateRuntimeMetadata(profile, {
+      launchValidationStage: 'quick-check',
+      trustedSnapshotStatus: 'trusted',
+    })
+    check = await checkNetworkHealth(profile, proxy)
+    effectiveProxyTransport = toEntryTransport(proxy)
+    const comparison = compareSnapshotWithCheck(existingSnapshot!, check, effectiveProxyTransport)
+    const quickCheck = buildQuickIsolationCheck(
+      check,
+      effectiveProxyTransport,
+      comparison.ok,
+      comparison.message,
+    )
+    profile = updateRuntimeMetadata(profile, {
+      lastQuickCheckAt: quickCheck.checkedAt,
+      lastQuickCheckSuccess: quickCheck.success,
+      lastQuickCheckMessage: quickCheck.message,
+      lastQuickIsolationCheck: quickCheck,
+      lastEffectiveProxyTransport: effectiveProxyTransport,
+      trustedSnapshotStatus: comparison.ok ? 'trusted' : 'invalid',
+      trustedLaunchSnapshot: comparison.ok
+        ? existingSnapshot
+        : existingSnapshot
+          ? { ...existingSnapshot, status: 'invalid', verificationLevel: 'quick' }
+          : null,
+    })
+    void syncProfileLaunchTrustToControlPlane(profile)
+    if (!comparison.ok) {
+      audit('quick_check_failed', { profileId, reason: comparison.message })
+      throw new Error(comparison.message)
+    }
+  } else {
+    audit('full_check_start', { profileId })
+    profile = updateRuntimeMetadata(profile, {
+      launchValidationStage: 'full-check',
+      trustedSnapshotStatus: existingSnapshot ? 'stale' : 'unknown',
+      trustedLaunchSnapshot: existingSnapshot
+        ? { ...existingSnapshot, status: 'stale' }
+        : existingSnapshot,
+    })
+    const preflightResult = await runProxyPreflight(profile, database)
+    resolvedProxy = preflightResult.proxy
+    check = preflightResult.check
+    effectiveProxyTransport = toEntryTransport(resolvedProxy)
+    profile = updateRuntimeMetadata(profile, {
+      lastQuickCheckAt: '',
+      lastQuickCheckSuccess: null,
+      lastQuickCheckMessage: '',
+      lastQuickIsolationCheck: null,
+      lastEffectiveProxyTransport: effectiveProxyTransport,
+      trustedSnapshotStatus: 'stale',
+    })
+  }
+
   if (scheduler.isCancelled(profileId)) {
     throw new Error('Launch cancelled')
   }
@@ -703,13 +1852,38 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     fingerprintConfig: {
       ...profile.fingerprintConfig,
       timezone: profile.fingerprintConfig.timezone || DEFAULT_TIMEZONE_FALLBACK,
+      runtimeMetadata: {
+        ...profile.fingerprintConfig.runtimeMetadata,
+        launchValidationStage: 'browser-launch',
+      },
     },
   })
+
+  const finalConfigFingerprintHash = buildConfigFingerprintHash(profile)
+  const finalProxyFingerprintHash = buildProxyFingerprintHash(profile, resolvedProxy)
+  if (!usedTrustedSnapshot) {
+    const refreshedSnapshot = buildTrustedLaunchSnapshot(
+      profile,
+      check,
+      finalConfigFingerprintHash,
+      finalProxyFingerprintHash,
+      effectiveProxyTransport,
+    )
+    profile = updateRuntimeMetadata(profile, {
+      configFingerprintHash: finalConfigFingerprintHash,
+      proxyFingerprintHash: finalProxyFingerprintHash,
+      trustedSnapshotStatus: 'trusted',
+      trustedLaunchSnapshot: refreshedSnapshot,
+      lastEffectiveProxyTransport: effectiveProxyTransport,
+    })
+    void syncProfileLaunchTrustToControlPlane(profile)
+  }
 
   const directoryInfo = getProfileDirectoryInfo(app)
   ensureProfileDirectory(directoryInfo.profilesDir)
   const userDataDir = getProfilePath(app, profileId)
   mkdirSync(userDataDir, { recursive: true })
+  await downloadProfileStorageStateFromControlPlane(profileId)
   const runtimeHost = await runtimeHostManager.startEnvironment(profileId, userDataDir, getSettings())
   audit('runtime_host_ready', {
     profileId,
@@ -766,6 +1940,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     throw new Error('Launch cancelled')
   }
   runtimeContexts.set(profileId, context)
+  startProfileStorageSyncTimer(profileId, context)
   database.touchProfileLastStarted(profileId)
   const injectedFeatures = buildInjectedFeatures(profile)
   profile = updateRuntimeMetadata(profile, {
@@ -781,8 +1956,10 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
   await context.addInitScript(buildFingerprintInitScript(profile.id, profile.fingerprintConfig))
 
   context.on('close', () => {
+    clearProfileStorageSyncTimer(profileId)
     runtimeContexts.delete(profileId)
     scheduler.markStopped(profileId)
+    void syncProfileStatusToControlPlane(profileId, 'stopped')
     logEvent('info', 'runtime', `Closed profile "${profile.name}"`, profileId)
   })
 
@@ -798,9 +1975,33 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       await route.continue()
     })
   }
-  await page.goto(settings.defaultHomePage || 'https://example.com', {
-    waitUntil: 'domcontentloaded',
-  })
+  const startupUrl = resolveProfileStartupUrl(profile) || settings.defaultHomePage || 'https://example.com'
+  await applyStorageStateToContext(context, await readProfileStorageStateFromDisk(profileId))
+  let startupNavigationPassed = false
+  try {
+    await page.goto(startupUrl, {
+      waitUntil: 'domcontentloaded',
+    })
+    startupNavigationPassed = true
+  } finally {
+    const latestProfile = database.getProfileById(profileId) ?? profile
+    const latestSnapshot = latestProfile.fingerprintConfig.runtimeMetadata.trustedLaunchSnapshot
+    const nextSnapshot = latestSnapshot
+      ? {
+          ...latestSnapshot,
+          startupNavigationPassed,
+          verificationLevel:
+            latestProfile.fingerprintConfig.runtimeMetadata.lastQuickCheckAt ? 'quick' : latestSnapshot.verificationLevel,
+          verifiedAt: new Date().toISOString(),
+        }
+      : latestSnapshot
+    const persisted = updateRuntimeMetadata(latestProfile, {
+      launchValidationStage: 'idle',
+      trustedSnapshotStatus: nextSnapshot?.status || latestProfile.fingerprintConfig.runtimeMetadata.trustedSnapshotStatus,
+      trustedLaunchSnapshot: nextSnapshot,
+    })
+    void syncProfileLaunchTrustToControlPlane(persisted)
+  }
 }
 
 const scheduler = new RuntimeScheduler({
@@ -839,6 +2040,163 @@ async function enqueueLaunch(profileId: string): Promise<void> {
 }
 
 async function registerIpcHandlers(): Promise<void> {
+  ipcMain.handle('auth.getState', async () => getDesktopAuthState())
+  ipcMain.handle(
+    'auth.login',
+    async (_event, payload: { identifier: string; password: string; apiBase?: string }) => {
+      const identifier = String(payload.identifier || '').trim()
+      const password = String(payload.password || '')
+      const apiBase = String(payload.apiBase || '').trim() || getControlPlaneApiBase()
+      if (!identifier || !password) {
+        throw new Error('请输入账号和密码')
+      }
+      const response = await fetch(`${apiBase.replace(/\/$/, '')}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          identifier,
+          password,
+          device: {
+            deviceId: getControlPlaneDeviceId(),
+            deviceName: `${os.hostname()} (${process.platform})`,
+            platform: process.platform,
+            source: 'desktop',
+          },
+        }),
+      })
+      const data = (await response.json().catch(() => ({}))) as Record<string, unknown>
+      if (!response.ok || data.success === false) {
+        throw new Error(String(data.error || '登录失败'))
+      }
+      const user = (data.user || null) as AuthUser | null
+      const token = String(data.token || '')
+      if (!user || !token) {
+        throw new Error('登录响应缺少用户或令牌')
+      }
+      const nextAuthState = saveDesktopAuth(apiBase, token, user)
+      await syncProfilesFromControlPlane()
+      return nextAuthState
+    },
+  )
+  ipcMain.handle(
+    'auth.updateProfile',
+    async (
+      _event,
+      payload: { name: string; email: string; username: string; avatarUrl: string; bio: string },
+    ) => {
+      const response = await requestControlPlane('/api/auth/me', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: String(payload.name || '').trim(),
+          email: String(payload.email || '').trim(),
+          username: String(payload.username || '').trim(),
+          avatarUrl: String(payload.avatarUrl || '').trim(),
+          bio: String(payload.bio || '').trim(),
+        }),
+      })
+      const user = (response.user || null) as AuthUser | null
+      if (!user) {
+        throw new Error('更新资料失败：缺少用户信息')
+      }
+      return saveDesktopAuth(getControlPlaneApiBase(), getStoredAuthToken(), user)
+    },
+  )
+  ipcMain.handle('auth.uploadAvatar', async () => {
+    const win = BrowserWindow.getFocusedWindow() ?? mainWindow
+    const selected = win
+      ? await dialog.showOpenDialog(win, {
+          title: 'Select avatar image',
+          properties: ['openFile'],
+          filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }],
+        })
+      : await dialog.showOpenDialog({
+          title: 'Select avatar image',
+          properties: ['openFile'],
+          filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }],
+        })
+    if (selected.canceled || selected.filePaths.length === 0) {
+      return getDesktopAuthState()
+    }
+
+    const filePath = selected.filePaths[0]
+    const fileBuffer = await readFile(filePath)
+    if (fileBuffer.byteLength > 1024 * 1024 * 2) {
+      throw new Error('头像图片不能超过 2MB')
+    }
+    const ext = path.extname(filePath).toLowerCase()
+    const mimeType =
+      ext === '.png'
+        ? 'image/png'
+        : ext === '.webp'
+          ? 'image/webp'
+          : ext === '.gif'
+            ? 'image/gif'
+            : 'image/jpeg'
+    const dataUrl = `data:${mimeType};base64,${fileBuffer.toString('base64')}`
+    const response = await requestControlPlane('/api/auth/avatar', {
+      method: 'POST',
+      body: JSON.stringify({ dataUrl }),
+    })
+    const user = (response.user || null) as AuthUser | null
+    if (!user) {
+      throw new Error('头像上传失败：缺少用户信息')
+    }
+    return saveDesktopAuth(getControlPlaneApiBase(), getStoredAuthToken(), user)
+  })
+  ipcMain.handle(
+    'auth.changePassword',
+    async (
+      _event,
+      payload: { currentPassword: string; nextPassword: string },
+    ) => {
+      await requestControlPlane('/api/auth/change-password', {
+        method: 'POST',
+        body: JSON.stringify({
+          currentPassword: String(payload.currentPassword || ''),
+          nextPassword: String(payload.nextPassword || ''),
+        }),
+      })
+      return { success: true }
+    },
+  )
+  ipcMain.handle('auth.revokeDevice', async (_event, deviceId: string) => {
+    const normalizedDeviceId = String(deviceId || '').trim()
+    if (!normalizedDeviceId) {
+      throw new Error('Missing deviceId')
+    }
+    const response = await requestControlPlane(
+      `/api/auth/devices/${encodeURIComponent(normalizedDeviceId)}/revoke`,
+      { method: 'POST' },
+    )
+    if (normalizedDeviceId === getControlPlaneDeviceId()) {
+      return clearDesktopAuth()
+    }
+    const user = (response.user || null) as AuthUser | null
+    if (!user) {
+      throw new Error('更新设备失败：缺少用户信息')
+    }
+    return saveDesktopAuth(getControlPlaneApiBase(), getStoredAuthToken(), user)
+  })
+  ipcMain.handle('auth.deleteDevice', async (_event, deviceId: string) => {
+    const normalizedDeviceId = String(deviceId || '').trim()
+    if (!normalizedDeviceId) {
+      throw new Error('Missing deviceId')
+    }
+    const response = await requestControlPlane(`/api/auth/devices/${encodeURIComponent(normalizedDeviceId)}`, {
+      method: 'DELETE',
+    })
+    if (normalizedDeviceId === getControlPlaneDeviceId()) {
+      return clearDesktopAuth()
+    }
+    const user = (response.user || null) as AuthUser | null
+    if (!user) {
+      throw new Error('更新设备失败：缺少用户信息')
+    }
+    return saveDesktopAuth(getControlPlaneApiBase(), getStoredAuthToken(), user)
+  })
+  ipcMain.handle('auth.logout', async () => clearDesktopAuth())
+  ipcMain.handle('auth.syncProfiles', async () => ({ count: await syncProfilesFromControlPlane() }))
+
   ipcMain.handle('meta.getInfo', async () => ({
     mode: isDev ? 'development' : 'production',
     appVersion: app.getVersion(),
@@ -862,10 +2220,12 @@ async function registerIpcHandlers(): Promise<void> {
   ipcMain.handle('cloudPhones.create', async (_event, input: CreateCloudPhoneInput) => {
     ensureWritable('cloudPhones.create')
     const providerKey = input.providerKey || resolveDefaultCloudPhoneProviderKey()
+    const resolvedProxy = resolveCloudPhoneProxyConfig(input)
     const payload = createCloudPhonePayload(
       {
         ...input,
         providerKey,
+        ...resolvedProxy,
       },
       providerKey,
     )
@@ -883,7 +2243,8 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('cloudPhones.update', async (_event, input: UpdateCloudPhoneInput) => {
     ensureWritable('cloudPhones.update')
-    const payload = createCloudPhonePayload(input, input.providerKey)
+    const resolvedProxy = resolveCloudPhoneProxyConfig(input)
+    const payload = createCloudPhonePayload({ ...input, ...resolvedProxy }, input.providerKey)
     const record = requireDatabase().updateCloudPhone(payload)
     const provider = resolveCloudPhoneProvider(record)
     await provider.updateEnvironment(record, getSettings())
@@ -932,19 +2293,50 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('cloudPhones.testProxy', async (_event, input: CreateCloudPhoneInput) => {
     const providerKey = input.providerKey || resolveDefaultCloudPhoneProviderKey()
+    const resolvedProxy = resolveCloudPhoneProxyConfig(input)
     const payload = createCloudPhonePayload(
       {
         ...input,
         providerKey,
+        ...resolvedProxy,
       },
       providerKey,
     )
-    const provider = cloudPhoneProviderRegistry.getProvider(providerKey)
-    const result = await provider.testProxy(payload, getSettings())
+    if (
+      !payload.proxyHost.trim() ||
+      payload.proxyPort <= 0 ||
+      !payload.proxyUsername.trim() ||
+      !payload.proxyPassword.trim()
+    ) {
+      return {
+        success: false,
+        message: 'Proxy configuration is incomplete.',
+        checkedAt: new Date().toISOString(),
+      }
+    }
+    const result = await performProxyConnectivityTest(
+      {
+        id: `${payload.providerKey}-cloud-proxy-test`,
+        name: payload.name || payload.proxyHost,
+        type: payload.proxyType,
+        host: payload.proxyHost,
+        port: payload.proxyPort,
+        username: payload.proxyUsername,
+        password: payload.proxyPassword,
+        status: 'unknown',
+        lastCheckedAt: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+      {
+        label: payload.name || payload.proxyHost,
+        category: 'cloud-phone',
+      },
+    )
     logEvent(
       result.success ? 'info' : 'warn',
       'cloud-phone',
-      `Tested cloud phone proxy for "${payload.name || payload.proxyHost}" via ${provider.label}`,
+      `Tested cloud phone proxy for "${payload.name || payload.proxyHost}" via real proxy verification`,
       null,
     )
     return result
@@ -991,7 +2383,16 @@ async function registerIpcHandlers(): Promise<void> {
       createProfilePayload(input, createDefaultFingerprint),
       requireDatabase(),
     )
-    const profile = requireDatabase().createProfile(payload)
+    let profile: ProfileRecord
+    if (getDesktopAuthState().authenticated) {
+      const remotePayload = await requestControlPlane('/api/profiles', {
+        method: 'POST',
+        body: JSON.stringify(mapLocalProfileToRemotePayload(payload)),
+      })
+      profile = syncRemoteProfileIntoLocal((remotePayload.profile || {}) as ControlPlaneProfile)
+    } else {
+      profile = requireDatabase().createProfile(payload)
+    }
     await syncConfigToControlPlaneOrThrow()
     logEvent('info', 'profile', `Created profile "${profile.name}"`, profile.id)
     return profile
@@ -1002,7 +2403,32 @@ async function registerIpcHandlers(): Promise<void> {
       createProfilePayload(input, createDefaultFingerprint),
       requireDatabase(),
     )
-    const profile = requireDatabase().updateProfile(payload)
+    let profile: ProfileRecord
+    if (getDesktopAuthState().authenticated) {
+      try {
+        const remotePayload = await requestControlPlane(`/api/profiles/${encodeURIComponent(payload.id)}`, {
+          method: 'PATCH',
+          body: JSON.stringify(mapLocalProfileToRemotePayload(payload)),
+        })
+        profile = syncRemoteProfileIntoLocal((remotePayload.profile || {}) as ControlPlaneProfile)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (/profile not found/i.test(message)) {
+          const remotePayload = await requestControlPlane('/api/profiles', {
+            method: 'POST',
+            body: JSON.stringify(mapLocalProfileToRemotePayload(payload)),
+          })
+          if (payload.id !== String((remotePayload.profile as ControlPlaneProfile | undefined)?.id || payload.id)) {
+            requireDatabase().deleteProfile(payload.id)
+          }
+          profile = syncRemoteProfileIntoLocal((remotePayload.profile || {}) as ControlPlaneProfile)
+        } else {
+          throw error
+        }
+      }
+    } else {
+      profile = requireDatabase().updateProfile(payload)
+    }
     await syncConfigToControlPlaneOrThrow()
     logEvent('info', 'profile', `Updated profile "${profile.name}"`, profile.id)
     return profile
@@ -1010,6 +2436,18 @@ async function registerIpcHandlers(): Promise<void> {
   ipcMain.handle('profiles.delete', async (_event, profileId: string) => {
     ensureWritable('profiles.delete')
     await stopRuntime(profileId)
+    if (getDesktopAuthState().authenticated) {
+      try {
+        await requestControlPlane(`/api/profiles/${encodeURIComponent(profileId)}`, {
+          method: 'DELETE',
+        })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (!/profile not found/i.test(message)) {
+          throw error
+        }
+      }
+    }
     requireDatabase().deleteProfile(profileId)
     await syncConfigToControlPlaneOrThrow()
     logEvent('warn', 'profile', `Deleted profile ${profileId}`, profileId)
@@ -1139,6 +2577,11 @@ async function registerIpcHandlers(): Promise<void> {
     runningProfileIds: [...runtimeContexts.keys()],
     queuedProfileIds: scheduler.getQueuedIds(),
     startingProfileIds: scheduler.getStartingIds(),
+    launchStages: Object.fromEntries(
+      requireDatabase()
+        .listProfiles()
+        .map((profile) => [profile.id, profile.fingerprintConfig.runtimeMetadata.launchValidationStage]),
+    ),
     retryCounts: scheduler.getRetryCounts(),
   }))
   ipcMain.handle('runtime.getHostInfo', async () => getRuntimeHostInfo())
@@ -1357,7 +2800,6 @@ app.on('window-all-closed', async () => {
   if (agentService) {
     await agentService.stop()
   }
-  await saveAllElectronSessions()
   for (const profileId of [...runtimeContexts.keys()]) {
     await stopRuntime(profileId)
   }

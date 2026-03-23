@@ -73,6 +73,10 @@ router.post(
         error: '',
       },
       proxyVerification: body.proxyVerification || null,
+      configFingerprintHash: body.configFingerprintHash || '',
+      proxyFingerprintHash: body.proxyFingerprintHash || '',
+      lastQuickIsolationCheck: body.lastQuickIsolationCheck || null,
+      trustedLaunchSnapshot: body.trustedLaunchSnapshot || null,
     });
 
     res.json({
@@ -153,6 +157,18 @@ router.patch(
       updateData.startupNavigation = body.startupNavigation;
     }
     if (body.proxyVerification !== undefined) updateData.proxyVerification = body.proxyVerification;
+    if (typeof body.configFingerprintHash === 'string') {
+      updateData.configFingerprintHash = body.configFingerprintHash;
+    }
+    if (typeof body.proxyFingerprintHash === 'string') {
+      updateData.proxyFingerprintHash = body.proxyFingerprintHash;
+    }
+    if (body.lastQuickIsolationCheck !== undefined) {
+      updateData.lastQuickIsolationCheck = body.lastQuickIsolationCheck;
+    }
+    if (body.trustedLaunchSnapshot !== undefined) {
+      updateData.trustedLaunchSnapshot = body.trustedLaunchSnapshot;
+    }
 
     const profile = await ProfileModel.findOneAndUpdate(
       { _id: req.params.id, userId: authUser.userId },

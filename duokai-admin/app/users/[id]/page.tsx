@@ -7,6 +7,7 @@ import { adminFetch } from '@/lib/api-client';
 import { readAdminAuth } from '@/lib/require-admin-client';
 import AppButton from '@/components/AppButton';
 import AppInput from '@/components/AppInput';
+import AppSelect from '@/components/AppSelect';
 import ErrorBanner from '@/components/ErrorBanner';
 import SuccessBanner from '@/components/SuccessBanner';
 import PageSkeleton from '@/components/PageSkeleton';
@@ -20,8 +21,24 @@ type AdminUser = {
   email?: string;
   username?: string;
   name?: string;
+  avatarUrl?: string;
+  bio?: string;
   role: 'user' | 'admin';
   status: 'active' | 'disabled';
+  devices?: Array<{
+    deviceId: string;
+    deviceName?: string;
+    platform?: string;
+    source?: string;
+    revokedAt?: string | null;
+    lastSeenAt?: string | null;
+    lastLoginAt?: string | null;
+  }>;
+  subscription?: {
+    plan?: string;
+    status?: 'free' | 'trial' | 'active' | 'expired' | 'suspended';
+    expiresAt?: string | null;
+  };
   createdAt?: string;
   updatedAt?: string;
 };
@@ -57,6 +74,15 @@ function formatDateTime(value?: string) {
   }).format(date);
 }
 
+function getSubscriptionBadgeClass(status: string) {
+  if (status === 'expired') return 'bg-amber-500/15 text-amber-300 border border-amber-500/30';
+  if (status === 'suspended') return 'bg-rose-500/15 text-rose-300 border border-rose-500/30';
+  if (status === 'active') return 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30';
+  if (status === 'trial') return 'bg-sky-500/15 text-sky-300 border border-sky-500/30';
+  if (status === 'internal') return 'bg-violet-500/15 text-violet-300 border border-violet-500/30';
+  return 'bg-neutral-700 text-neutral-200 border border-neutral-600';
+}
+
 export default function UserDetailPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
@@ -72,6 +98,9 @@ export default function UserDetailPage() {
   const [editingName, setEditingName] = useState('');
   const [editingUsername, setEditingUsername] = useState('');
   const [actionLogs, setActionLogs] = useState<AdminActionLog[]>([]);
+  const [subscriptionPlan, setSubscriptionPlan] = useState('free');
+  const [subscriptionStatus, setSubscriptionStatus] = useState<'free' | 'trial' | 'active' | 'expired' | 'suspended'>('free');
+  const [subscriptionExpiresAt, setSubscriptionExpiresAt] = useState('');
 
   useEffect(() => {
     const auth = readAdminAuth();
@@ -111,6 +140,11 @@ export default function UserDetailPage() {
         setUser(matched);
         setEditingName(matched.name || '');
         setEditingUsername(matched.username || '');
+        setSubscriptionPlan(matched.subscription?.plan || 'free');
+        setSubscriptionStatus((matched.subscription?.status as 'free' | 'trial' | 'active' | 'expired' | 'suspended') || 'free');
+        setSubscriptionExpiresAt(
+          matched.subscription?.expiresAt ? String(matched.subscription.expiresAt).slice(0, 10) : ''
+        );
 
         try {
           const profilesData = await profilesRes.json();
@@ -173,6 +207,11 @@ export default function UserDetailPage() {
       setUser(matched);
       setEditingName(matched.name || '');
       setEditingUsername(matched.username || '');
+      setSubscriptionPlan(matched.subscription?.plan || 'free');
+      setSubscriptionStatus((matched.subscription?.status as 'free' | 'trial' | 'active' | 'expired' | 'suspended') || 'free');
+      setSubscriptionExpiresAt(
+        matched.subscription?.expiresAt ? String(matched.subscription.expiresAt).slice(0, 10) : ''
+      );
 
       try {
         const logsData = await logsRes.json();
@@ -369,6 +408,81 @@ export default function UserDetailPage() {
     }
   }
 
+  async function handleSaveSubscription() {
+    if (!user) return;
+    setError('');
+    setSuccess('');
+
+    try {
+      const res = await adminFetch(`/api/admin/users/${user.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          subscription: {
+            plan: subscriptionPlan.trim(),
+            status: subscriptionStatus.trim(),
+            expiresAt: subscriptionExpiresAt ? new Date(subscriptionExpiresAt).toISOString() : null,
+          },
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setError(data.error || '更新订阅失败');
+        return;
+      }
+
+      setUser(data.user);
+      setSuccess('已更新订阅信息');
+    } catch {
+      setError('更新订阅失败');
+    }
+  }
+
+  async function handleRevokeDevice(deviceId: string, deviceLabel: string) {
+    if (!user) return;
+    if (!window.confirm(`确认踢下线设备 ${deviceLabel} 吗？`)) return;
+    setError('');
+    setSuccess('');
+
+    try {
+      const res = await adminFetch(`/api/admin/users/${user.id}/devices/${encodeURIComponent(deviceId)}/revoke`, {
+        method: 'POST',
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setError(data.error || '踢下线设备失败');
+        return;
+      }
+
+      setUser(data.user);
+      setSuccess(`已踢下线设备 ${deviceLabel}`);
+    } catch {
+      setError('踢下线设备失败');
+    }
+  }
+
+  async function handleDeleteDevice(deviceId: string, deviceLabel: string) {
+    if (!user) return;
+    if (!window.confirm(`确认删除设备 ${deviceLabel} 吗？删除后记录将不可恢复。`)) return;
+    setError('');
+    setSuccess('');
+
+    try {
+      const res = await adminFetch(`/api/admin/users/${user.id}/devices/${encodeURIComponent(deviceId)}`, {
+        method: 'DELETE',
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setError(data.error || '删除设备失败');
+        return;
+      }
+
+      setUser(data.user);
+      setSuccess(`已删除设备 ${deviceLabel}`);
+    } catch {
+      setError('删除设备失败');
+    }
+  }
+
   if (!authChecked) return null;
   if (loading) return <PageSkeleton title="加载用户详情中..." rows={4} />;
 
@@ -414,6 +528,7 @@ export default function UserDetailPage() {
               <div>名称：{user.name || '-'}</div>
               <div>角色：{user.role}</div>
               <div>状态：{user.status}</div>
+              <div>备注：{user.bio || '-'}</div>
             </DetailCard>
             <DetailCard title="时间信息">
               <div>createdAt：{formatDateTime(user.createdAt)}</div>
@@ -471,6 +586,58 @@ export default function UserDetailPage() {
                 </AppButton>
               </div>
             </DetailCard>
+            <DetailCard title="订阅信息">
+              {user.role === 'admin' ? (
+                <div className="space-y-3">
+                  <div className="inline-flex rounded-full px-2 py-1 text-xs font-medium bg-violet-500/15 text-violet-300 border border-violet-500/30">
+                    内部授权
+                  </div>
+                  <div className="text-sm text-neutral-400">内部授权账户无需订阅。</div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div>
+                    <span
+                      className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${getSubscriptionBadgeClass(
+                        user.subscription?.status || 'free'
+                      )}`}
+                    >
+                      {user.subscription?.status || 'free'}
+                    </span>
+                  </div>
+                  <AppInput
+                    value={subscriptionPlan}
+                    onChange={(e) => setSubscriptionPlan(e.target.value)}
+                    placeholder="套餐，例如 free / pro / enterprise"
+                  />
+                  <AppSelect
+                    value={subscriptionStatus}
+                    onChange={(e) =>
+                      setSubscriptionStatus(
+                        e.target.value as 'free' | 'trial' | 'active' | 'expired' | 'suspended'
+                      )
+                    }
+                  >
+                    <option value="free">free</option>
+                    <option value="trial">trial</option>
+                    <option value="active">active</option>
+                    <option value="expired">expired</option>
+                    <option value="suspended">suspended</option>
+                  </AppSelect>
+                  <AppInput
+                    type="date"
+                    value={subscriptionExpiresAt}
+                    onChange={(e) => setSubscriptionExpiresAt(e.target.value)}
+                  />
+                  <AppButton
+                    onClick={() => void handleSaveSubscription()}
+                    variant="secondary"
+                  >
+                    保存订阅
+                  </AppButton>
+                </div>
+              )}
+            </DetailCard>
             <DetailCard title="关联数据" className="md:col-span-2">
               <div className="text-sm text-neutral-300">关联环境数：{relatedProfilesText}</div>
               {relatedProfiles.length ? (
@@ -508,6 +675,65 @@ export default function UserDetailPage() {
                   </table>
                 </div>
               ) : null}
+            </DetailCard>
+            <DetailCard title="登录设备" className="md:col-span-2">
+              {user.devices && user.devices.length ? (
+                <div className="overflow-hidden rounded-xl border border-neutral-800">
+                  <table className="w-full text-sm">
+                    <thead className="bg-neutral-800/60 text-neutral-300">
+                      <tr>
+                        <th className="px-3 py-2 text-left">设备</th>
+                        <th className="px-3 py-2 text-left">平台</th>
+                        <th className="px-3 py-2 text-left">最近登录</th>
+                        <th className="px-3 py-2 text-left">最近在线</th>
+                        <th className="px-3 py-2 text-left">状态</th>
+                        <th className="px-3 py-2 text-left">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {user.devices.map((device) => {
+                        const label = device.deviceName || device.deviceId;
+                        return (
+                          <tr key={device.deviceId} className="border-t border-neutral-800">
+                            <td className="px-3 py-2">
+                              <div className="font-medium text-white">{label}</div>
+                              <div className="text-xs text-neutral-500">{device.deviceId}</div>
+                            </td>
+                            <td className="px-3 py-2">
+                              {(device.platform || '-') + ' · ' + (device.source || '-')}
+                            </td>
+                            <td className="px-3 py-2">{formatDateTime(device.lastLoginAt || undefined)}</td>
+                            <td className="px-3 py-2">{formatDateTime(device.lastSeenAt || undefined)}</td>
+                            <td className="px-3 py-2">
+                              {device.revokedAt ? `已失效（${formatDateTime(device.revokedAt || undefined)}）` : '有效'}
+                            </td>
+                            <td className="px-3 py-2">
+                              <div className="flex flex-wrap gap-2">
+                                <AppButton
+                                  onClick={() => void handleRevokeDevice(device.deviceId, label)}
+                                  variant="secondary"
+                                  size="sm"
+                                >
+                                  踢下线
+                                </AppButton>
+                                <AppButton
+                                  onClick={() => void handleDeleteDevice(device.deviceId, label)}
+                                  variant="danger"
+                                  size="sm"
+                                >
+                                  删除设备
+                                </AppButton>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-sm text-neutral-500">暂无设备记录</div>
+              )}
             </DetailCard>
             <DetailCard title="操作记录" className="md:col-span-2">
               {actionLogs.length ? (

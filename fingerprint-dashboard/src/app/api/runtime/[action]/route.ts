@@ -7,11 +7,19 @@ import { ProfileStorageStateModel } from '@/models/ProfileStorageState';
 
 export const runtime = 'nodejs';
 
+function resolveRuntimeUrl(raw: string): string {
+  const value = String(raw || '').trim();
+  if (!value || value === 'http://127.0.0.1:3001') {
+    return 'http://127.0.0.1:3101';
+  }
+  return value;
+}
+
 /**
  * POST /api/runtime/[action]
  * 
  * Proxies requests to the local Stealth Engine Runtime Server.
- * The runtime server runs at http://127.0.0.1:3001 (or RUNTIME_URL env).
+ * The runtime server runs at http://127.0.0.1:3101 (or RUNTIME_URL env).
  * 
  * Supported actions: start | stop | action
  */
@@ -25,10 +33,10 @@ export async function POST(
     const authUser = requireUser(req);
     await connectMongo();
     const settingsDoc = await SettingModel.findOne({ userId: authUser.userId }).lean();
-    const runtimeUrl =
+    const runtimeUrl = resolveRuntimeUrl(
       process.env.RUNTIME_URL ||
-      String((settingsDoc as Record<string, unknown> | null)?.runtimeUrl || '') ||
-      'http://127.0.0.1:3001';
+      String((settingsDoc as Record<string, unknown> | null)?.runtimeUrl || '')
+    );
     const apiKey =
       process.env.RUNTIME_API_KEY ||
       String((settingsDoc as Record<string, unknown> | null)?.runtimeApiKey || '') ||

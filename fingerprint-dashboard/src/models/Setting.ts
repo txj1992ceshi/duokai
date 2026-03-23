@@ -25,6 +25,14 @@ const SettingSchema = new Schema(
       type: String,
       default: '',
     },
+    runtimeUrl: {
+      type: String,
+      default: 'http://127.0.0.1:3101',
+    },
+    runtimeApiKey: {
+      type: String,
+      default: '',
+    },
 
     theme: {
       type: String,

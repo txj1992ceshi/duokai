@@ -46,6 +46,15 @@ npm run check:agent-env
 可选：
 
 - `API_BASE`（默认 `http://127.0.0.1:3100`）
+- `ADMIN_ACTION_LOG_TTL_DAYS`（默认 `30`）
+- `TASK_EVENT_TTL_DAYS`（默认 `30`）
+- `AGENT_SESSION_TTL_DAYS`（默认 `30`）
+- `CONTROL_TASK_TTL_DAYS`（默认 `0`，不开启自动删除）
+
+建议同时确认：
+
+- 日志/事件/会话类集合已采用 TTL 自动清理
+- 核心业务集合（`users / profiles / proxies / templates / settings / profile_storage_states`）未配置 TTL
 
 ## 3. 联调与灰度验证
 

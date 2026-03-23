@@ -15,7 +15,13 @@ export async function comparePassword(password: string, passwordHash: string) {
   return bcrypt.compare(password, passwordHash);
 }
 
-export function signToken(payload: { userId: string; email: string; role: string }) {
+export function signToken(payload: {
+  userId: string;
+  email: string;
+  role: string;
+  deviceId?: string;
+  sessionToken?: string;
+}) {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
 }
 
@@ -24,6 +30,8 @@ export function verifyToken(token: string) {
     userId: string;
     email: string;
     role: string;
+    deviceId?: string;
+    sessionToken?: string;
     iat: number;
     exp: number;
   };

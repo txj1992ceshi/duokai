@@ -10,6 +10,7 @@ import type {
   CreateProxyInput,
   CreateTemplateInput,
   DashboardSummary,
+  DesktopAuthState,
   DesktopRuntimeInfo,
   DetectedLocalEmulator,
   ExportBundle,
@@ -31,6 +32,30 @@ import type {
 } from './types'
 
 export interface DesktopApi {
+  auth: {
+    getState: () => Promise<DesktopAuthState>
+    login: (payload: {
+      identifier: string
+      password: string
+      apiBase?: string
+    }) => Promise<DesktopAuthState>
+    updateProfile: (payload: {
+      name: string
+      email: string
+      username: string
+      avatarUrl: string
+      bio: string
+    }) => Promise<DesktopAuthState>
+    uploadAvatar: () => Promise<DesktopAuthState>
+    changePassword: (payload: {
+      currentPassword: string
+      nextPassword: string
+    }) => Promise<{ success: boolean }>
+    revokeDevice: (deviceId: string) => Promise<DesktopAuthState>
+    deleteDevice: (deviceId: string) => Promise<DesktopAuthState>
+    logout: () => Promise<DesktopAuthState>
+    syncProfiles: () => Promise<{ count: number }>
+  }
   meta: {
     getInfo: () => Promise<DesktopRuntimeInfo>
     getAgentState: () => Promise<{

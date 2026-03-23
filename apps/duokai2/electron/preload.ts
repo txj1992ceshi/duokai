@@ -15,6 +15,17 @@ import type {
 } from '../src/shared/types'
 
 const api: DesktopApi = {
+  auth: {
+    getState: () => ipcRenderer.invoke('auth.getState'),
+    login: (payload) => ipcRenderer.invoke('auth.login', payload),
+    updateProfile: (payload) => ipcRenderer.invoke('auth.updateProfile', payload),
+    uploadAvatar: () => ipcRenderer.invoke('auth.uploadAvatar'),
+    changePassword: (payload) => ipcRenderer.invoke('auth.changePassword', payload),
+    revokeDevice: (deviceId) => ipcRenderer.invoke('auth.revokeDevice', deviceId),
+    deleteDevice: (deviceId) => ipcRenderer.invoke('auth.deleteDevice', deviceId),
+    logout: () => ipcRenderer.invoke('auth.logout'),
+    syncProfiles: () => ipcRenderer.invoke('auth.syncProfiles'),
+  },
   meta: {
     getInfo: () => ipcRenderer.invoke('meta.getInfo'),
     getAgentState: () => ipcRenderer.invoke('meta.getAgentState'),

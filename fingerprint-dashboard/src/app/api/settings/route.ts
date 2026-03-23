@@ -8,6 +8,8 @@ const DEFAULT_SETTINGS = {
   autoProxyVerification: true,
   defaultStartupPlatform: '',
   defaultStartupUrl: '',
+  runtimeUrl: 'http://127.0.0.1:3101',
+  runtimeApiKey: '',
   theme: 'system',
 };
 
@@ -30,6 +32,8 @@ export async function GET(req: NextRequest) {
             autoProxyVerification: settings.autoProxyVerification,
             defaultStartupPlatform: settings.defaultStartupPlatform || '',
             defaultStartupUrl: settings.defaultStartupUrl || '',
+            runtimeUrl: settings.runtimeUrl || DEFAULT_SETTINGS.runtimeUrl,
+            runtimeApiKey: settings.runtimeApiKey || '',
             theme: settings.theme || 'system',
             createdAt: settings.createdAt,
             updatedAt: settings.updatedAt,
@@ -72,6 +76,8 @@ export async function PUT(req: NextRequest) {
             : DEFAULT_SETTINGS.autoProxyVerification,
         defaultStartupPlatform: String(body.defaultStartupPlatform || ''),
         defaultStartupUrl: String(body.defaultStartupUrl || ''),
+        runtimeUrl: String(body.runtimeUrl || DEFAULT_SETTINGS.runtimeUrl),
+        runtimeApiKey: String(body.runtimeApiKey || ''),
         theme: String(body.theme || 'system'),
       },
       {
@@ -89,6 +95,8 @@ export async function PUT(req: NextRequest) {
         autoProxyVerification: settings!.autoProxyVerification,
         defaultStartupPlatform: settings!.defaultStartupPlatform || '',
         defaultStartupUrl: settings!.defaultStartupUrl || '',
+        runtimeUrl: settings!.runtimeUrl || DEFAULT_SETTINGS.runtimeUrl,
+        runtimeApiKey: settings!.runtimeApiKey || '',
         theme: settings!.theme || 'system',
         createdAt: settings!.createdAt,
         updatedAt: settings!.updatedAt,

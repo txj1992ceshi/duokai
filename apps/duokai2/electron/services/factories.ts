@@ -19,6 +19,29 @@ import type {
 } from '../../src/shared/types'
 import { DEFAULT_ENVIRONMENT_LANGUAGE } from '../../src/shared/environmentLanguages'
 
+function detectHostOperatingSystem(): string {
+  switch (process.platform) {
+    case 'darwin':
+      return 'macOS'
+    case 'linux':
+      return 'Linux'
+    default:
+      return 'Windows'
+  }
+}
+
+function buildDesktopUserAgent(operatingSystem: string, browserVersion: string): string {
+  const majorVersion = String(browserVersion || '136').trim() || '136'
+  const os = operatingSystem.toLowerCase()
+  if (os.includes('mac')) {
+    return `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${majorVersion}.0.0.0 Safari/537.36`
+  }
+  if (os.includes('linux')) {
+    return `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${majorVersion}.0.0.0 Safari/537.36`
+  }
+  return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${majorVersion}.0.0.0 Safari/537.36`
+}
+
 export function createDefaultFingerprint(): FingerprintConfig {
   const basicSettings: ProfileBasicSettings = {
     platform: '',
@@ -61,7 +84,7 @@ export function createDefaultFingerprint(): FingerprintConfig {
     browserKernel: 'chrome',
     browserKernelVersion: '140',
     deviceMode: 'desktop',
-    operatingSystem: 'Windows',
+    operatingSystem: detectHostOperatingSystem(),
     operatingSystemVersion: '',
     browserVersion: '136',
     autoLanguageFromIp: true,
@@ -113,13 +136,27 @@ export function createDefaultFingerprint(): FingerprintConfig {
     lastProxyCheckMessage: '',
     lastValidationLevel: 'unknown',
     lastValidationMessages: [],
+    lastQuickCheckAt: '',
+    lastQuickCheckSuccess: null,
+    lastQuickCheckMessage: '',
+    lastEffectiveProxyTransport: '',
+    trustedSnapshotStatus: 'unknown',
+    configFingerprintHash: '',
+    proxyFingerprintHash: '',
+    launchValidationStage: 'idle',
+    lastQuickIsolationCheck: null,
+    trustedLaunchSnapshot: null,
     launchRetryCount: 0,
     injectedFeatures: [],
+    lastStorageStateVersion: 0,
+    lastStorageStateSyncedAt: '',
+    lastStorageStateDeviceId: '',
+    lastStorageStateSyncStatus: 'idle',
+    lastStorageStateSyncMessage: '',
   }
 
   return {
-    userAgent:
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+    userAgent: buildDesktopUserAgent(advanced.operatingSystem, advanced.browserVersion),
     language: DEFAULT_ENVIRONMENT_LANGUAGE,
     timezone: '',
     resolution: '1440x900',
@@ -270,6 +307,8 @@ export function createCloudPhonePayload(
       adbPath: input.providerConfig.adbPath?.trim(),
     },
     ipLookupChannel: input.ipLookupChannel.trim(),
+    proxyRefMode: input.proxyRefMode,
+    proxyId: input.proxyId ?? null,
     proxyHost: input.proxyHost.trim(),
     proxyPort: Number(input.proxyPort),
     proxyUsername: input.proxyUsername.trim(),

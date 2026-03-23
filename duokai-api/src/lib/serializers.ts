@@ -1,11 +1,27 @@
+import { normalizeSubscriptionShape } from './subscription.js';
+
 export function serializeUser(user: any) {
   return {
     id: String(user._id),
     email: user.email || '',
     username: user.username || '',
     name: user.name,
+    avatarUrl: user.avatarUrl || '',
+    bio: user.bio || '',
     role: user.role,
     status: user.status,
+    devices: Array.isArray(user.devices)
+      ? user.devices.map((item: any) => ({
+          deviceId: item.deviceId || '',
+          deviceName: item.deviceName || '',
+          platform: item.platform || '',
+          source: item.source || '',
+          revokedAt: item.revokedAt || null,
+          lastSeenAt: item.lastSeenAt || null,
+          lastLoginAt: item.lastLoginAt || null,
+        }))
+      : [],
+    subscription: normalizeSubscriptionShape(user.subscription),
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
   };
@@ -46,6 +62,10 @@ export function serializeProfile(profile: any, storageStateSynced = false) {
     },
     storageStateSynced,
     proxyVerification: profile.proxyVerification || null,
+    configFingerprintHash: profile.configFingerprintHash || '',
+    proxyFingerprintHash: profile.proxyFingerprintHash || '',
+    lastQuickIsolationCheck: profile.lastQuickIsolationCheck || null,
+    trustedLaunchSnapshot: profile.trustedLaunchSnapshot || null,
     createdAt: profile.createdAt,
     updatedAt: profile.updatedAt,
   };

@@ -16,6 +16,8 @@ import proxyRouter from './routes/proxy.js';
 import launchRouter from './routes/launch.js';
 import adminAgentsRouter from './routes/adminAgents.js';
 import agentV1Router from './routes/agentV1.js';
+import { connectMongo } from './lib/mongodb.js';
+import { ensureMongoIndexes } from './lib/ensure-indexes.js';
 import { errorMiddleware } from './middlewares/error.js';
 
 const app = express();
@@ -65,6 +67,22 @@ app.use('/health', healthRouter);
 
 app.use(errorMiddleware);
 
+const INDEX_RETRY_MS = 30_000;
+
+async function bootstrapMongoMaintenance() {
+  try {
+    await connectMongo();
+    await ensureMongoIndexes();
+    console.log('[duokai-api] Mongo connection and TTL indexes are ready');
+  } catch (error) {
+    console.error('[duokai-api] Mongo/TTL initialization failed, will retry in 30s', error);
+    setTimeout(() => {
+      void bootstrapMongoMaintenance();
+    }, INDEX_RETRY_MS);
+  }
+}
+
 app.listen(port, () => {
   console.log(`[duokai-api] listening on http://localhost:${port}`);
+  void bootstrapMongoMaintenance();
 });

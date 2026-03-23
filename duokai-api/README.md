@@ -22,6 +22,38 @@ npm run dev
 
 - [http://localhost:3100](http://localhost:3100)
 
+## MongoDB TTL 自动清理
+
+`duokai-api` 启动时会自动确保以下 TTL 索引存在，用于控制 Atlas 免费层容量增长：
+
+- `AdminActionLog.createdAt`
+- `TaskEvent.createdAt`
+- `AgentSession.expiresAt`
+- `ControlTask.createdAt`（默认关闭，按需开启）
+
+对应环境变量：
+
+```env
+ADMIN_ACTION_LOG_TTL_DAYS=30
+TASK_EVENT_TTL_DAYS=30
+AGENT_SESSION_TTL_DAYS=30
+CONTROL_TASK_TTL_DAYS=0
+```
+
+说明：
+
+- 值单位是“天”
+- `0` 表示不启用该集合的 TTL
+- TTL 只建议用于日志、事件、会话这类历史数据
+- `users / profiles / proxies / templates / settings / profile_storage_states` 不应加 TTL
+
+默认策略：
+
+- 管理员操作审计：30 天
+- Agent 任务事件：30 天
+- Agent 会话：30 天
+- 控制任务：默认长期保留
+
 ## 健康检查
 
 ```bash

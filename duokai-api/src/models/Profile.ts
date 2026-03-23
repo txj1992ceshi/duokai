@@ -56,6 +56,17 @@ const ProfileSchema = new Schema(
       type: Schema.Types.Mixed,
       default: null,
     },
+
+    configFingerprintHash: { type: String, default: '' },
+    proxyFingerprintHash: { type: String, default: '' },
+    lastQuickIsolationCheck: {
+      type: Schema.Types.Mixed,
+      default: null,
+    },
+    trustedLaunchSnapshot: {
+      type: Schema.Types.Mixed,
+      default: null,
+    },
   },
   {
     timestamps: true,

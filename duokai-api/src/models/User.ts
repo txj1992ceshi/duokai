@@ -2,6 +2,34 @@ import mongoose, { type InferSchemaType } from 'mongoose';
 
 const { Schema } = mongoose;
 
+const UserDeviceSchema = new Schema(
+  {
+    deviceId: { type: String, required: true, trim: true },
+    deviceName: { type: String, default: '', trim: true },
+    platform: { type: String, default: '', trim: true },
+    source: { type: String, default: 'desktop', trim: true },
+    sessionToken: { type: String, default: '', trim: true },
+    revokedAt: { type: Date, default: null },
+    lastSeenAt: { type: Date, default: null },
+    lastLoginAt: { type: Date, default: null },
+  },
+  { _id: false }
+);
+
+const UserSubscriptionSchema = new Schema(
+  {
+    plan: { type: String, default: 'free', trim: true },
+    status: {
+      type: String,
+      enum: ['free', 'trial', 'active', 'expired', 'suspended'],
+      default: 'free',
+      trim: true,
+    },
+    expiresAt: { type: Date, default: null },
+  },
+  { _id: false }
+);
+
 const UserSchema = new Schema(
   {
     email: {
@@ -27,6 +55,16 @@ const UserSchema = new Schema(
       default: '',
       trim: true,
     },
+    avatarUrl: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    bio: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     role: {
       type: String,
       enum: ['user', 'admin'],
@@ -36,6 +74,14 @@ const UserSchema = new Schema(
       type: String,
       enum: ['active', 'disabled'],
       default: 'active',
+    },
+    devices: {
+      type: [UserDeviceSchema],
+      default: [],
+    },
+    subscription: {
+      type: UserSubscriptionSchema,
+      default: () => ({ plan: 'free', status: 'free', expiresAt: null }),
     },
   },
   {

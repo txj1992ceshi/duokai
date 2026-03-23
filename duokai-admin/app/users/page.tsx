@@ -18,6 +18,7 @@ import PageHeader from '@/components/PageHeader';
 import FilterBar from '@/components/FilterBar';
 import DataTable from '@/components/DataTable';
 import TablePagination from '@/components/TablePagination';
+import StatCard from '@/components/StatCard';
 
 type AdminUser = {
   id: string;
@@ -26,9 +27,69 @@ type AdminUser = {
   name?: string;
   role: 'user' | 'admin';
   status: 'active' | 'disabled';
+  devices?: Array<{ deviceId: string; revokedAt?: string | null }>;
+  subscription?: {
+    plan?: string;
+    status?: 'free' | 'trial' | 'active' | 'expired' | 'suspended';
+    expiresAt?: string | null;
+  };
   createdAt?: string;
   updatedAt?: string;
 };
+
+function formatDate(value?: string | null) {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '-';
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+}
+
+function getActiveDeviceCount(user: AdminUser) {
+  return Array.isArray(user.devices)
+    ? user.devices.filter((device) => !device.revokedAt).length
+    : 0;
+}
+
+function getSubscriptionLabel(user: AdminUser) {
+  if (user.role === 'admin') {
+    return '内部授权';
+  }
+  return user.subscription?.plan || 'free';
+}
+
+function getSubscriptionStatus(user: AdminUser) {
+  if (user.role === 'admin') {
+    return 'internal';
+  }
+  return user.subscription?.status || 'free';
+}
+
+function getSubscriptionBadgeClass(status: string) {
+  if (status === 'expired') return 'bg-amber-500/15 text-amber-300 border border-amber-500/30';
+  if (status === 'suspended') return 'bg-rose-500/15 text-rose-300 border border-rose-500/30';
+  if (status === 'active') return 'bg-emerald-400/20 text-emerald-200 border border-emerald-300/40 shadow-[0_0_0_1px_rgba(52,211,153,0.08)]';
+  if (status === 'trial') return 'bg-cyan-400/20 text-cyan-200 border border-cyan-300/40 shadow-[0_0_0_1px_rgba(34,211,238,0.08)]';
+  if (status === 'internal') return 'bg-violet-500/15 text-violet-300 border border-violet-500/30';
+  return 'bg-neutral-700 text-neutral-200 border border-neutral-600';
+}
+
+function isExpiringSoon(user: AdminUser) {
+  if (user.role === 'admin') return false;
+  const expiresAt = user.subscription?.expiresAt;
+  if (!expiresAt) return false;
+  const date = new Date(expiresAt);
+  if (Number.isNaN(date.getTime())) return false;
+  const diff = date.getTime() - Date.now();
+  return diff >= 0 && diff <= 7 * 24 * 60 * 60 * 1000;
+}
+
+function isExpiredUser(user: AdminUser) {
+  return getSubscriptionStatus(user) === 'expired';
+}
 
 export default function UsersPage() {
   const router = useRouter();
@@ -36,6 +97,12 @@ export default function UsersPage() {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [keyword, setKeyword] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'disabled'>('all');
+  const [subscriptionStatusFilter, setSubscriptionStatusFilter] = useState<
+    'all' | 'free' | 'trial' | 'active' | 'expired' | 'suspended' | 'internal'
+  >('all');
+  const [planFilter, setPlanFilter] = useState('all');
+  const [expiringSoonOnly, setExpiringSoonOnly] = useState(false);
+  const [expiredOnly, setExpiredOnly] = useState(false);
   const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 10;
@@ -49,6 +116,15 @@ export default function UsersPage() {
   const [newPassword, setNewPassword] = useState('');
   const [newName, setNewName] = useState('');
   const [newRole, setNewRole] = useState<'user' | 'admin'>('user');
+  const [batchSubscriptionPlan, setBatchSubscriptionPlan] = useState('pro');
+  const [batchSubscriptionStatus, setBatchSubscriptionStatus] = useState<
+    'free' | 'trial' | 'active' | 'expired' | 'suspended'
+  >('active');
+  const [batchSubscriptionExpiresAt, setBatchSubscriptionExpiresAt] = useState('');
+  const [batchClearExpiresAt, setBatchClearExpiresAt] = useState(false);
+  const [batchUpdatePlanEnabled, setBatchUpdatePlanEnabled] = useState(false);
+  const [batchResetPlanEnabled, setBatchResetPlanEnabled] = useState(false);
+  const [batchUpdateExpiresAtEnabled, setBatchUpdateExpiresAtEnabled] = useState(false);
 
   useEffect(() => {
     const auth = readAdminAuth();
@@ -333,6 +409,158 @@ export default function UsersPage() {
     }
   }
 
+  async function handleBatchUpdateSubscription() {
+    if (!selectedUserIds.length) return;
+    if (!window.confirm(`确认批量更新 ${selectedUserIds.length} 个用户的订阅状态吗？`)) {
+      return;
+    }
+    setSuccess('');
+    setError('');
+
+    let successCount = 0;
+    let skippedCount = 0;
+    let failedCount = 0;
+
+    try {
+      for (const userId of selectedUserIds) {
+        const currentUser = users.find((user) => user.id === userId);
+        if (!currentUser || currentUser.role === 'admin') {
+          skippedCount += 1;
+          continue;
+        }
+        try {
+          const nextPlan =
+            batchSubscriptionStatus === 'free'
+              ? 'free'
+              : batchResetPlanEnabled
+                ? 'free'
+              : batchUpdatePlanEnabled
+                ? batchSubscriptionPlan.trim() || currentUser.subscription?.plan || 'pro'
+                : currentUser.subscription?.plan || 'pro';
+          const nextExpiresAtIso = batchUpdateExpiresAtEnabled
+            ? batchClearExpiresAt
+              ? null
+              : batchSubscriptionExpiresAt
+                ? new Date(batchSubscriptionExpiresAt).toISOString()
+                : null
+            : currentUser.subscription?.expiresAt || null;
+          const response = await adminFetch(`/api/admin/users/${userId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({
+              subscription: {
+                plan: nextPlan,
+                status: batchSubscriptionStatus,
+                expiresAt: nextExpiresAtIso,
+              },
+            }),
+          });
+          const data = await response.json();
+          if (!response.ok || !data.success) {
+            failedCount += 1;
+            continue;
+          }
+          successCount += 1;
+        } catch {
+          failedCount += 1;
+        }
+      }
+
+      setUsers((prev) =>
+        prev.map((user) => {
+          if (!selectedUserIds.includes(user.id) || user.role === 'admin') {
+            return user;
+          }
+          return {
+            ...user,
+            subscription: {
+              plan:
+                batchSubscriptionStatus === 'free'
+                  ? 'free'
+                  : batchResetPlanEnabled
+                    ? 'free'
+                  : batchUpdatePlanEnabled
+                    ? batchSubscriptionPlan.trim() || user.subscription?.plan || 'pro'
+                    : user.subscription?.plan || 'pro',
+              status: batchSubscriptionStatus,
+              expiresAt: batchUpdateExpiresAtEnabled
+                ? batchClearExpiresAt
+                  ? null
+                  : batchSubscriptionExpiresAt
+                    ? new Date(batchSubscriptionExpiresAt).toISOString()
+                    : null
+                : user.subscription?.expiresAt || null,
+            },
+          };
+        })
+      );
+      setSuccess(`批量更新订阅完成：成功 ${successCount}，跳过 ${skippedCount}，失败 ${failedCount}`);
+      setSelectedUserIds([]);
+    } catch {
+      setError(`批量更新订阅失败：成功 ${successCount}，跳过 ${skippedCount}，失败 ${failedCount}`);
+    }
+  }
+
+  function handleExportCsv() {
+    const filterTags = [
+      statusFilter !== 'all' ? `status-${statusFilter}` : null,
+      subscriptionStatusFilter !== 'all' ? `subscription-${subscriptionStatusFilter}` : null,
+      planFilter !== 'all' ? `plan-${planFilter}` : null,
+      expiringSoonOnly ? 'expiring-soon' : null,
+      expiredOnly ? 'expired' : null,
+    ].filter(Boolean);
+    const rows = filteredUsers.map((user) => ({
+      账号: user.email || user.username || '',
+      用户名: user.username || '',
+      名称: user.name || '',
+      角色: user.role,
+      账户状态: user.status,
+      设备数: String(getActiveDeviceCount(user)),
+      套餐: getSubscriptionLabel(user),
+      订阅状态: getSubscriptionStatus(user),
+      到期时间: user.role === 'admin' ? '内部授权' : user.subscription?.expiresAt || '',
+      是否即将到期: isExpiringSoon(user) ? '是' : '否',
+      是否已过期: isExpiredUser(user) ? '是' : '否',
+    }));
+
+    const headers = [
+      '账号',
+      '用户名',
+      '名称',
+      '角色',
+      '账户状态',
+      '设备数',
+      '套餐',
+      '订阅状态',
+      '到期时间',
+      '是否即将到期',
+      '是否已过期',
+    ];
+
+    const csv = [
+      headers.join(','),
+      ...rows.map((row) =>
+        headers
+          .map((header) => {
+            const value = String(row[header as keyof typeof row] || '');
+            const escaped = value.replace(/"/g, '""');
+            return `"${escaped}"`;
+          })
+          .join(',')
+      ),
+    ].join('\n');
+
+    const blob = new Blob([`\ufeff${csv}`], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `duokai-users-${filterTags.length ? filterTags.join('_') : 'all'}-${new Date()
+      .toISOString()
+      .slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    setSuccess(`已导出 ${filteredUsers.length} 条当前筛选结果`);
+  }
+
   const filteredUsers = users.filter((user) => {
     const accountText = `${user.email || ''} ${user.username || ''}`.toLowerCase();
     const matchesKeyword =
@@ -340,15 +568,33 @@ export default function UsersPage() {
       accountText.includes(keyword.toLowerCase()) ||
       (user.name || '').toLowerCase().includes(keyword.toLowerCase());
     const matchesStatus = statusFilter === 'all' ? true : user.status === statusFilter;
-    return matchesKeyword && matchesStatus;
+    const subscriptionStatus = getSubscriptionStatus(user);
+    const matchesSubscription =
+      subscriptionStatusFilter === 'all' ? true : subscriptionStatus === subscriptionStatusFilter;
+    const matchesPlan = planFilter === 'all' ? true : getSubscriptionLabel(user) === planFilter;
+    const matchesExpiringSoon = expiringSoonOnly ? isExpiringSoon(user) : true;
+    const matchesExpiredOnly = expiredOnly ? isExpiredUser(user) : true;
+    return (
+      matchesKeyword &&
+      matchesStatus &&
+      matchesSubscription &&
+      matchesPlan &&
+      matchesExpiringSoon &&
+      matchesExpiredOnly
+    );
   });
 
   const totalPages = Math.max(1, Math.ceil(filteredUsers.length / pageSize));
   const pagedUsers = filteredUsers.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const expiringSoonCount = users.filter((user) => isExpiringSoon(user)).length;
+  const expiredCount = users.filter((user) => isExpiredUser(user)).length;
+  const planOptions = Array.from(
+    new Set(users.map((user) => getSubscriptionLabel(user)).filter(Boolean))
+  ).sort((a, b) => a.localeCompare(b, 'zh-CN'));
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [keyword, statusFilter]);
+  }, [keyword, statusFilter, subscriptionStatusFilter, planFilter, expiringSoonOnly, expiredOnly]);
 
   useEffect(() => {
     if (currentPage > totalPages) {
@@ -367,12 +613,17 @@ export default function UsersPage() {
         title="用户管理"
         description="创建账号、启用/禁用、权限管理"
         aside={
-          <AppButton
-            variant={createFormOpen ? 'secondary' : 'primary'}
-            onClick={() => setCreateFormOpen((prev) => !prev)}
-          >
-            {createFormOpen ? '收起创建' : '创建用户'}
-          </AppButton>
+          <div className="flex flex-wrap items-center gap-2">
+            <AppButton variant="secondary" onClick={handleExportCsv}>
+              导出 CSV
+            </AppButton>
+            <AppButton
+              variant={createFormOpen ? 'secondary' : 'primary'}
+              onClick={() => setCreateFormOpen((prev) => !prev)}
+            >
+              {createFormOpen ? '收起创建' : '创建用户'}
+            </AppButton>
+          </div>
         }
       >
         <p className="text-xs text-neutral-500">
@@ -382,6 +633,45 @@ export default function UsersPage() {
 
       <ErrorBanner message={error} />
       <SuccessBanner message={success} />
+
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <button
+          type="button"
+          onClick={() => {
+            setExpiringSoonOnly(true);
+            setExpiredOnly(false);
+          }}
+          className={`rounded-2xl text-left transition focus:outline-none focus:ring-2 focus:ring-yellow-400/60 ${
+            expiringSoonOnly && !expiredOnly
+              ? 'ring-2 ring-yellow-400/80 bg-yellow-400/5'
+              : 'hover:opacity-90'
+          }`}
+        >
+          <StatCard
+            label="即将到期用户"
+            value={expiringSoonCount}
+            accentClassName="text-yellow-300"
+          />
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setExpiredOnly(true);
+            setExpiringSoonOnly(false);
+          }}
+          className={`rounded-2xl text-left transition focus:outline-none focus:ring-2 focus:ring-amber-400/60 ${
+            expiredOnly && !expiringSoonOnly
+              ? 'ring-2 ring-amber-400/80 bg-amber-400/5'
+              : 'hover:opacity-90'
+          }`}
+        >
+          <StatCard
+            label="已过期用户"
+            value={expiredCount}
+            accentClassName="text-amber-300"
+          />
+        </button>
+      </div>
 
       {createFormOpen ? (
         <form
@@ -430,9 +720,11 @@ export default function UsersPage() {
       ) : null}
 
       <DataTable>
-        <FilterBar
-          actions={
-            <>
+        <div className="border-b border-neutral-800 px-4 py-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm text-neutral-400">已选 {selectedUserIds.length} 个用户</span>
+            <div className="h-4 w-px bg-neutral-800" />
+            <div className="flex flex-wrap items-center gap-2">
               <AppButton
                 onClick={handleBatchEnable}
                 disabled={!selectedUserIds.length}
@@ -461,9 +753,88 @@ export default function UsersPage() {
               >
                 批量设为用户
               </AppButton>
-            </>
-          }
-        >
+            </div>
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2 rounded-2xl border border-neutral-800 bg-neutral-950/40 p-3">
+            <span className="text-xs font-medium tracking-wide text-neutral-500">批量订阅</span>
+            <label className="inline-flex items-center gap-2 text-sm text-neutral-300">
+              <input
+                type="checkbox"
+                checked={batchUpdatePlanEnabled}
+                onChange={(e) => setBatchUpdatePlanEnabled(e.target.checked)}
+                className="h-4 w-4 rounded border border-neutral-600 bg-neutral-900"
+              />
+              改 plan
+            </label>
+            <AppInput
+              className="w-40"
+              value={batchSubscriptionPlan}
+              onChange={(e) => setBatchSubscriptionPlan(e.target.value)}
+              placeholder="套餐 plan"
+              disabled={!batchUpdatePlanEnabled || batchResetPlanEnabled}
+            />
+            <label className="inline-flex items-center gap-2 text-sm text-neutral-300">
+              <input
+                type="checkbox"
+                checked={batchResetPlanEnabled}
+                onChange={(e) => setBatchResetPlanEnabled(e.target.checked)}
+                disabled={!batchUpdatePlanEnabled}
+                className="h-4 w-4 rounded border border-neutral-600 bg-neutral-900"
+              />
+              恢复默认 plan
+            </label>
+            <AppSelect
+              className="w-40"
+              value={batchSubscriptionStatus}
+              onChange={(e) =>
+                setBatchSubscriptionStatus(
+                  e.target.value as 'free' | 'trial' | 'active' | 'expired' | 'suspended'
+                )
+              }
+            >
+              <option value="free">free</option>
+              <option value="trial">trial</option>
+              <option value="active">active</option>
+              <option value="expired">expired</option>
+              <option value="suspended">suspended</option>
+            </AppSelect>
+            <label className="inline-flex items-center gap-2 text-sm text-neutral-300">
+              <input
+                type="checkbox"
+                checked={batchUpdateExpiresAtEnabled}
+                onChange={(e) => setBatchUpdateExpiresAtEnabled(e.target.checked)}
+                className="h-4 w-4 rounded border border-neutral-600 bg-neutral-900"
+              />
+              改到期时间
+            </label>
+            <AppInput
+              className="w-40"
+              type="date"
+              value={batchSubscriptionExpiresAt}
+              onChange={(e) => setBatchSubscriptionExpiresAt(e.target.value)}
+              disabled={!batchUpdateExpiresAtEnabled || batchClearExpiresAt}
+            />
+            <label className="inline-flex items-center gap-2 text-sm text-neutral-300">
+              <input
+                type="checkbox"
+                checked={batchClearExpiresAt}
+                onChange={(e) => setBatchClearExpiresAt(e.target.checked)}
+                disabled={!batchUpdateExpiresAtEnabled}
+                className="h-4 w-4 rounded border border-neutral-600 bg-neutral-900"
+              />
+              清空到期时间
+            </label>
+            <AppButton
+              onClick={handleBatchUpdateSubscription}
+              disabled={!selectedUserIds.length}
+              variant="secondary"
+            >
+              批量改订阅
+            </AppButton>
+          </div>
+        </div>
+
+        <FilterBar>
           <AppInput
             className="max-w-sm"
             placeholder="搜索邮箱、账号或名称"
@@ -479,6 +850,60 @@ export default function UsersPage() {
             <option value="active">启用中</option>
             <option value="disabled">已禁用</option>
           </AppSelect>
+          <AppSelect
+            className="w-48"
+            value={subscriptionStatusFilter}
+            onChange={(e) =>
+              setSubscriptionStatusFilter(
+                e.target.value as
+                  | 'all'
+                  | 'free'
+                  | 'trial'
+                  | 'active'
+                  | 'expired'
+                  | 'suspended'
+                  | 'internal'
+              )
+            }
+          >
+            <option value="all">全部订阅状态</option>
+            <option value="free">free</option>
+            <option value="trial">trial</option>
+            <option value="active">active</option>
+            <option value="expired">expired</option>
+            <option value="suspended">suspended</option>
+            <option value="internal">内部授权</option>
+          </AppSelect>
+          <AppSelect
+            className="w-40"
+            value={planFilter}
+            onChange={(e) => setPlanFilter(e.target.value)}
+          >
+            <option value="all">全部套餐</option>
+            {planOptions.map((plan) => (
+              <option key={plan} value={plan}>
+                {plan}
+              </option>
+            ))}
+          </AppSelect>
+          <label className="inline-flex items-center gap-2 text-sm text-neutral-300">
+            <input
+              type="checkbox"
+              checked={expiringSoonOnly}
+              onChange={(e) => setExpiringSoonOnly(e.target.checked)}
+              className="h-4 w-4 rounded border border-neutral-600 bg-neutral-900"
+            />
+            仅看即将到期用户
+          </label>
+          <label className="inline-flex items-center gap-2 text-sm text-neutral-300">
+            <input
+              type="checkbox"
+              checked={expiredOnly}
+              onChange={(e) => setExpiredOnly(e.target.checked)}
+              className="h-4 w-4 rounded border border-neutral-600 bg-neutral-900"
+            />
+            仅看已过期用户
+          </label>
         </FilterBar>
 
         <table className="w-full text-sm">
@@ -497,13 +922,16 @@ export default function UsersPage() {
               <th className="px-4 py-3 text-left">名称</th>
               <th className="px-4 py-3 text-left">角色</th>
               <th className="px-4 py-3 text-left">状态</th>
+              <th className="px-4 py-3 text-left">设备数</th>
+              <th className="px-4 py-3 text-left">套餐</th>
+              <th className="px-4 py-3 text-left">到期时间</th>
               <th className="px-4 py-3 text-left">操作</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
               <tr>
-                <td className="px-4 py-4 text-neutral-400" colSpan={6}>
+                <td className="px-4 py-4 text-neutral-400" colSpan={9}>
                   加载中...
                 </td>
               </tr>
@@ -527,6 +955,33 @@ export default function UsersPage() {
                   <td className="px-4 py-3">{user.name || '-'}</td>
                   <td className="px-4 py-3">{user.role}</td>
                   <td className="px-4 py-3">{user.status}</td>
+                  <td className="px-4 py-3">
+                    <Link href={`/users/${user.id}`} className="text-cyan-300 hover:underline">
+                      {getActiveDeviceCount(user)}
+                    </Link>
+                  </td>
+                  <td className="px-4 py-3">
+                    {getSubscriptionLabel(user)}
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-neutral-500">
+                      <span
+                        className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${getSubscriptionBadgeClass(
+                          getSubscriptionStatus(user)
+                        )}`}
+                      >
+                        {getSubscriptionStatus(user)}
+                      </span>
+                      {isExpiringSoon(user) ? (
+                        <span className="inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium bg-yellow-500/15 text-yellow-200 border border-yellow-400/30">
+                          即将到期
+                        </span>
+                      ) : null}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    {user.role === 'admin'
+                      ? '内部授权'
+                      : formatDate(user.subscription?.expiresAt || null)}
+                  </td>
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap gap-2">
                       {user.status === 'disabled' ? (
@@ -579,7 +1034,7 @@ export default function UsersPage() {
               ))
             ) : (
               <tr>
-                <td className="px-4 py-4" colSpan={6}>
+                <td className="px-4 py-4" colSpan={9}>
                   <EmptyState
                     title={users.length ? '无匹配用户' : '暂无用户'}
                     description={

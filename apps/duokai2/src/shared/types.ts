@@ -1,6 +1,7 @@
 export type ProfileStatus = 'queued' | 'starting' | 'running' | 'idle' | 'stopped' | 'error'
 
 export type ProxyType = 'http' | 'https' | 'socks5'
+export type CloudPhoneProxyRefMode = 'saved' | 'custom'
 
 export type LogLevel = 'info' | 'warn' | 'error'
 
@@ -114,8 +115,58 @@ export interface ProfileRuntimeMetadata {
   lastProxyCheckMessage: string
   lastValidationLevel: 'unknown' | 'pass' | 'warn' | 'block'
   lastValidationMessages: string[]
+  lastQuickCheckAt: string
+  lastQuickCheckSuccess: boolean | null
+  lastQuickCheckMessage: string
+  lastEffectiveProxyTransport: string
+  trustedSnapshotStatus: 'unknown' | 'trusted' | 'stale' | 'invalid'
+  configFingerprintHash: string
+  proxyFingerprintHash: string
+  launchValidationStage: 'idle' | 'full-check' | 'quick-check' | 'browser-launch'
+  lastQuickIsolationCheck: TrustedIsolationCheck | null
+  trustedLaunchSnapshot: TrustedLaunchSnapshot | null
   launchRetryCount: number
   injectedFeatures: string[]
+  lastStorageStateVersion: number
+  lastStorageStateSyncedAt: string
+  lastStorageStateDeviceId: string
+  lastStorageStateSyncStatus: 'idle' | 'synced' | 'pending' | 'conflict' | 'error'
+  lastStorageStateSyncMessage: string
+}
+
+export interface TrustedIsolationCheck {
+  checkedAt: string
+  success: boolean
+  message: string
+  egressIp: string
+  country: string
+  region: string
+  timezone: string
+  language: string
+  geolocation: string
+  effectiveProxyTransport: string
+}
+
+export interface TrustedLaunchSnapshot {
+  configFingerprintHash: string
+  proxyFingerprintHash: string
+  snapshotVersion: number
+  verificationLevel: 'full' | 'quick'
+  verifiedAt: string
+  effectiveProxyTransport: string
+  verifiedEgressIp: string
+  verifiedCountry: string
+  verifiedRegion: string
+  verifiedTimezone: string
+  verifiedLanguage: string
+  verifiedGeolocation: string
+  verifiedHostEnvironment: string
+  verifiedChromiumMajor: string
+  verifiedDesktopAppVersion: string
+  httpsCheckPassed: boolean
+  leakCheckPassed: boolean
+  startupNavigationPassed: boolean
+  status: 'trusted' | 'stale' | 'invalid'
 }
 
 export interface FingerprintConfig {
@@ -200,6 +251,7 @@ export interface RuntimeStatus {
   runningProfileIds: string[]
   queuedProfileIds: string[]
   startingProfileIds: string[]
+  launchStages: Record<string, ProfileRuntimeMetadata['launchValidationStage']>
   retryCounts: Record<string, number>
 }
 
@@ -268,6 +320,8 @@ export interface CloudPhoneRecord {
   status: CloudPhoneStatus
   lastSyncedAt: string | null
   ipLookupChannel: string
+  proxyRefMode: CloudPhoneProxyRefMode
+  proxyId: string | null
   proxyType: CloudPhoneProxyType
   ipProtocol: CloudPhoneIpProtocol
   proxyHost: string
@@ -387,6 +441,8 @@ export interface CreateCloudPhoneInput {
   providerInstanceId?: string | null
   computeType: CloudPhoneComputeType
   ipLookupChannel: string
+  proxyRefMode: CloudPhoneProxyRefMode
+  proxyId: string | null
   proxyType: CloudPhoneProxyType
   ipProtocol: CloudPhoneIpProtocol
   proxyHost: string
@@ -413,6 +469,41 @@ export interface CloudPhoneBulkActionPayload {
 
 export interface SettingsPayload {
   [key: string]: string
+}
+
+export interface AuthUser {
+  id: string
+  email: string
+  username: string
+  name: string
+  avatarUrl?: string
+  bio?: string
+  role: string
+  status: string
+  devices?: Array<{
+    deviceId: string
+    deviceName: string
+    platform: string
+    source: string
+    isCurrent?: boolean
+    revokedAt?: string | null
+    lastSeenAt: string | null
+    lastLoginAt: string | null
+  }>
+  subscription?: {
+    plan: string
+    status: string
+    expiresAt: string | null
+  }
+  createdAt?: string
+  updatedAt?: string
+}
+
+export interface DesktopAuthState {
+  apiBase: string
+  authenticated: boolean
+  currentDeviceId: string
+  user: AuthUser | null
 }
 
 export interface ProfileDirectoryInfo {

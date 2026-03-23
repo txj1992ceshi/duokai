@@ -1,7 +1,7 @@
 import type { Request } from 'express';
 
 export function getRuntimeUrl() {
-  return (process.env.RUNTIME_URL || 'http://127.0.0.1:3001').replace(/\/$/, '');
+  return (process.env.RUNTIME_URL || 'http://127.0.0.1:3101').replace(/\/$/, '');
 }
 
 export function getRuntimeApiKey() {

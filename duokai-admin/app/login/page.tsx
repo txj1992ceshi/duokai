@@ -7,7 +7,7 @@ import AppInput from '@/components/AppInput';
 import ErrorBanner from '@/components/ErrorBanner';
 
 const API_BASE =
-  (process.env.NEXT_PUBLIC_DUOKAI_API_BASE || 'http://localhost:3100').replace(/\/$/, '');
+  (process.env.NEXT_PUBLIC_DUOKAI_API_BASE || 'http://127.0.0.1:3100').replace(/\/$/, '');
 
 export default function AdminLoginPage() {
   const router = useRouter();

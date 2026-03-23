@@ -88,6 +88,8 @@ type CloudPhoneRow = {
   status: CloudPhoneRecord['status']
   last_synced_at: string | null
   ip_lookup_channel: string
+  proxy_ref_mode: CloudPhoneRecord['proxyRefMode']
+  proxy_id: string | null
   proxy_type: CloudPhoneRecord['proxyType']
   ip_protocol: CloudPhoneRecord['ipProtocol']
   proxy_host: string
@@ -172,6 +174,8 @@ export class DatabaseService {
         status TEXT NOT NULL,
         last_synced_at TEXT,
         ip_lookup_channel TEXT NOT NULL,
+        proxy_ref_mode TEXT NOT NULL DEFAULT 'custom',
+        proxy_id TEXT,
         proxy_type TEXT NOT NULL,
         ip_protocol TEXT NOT NULL,
         proxy_host TEXT NOT NULL,
@@ -204,6 +208,8 @@ export class DatabaseService {
     this.ensureColumn('cloud_phones', 'sync_version', `INTEGER NOT NULL DEFAULT 0`)
     this.ensureColumn('cloud_phones', 'provider_kind', `TEXT NOT NULL DEFAULT 'mock'`)
     this.ensureColumn('cloud_phones', 'provider_config', `TEXT NOT NULL DEFAULT '{}'`)
+    this.ensureColumn('cloud_phones', 'proxy_ref_mode', `TEXT NOT NULL DEFAULT 'custom'`)
+    this.ensureColumn('cloud_phones', 'proxy_id', `TEXT`)
   }
 
   private ensureColumn(table: string, column: string, definition: string): void {
@@ -220,6 +226,10 @@ export class DatabaseService {
     stmt.run('defaultEnvironmentLanguage', DEFAULT_ENVIRONMENT_LANGUAGE)
     stmt.run('workspaceName', 'Bit Clone Workspace')
     stmt.run('defaultHomePage', 'https://example.com')
+    stmt.run('controlPlaneApiBase', 'http://127.0.0.1:3100')
+    stmt.run('controlPlaneDeviceId', randomUUID())
+    stmt.run('controlPlaneAuthToken', '')
+    stmt.run('controlPlaneAuthUser', '')
     stmt.run('notes', `Initialized at ${now}`)
     stmt.run('defaultCloudPhoneProvider', 'self-hosted')
     stmt.run('selfHostedCloudPhoneBaseUrl', '')
@@ -311,6 +321,8 @@ export class DatabaseService {
       status: row.status,
       lastSyncedAt: row.last_synced_at,
       ipLookupChannel: row.ip_lookup_channel,
+      proxyRefMode: row.proxy_ref_mode ?? 'custom',
+      proxyId: row.proxy_id ?? null,
       proxyType: row.proxy_type,
       ipProtocol: row.ip_protocol,
       proxyHost: row.proxy_host,
@@ -398,10 +410,10 @@ export class DatabaseService {
       .prepare(
         `INSERT INTO cloud_phones (
           id, name, group_name, tags, notes, platform, provider_key, provider_kind, provider_config, provider_instance_id,
-          compute_type, status, last_synced_at, ip_lookup_channel, proxy_type, ip_protocol,
+          compute_type, status, last_synced_at, ip_lookup_channel, proxy_ref_mode, proxy_id, proxy_type, ip_protocol,
           proxy_host, proxy_port, proxy_username, proxy_password, udp_enabled, fingerprint_settings,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.id,
@@ -418,6 +430,8 @@ export class DatabaseService {
         status,
         null,
         input.ipLookupChannel,
+        input.proxyRefMode,
+        input.proxyId,
         input.proxyType,
         input.ipProtocol,
         input.proxyHost,
@@ -479,7 +493,7 @@ export class DatabaseService {
       .prepare(
         `UPDATE cloud_phones
          SET name = ?, group_name = ?, tags = ?, notes = ?, platform = ?, provider_key = ?, provider_kind = ?, provider_config = ?, compute_type = ?,
-             ip_lookup_channel = ?, proxy_type = ?, ip_protocol = ?, proxy_host = ?, proxy_port = ?,
+             ip_lookup_channel = ?, proxy_ref_mode = ?, proxy_id = ?, proxy_type = ?, ip_protocol = ?, proxy_host = ?, proxy_port = ?,
              proxy_username = ?, proxy_password = ?, udp_enabled = ?, fingerprint_settings = ?, updated_at = ?
          WHERE id = ?`,
       )
@@ -494,6 +508,8 @@ export class DatabaseService {
         JSON.stringify(input.providerConfig ?? {}),
         input.computeType,
         input.ipLookupChannel,
+        input.proxyRefMode,
+        input.proxyId,
         input.proxyType,
         input.ipProtocol,
         input.proxyHost,
@@ -897,6 +913,8 @@ export class DatabaseService {
             providerInstanceId: cloudPhone.providerInstanceId,
             computeType: cloudPhone.computeType,
             ipLookupChannel: cloudPhone.ipLookupChannel,
+            proxyRefMode: cloudPhone.proxyRefMode ?? 'custom',
+            proxyId: cloudPhone.proxyId ?? null,
             proxyType: cloudPhone.proxyType,
             ipProtocol: cloudPhone.ipProtocol,
             proxyHost: cloudPhone.proxyHost,
@@ -1058,6 +1076,8 @@ export class DatabaseService {
             providerInstanceId: cloudPhone.providerInstanceId,
             computeType: cloudPhone.computeType,
             ipLookupChannel: cloudPhone.ipLookupChannel,
+            proxyRefMode: cloudPhone.proxyRefMode ?? 'custom',
+            proxyId: cloudPhone.proxyId ?? null,
             proxyType: cloudPhone.proxyType,
             ipProtocol: cloudPhone.ipProtocol,
             proxyHost: cloudPhone.proxyHost,

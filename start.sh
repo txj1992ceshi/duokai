@@ -16,11 +16,27 @@ API_DIR="$ROOT_DIR/duokai-api"
 ENGINE_DIR="$ROOT_DIR/fingerprint-dashboard/stealth-engine"
 FRONTEND_DIR="$ROOT_DIR/fingerprint-dashboard"
 
+kill_if_listening() {
+  local port="$1"
+  local pids
+  pids=$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
+  if [ -n "$pids" ]; then
+    echo "🧹 Releasing port $port (PID: $pids)"
+    kill $pids 2>/dev/null || true
+    sleep 0.5
+  fi
+}
+
 echo ""
 echo "╔══════════════════════════════════════════════╗"
 echo "║          Duokai  —  Starting Up              ║"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
+
+# ── Step 0: Cleanup stale listeners to avoid EADDRINUSE ─────────────────────
+kill_if_listening 3001
+kill_if_listening 3100
+kill_if_listening 3101
 
 # ── Step 1: Check Node.js ────────────────────────────────────────────────────
 if ! command -v node &> /dev/null; then
@@ -32,6 +48,12 @@ fi
 if [ ! -d "$API_DIR/node_modules/express" ]; then
   echo "📦 Installing duokai-api dependencies..."
   (cd "$API_DIR" && npm install)
+fi
+
+# Build API once when dist is missing, then run in non-watch mode for stability.
+if [ ! -f "$API_DIR/dist/server.js" ]; then
+  echo "🔧 Building duokai-api..."
+  (cd "$API_DIR" && npm run build)
 fi
 
 # ── Step 3: Install stealth-engine dependencies if needed ───────────────────
@@ -50,7 +72,7 @@ fi
 
 # ── Step 5: Start API Server (background) ───────────────────────────────────
 echo "🧩 Starting Duokai API on port 3100..."
-(cd "$API_DIR" && npm run dev) &
+(cd "$API_DIR" && npm run start) &
 API_PID=$!
 echo "   API PID: $API_PID"
 
