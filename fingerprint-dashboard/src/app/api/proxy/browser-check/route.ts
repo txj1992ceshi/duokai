@@ -3,9 +3,15 @@ import { connectMongo } from '@/lib/mongodb';
 import { requireUser } from '@/lib/requireUser';
 import { ProfileModel } from '@/models/Profile';
 import { SettingModel } from '@/models/Setting';
-import type { ProxyVerificationRecord } from '@/lib/proxyTypes';
+import type { ProxyProtocol, ProxyVerificationRecord } from '@/lib/proxyTypes';
 
 export const runtime = 'nodejs';
+
+function normalizeProxyProtocol(value: unknown): ProxyProtocol | undefined {
+  return value === 'direct' || value === 'http' || value === 'https' || value === 'socks5'
+    ? value
+    : undefined;
+}
 
 function resolveRuntimeUrl(raw: string): string {
   const value = String(raw || '').trim();
@@ -80,7 +86,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
     }
     const message = err instanceof Error ? err.message : '无法连接到 Runtime Server';
-    const proxyType = typeof payload?.proxyType === 'string' ? payload.proxyType : undefined;
+    const proxyType = normalizeProxyProtocol(payload?.proxyType);
     const result: ProxyVerificationRecord = {
       layer: 'environment',
       status: 'unknown',
