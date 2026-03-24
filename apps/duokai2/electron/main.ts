@@ -260,6 +260,20 @@ async function saveProfileStorageStateToDisk(
   return stateJson
 }
 
+async function saveProfileStorageStateToDiskSafely(
+  profileId: string,
+  context: BrowserContext,
+): Promise<void> {
+  try {
+    await saveProfileStorageStateToDisk(profileId, context)
+  } catch (error) {
+    audit('storage_state_save_failed', {
+      profileId,
+      err: String(error),
+    })
+  }
+}
+
 async function fetchRemoteProfileStorageState(profileId: string): Promise<ControlPlaneStorageState | null> {
   if (!getDesktopAuthState().authenticated) {
     return null
@@ -1972,9 +1986,26 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
   )
   await context.addInitScript(buildFingerprintInitScript(profile.id, profile.fingerprintConfig))
 
+  const persistStateOnLastPageClose = (pageToWatch: import('playwright').Page) => {
+    pageToWatch.on('close', () => {
+      if (context.pages().length > 1) {
+        return
+      }
+      void saveProfileStorageStateToDiskSafely(profileId, context)
+    })
+  }
+
+  persistStateOnLastPageClose(page)
+  context.on('page', (newPage) => {
+    persistStateOnLastPageClose(newPage)
+  })
+
   context.on('close', () => {
     clearProfileStorageSyncTimer(profileId)
     runtimeContexts.delete(profileId)
+    void uploadProfileStorageStateToControlPlane(profileId, {
+      reason: 'context-close',
+    })
     scheduler.markStopped(profileId)
     void syncProfileStatusToControlPlane(profileId, 'stopped')
     logEvent('info', 'runtime', `Closed profile "${profile.name}"`, profileId)
