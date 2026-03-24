@@ -76,21 +76,6 @@ ensure_api_env() {
   ensure_line "$file" "CORS_ORIGINS" "$cors_origins"
 }
 
-patch_ecosystem() {
-  log "Patching PM2 ecosystem"
-  node - "$ECOSYSTEM_FILE" "$PUBLIC_BASE" <<'EOF'
-const fs = require('fs');
-
-const [file, publicBase] = process.argv.slice(2);
-let content = fs.readFileSync(file, 'utf8');
-content = content.replace(
-  /DASHBOARD_URL:\s*process\.env\.DASHBOARD_URL\s*\|\|\s*'[^']*'/,
-  `DASHBOARD_URL: process.env.DASHBOARD_URL || '${publicBase}'`
-);
-fs.writeFileSync(file, content);
-EOF
-}
-
 install_dependencies() {
   log "Installing API dependencies"
   (cd "$API_DIR" && npm install)
@@ -121,8 +106,9 @@ build_apps() {
 
 restart_pm2() {
   log "Restarting PM2 services"
+  export DASHBOARD_URL="$PUBLIC_BASE"
   if pm2 describe duokai-api >/dev/null 2>&1; then
-    (cd "$ROOT_DIR" && pm2 startOrRestart "$ECOSYSTEM_FILE")
+    (cd "$ROOT_DIR" && pm2 startOrRestart "$ECOSYSTEM_FILE" --update-env)
   else
     (cd "$ROOT_DIR" && pm2 start "$ECOSYSTEM_FILE")
   fi
@@ -152,7 +138,6 @@ main() {
   ensure_admin_env
   ensure_frontend_env
   ensure_api_env
-  patch_ecosystem
   install_dependencies
   build_apps
   restart_pm2

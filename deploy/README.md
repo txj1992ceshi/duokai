@@ -162,6 +162,46 @@ BRANCH=main PUBLIC_SCHEME=https PUBLIC_HOST=duokai.duckdns.org bash deploy/updat
 - `git pull --ff-only`
 - 调用 `deploy/bootstrap-and-deploy.sh`
 
+### 3.1 GitHub Actions 自动部署
+
+仓库已经提供：
+
+- [deploy-vultr.yml](/Users/jj/Desktop/duokai/.github/workflows/deploy-vultr.yml)
+
+当你 push 到 `main` 时，GitHub Actions 会自动 SSH 到 Vultr 并执行：
+
+```bash
+cd /var/www/duokai
+BRANCH=main PUBLIC_HOST=duokai.duckdns.org bash deploy/update-from-git.sh
+```
+
+你需要在 GitHub 仓库的 `Settings -> Secrets and variables -> Actions` 中配置这些 secrets：
+
+- `VULTR_HOST`
+- `VULTR_USER`
+- `VULTR_SSH_KEY`
+- `VULTR_PUBLIC_HOST`
+
+可选 secrets：
+
+- `VULTR_PORT`
+- `VULTR_ROOT_DIR`
+- `VULTR_PUBLIC_SCHEME`
+- `VULTR_EXTRA_CORS_ORIGINS`
+
+按你当前服务器，最小推荐值是：
+
+- `VULTR_HOST=66.42.50.220`
+- `VULTR_USER=root`
+- `VULTR_PUBLIC_HOST=duokai.duckdns.org`
+- `VULTR_PUBLIC_SCHEME=http`
+
+注意：
+
+- `VULTR_SSH_KEY` 必须填私钥内容，不是公钥
+- 服务器必须已经能通过这把私钥无交互登录
+- 服务器目录必须是 Git 仓库，且远端指向你的 GitHub 仓库
+
 ### 4. 手工拆分步骤
 
 如果你不想一键脚本，也可以手工执行。
