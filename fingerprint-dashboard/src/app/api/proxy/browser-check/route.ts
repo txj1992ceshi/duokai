@@ -13,6 +13,10 @@ function normalizeProxyProtocol(value: unknown): ProxyProtocol | undefined {
     : undefined;
 }
 
+function normalizeOptionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
 function resolveRuntimeUrl(raw: string): string {
   const value = String(raw || '').trim();
   if (!value || value === 'http://127.0.0.1:3001') {
@@ -93,9 +97,9 @@ export async function POST(req: NextRequest) {
       proxyType,
       error: message,
       errorType: 'unknown',
-      expectedIp: payload?.expectedIp,
-      expectedCountry: payload?.expectedCountry,
-      expectedRegion: payload?.expectedRegion,
+      expectedIp: normalizeOptionalString(payload?.expectedIp),
+      expectedCountry: normalizeOptionalString(payload?.expectedCountry),
+      expectedRegion: normalizeOptionalString(payload?.expectedRegion),
       checkedAt: new Date().toISOString(),
     };
     return NextResponse.json(result, { status: 503 });
