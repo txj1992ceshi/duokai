@@ -24,8 +24,9 @@ module.exports = {
     {
       name: 'duokai-admin',
       cwd: '/var/www/duokai/duokai-admin',
-      script: 'npm',
-      args: 'run start -- --hostname 0.0.0.0 --port 3000',
+      script: 'node_modules/next/dist/bin/next',
+      interpreter: 'node',
+      args: 'start --hostname 0.0.0.0 --port 3000',
       env: {
         NODE_ENV: 'production',
         PORT: '3000',
@@ -34,8 +35,9 @@ module.exports = {
     {
       name: 'duokai-frontend',
       cwd: '/var/www/duokai/fingerprint-dashboard',
-      script: 'npm',
-      args: 'run start -- --hostname 0.0.0.0 --port 3001',
+      script: 'node_modules/next/dist/bin/next',
+      interpreter: 'node',
+      args: 'start --hostname 0.0.0.0 --port 3001',
       env: {
         NODE_ENV: 'production',
         PORT: '3001',
