@@ -85,7 +85,9 @@ const DEFAULT_TIMEZONE_FALLBACK = 'America/Los_Angeles'
 const DEFAULT_CONCURRENT_STARTS = 2
 const DEFAULT_ACTIVE_LIMIT = 6
 const DEFAULT_LAUNCH_RETRIES = 2
-const DEFAULT_CONTROL_PLANE_API_BASE = 'http://127.0.0.1:3100'
+const DEFAULT_CONTROL_PLANE_API_BASE = (
+  String(process.env.DUOKAI_API_BASE || '').trim() || 'http://duokai.duckdns.org'
+).replace(/\/$/, '')
 const TRUSTED_SNAPSHOT_VERSION = 1
 const PROFILE_STORAGE_SYNC_INTERVAL_MS = 5 * 60 * 1000
 const CONTROL_PLANE_API_BASE_KEY = 'controlPlaneApiBase'
@@ -394,7 +396,6 @@ function getSettingValue(key: string, fallback = ''): string {
 function getControlPlaneApiBase(): string {
   return (
     getSettingValue(CONTROL_PLANE_API_BASE_KEY) ||
-    String(process.env.DUOKAI_API_BASE || '').trim() ||
     DEFAULT_CONTROL_PLANE_API_BASE
   ).replace(/\/$/, '')
 }

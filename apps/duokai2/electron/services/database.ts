@@ -226,7 +226,10 @@ export class DatabaseService {
     stmt.run('defaultEnvironmentLanguage', DEFAULT_ENVIRONMENT_LANGUAGE)
     stmt.run('workspaceName', 'Bit Clone Workspace')
     stmt.run('defaultHomePage', 'https://example.com')
-    stmt.run('controlPlaneApiBase', 'http://127.0.0.1:3100')
+    stmt.run(
+      'controlPlaneApiBase',
+      String(process.env.DUOKAI_API_BASE || '').trim() || 'http://duokai.duckdns.org',
+    )
     stmt.run('controlPlaneDeviceId', randomUUID())
     stmt.run('controlPlaneAuthToken', '')
     stmt.run('controlPlaneAuthUser', '')

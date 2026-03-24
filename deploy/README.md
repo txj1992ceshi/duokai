@@ -2,6 +2,13 @@
 
 本目录用于正式部署 `duokai` 控制面服务，不包含桌面端打包发布。
 
+推荐原则：
+
+- GitHub 仓库是唯一真实来源
+- 服务器不再手工改业务代码
+- 服务器只做 `git pull`、安装依赖、构建、重启
+- 本地开发改完后提交到 GitHub，再让服务器同步
+
 ## 服务器上必须保留 / 上传的目录
 
 以下目录是部署控制面所需的最小集合：
@@ -70,12 +77,14 @@ TTL 推荐：
 ### duokai-admin
 
 - `PORT=3000`
-- `NEXT_PUBLIC_DUOKAI_API_BASE=https://api.your-domain.com`
+- `NEXT_PUBLIC_DUOKAI_API_BASE=https://your-domain.com`
+- `NEXT_PUBLIC_ADMIN_BASE_PATH=/admin`
+- `ADMIN_BASE_PATH=/admin`
 
 ### fingerprint-dashboard
 
 - `PORT=3001`
-- `NEXT_PUBLIC_DUOKAI_API_BASE=https://api.your-domain.com`
+- `NEXT_PUBLIC_DUOKAI_API_BASE=https://your-domain.com`
 - `MONGODB_URI`
 - `MONGODB_DB`
 - `JWT_SECRET`
@@ -85,12 +94,12 @@ TTL 推荐：
 ### runtime
 
 - `RUNTIME_PORT=3101`
-- `DASHBOARD_URL=https://app.your-domain.com`
+- `DASHBOARD_URL=https://your-domain.com`
 - `RUNTIME_KEY`
 
 ## 服务器部署步骤
 
-### 1. 上传代码
+### 1. 初始化服务器代码
 
 建议服务器目录：
 
@@ -106,7 +115,58 @@ cd /var/www/duokai
 git checkout main
 ```
 
-### 2. 安装依赖
+### 2. 首次部署
+
+首次部署建议直接跑：
+
+```bash
+cd /var/www/duokai
+PUBLIC_HOST=duokai.duckdns.org bash deploy/bootstrap-and-deploy.sh
+```
+
+如果你已经有 HTTPS，再改成：
+
+```bash
+cd /var/www/duokai
+PUBLIC_SCHEME=https PUBLIC_HOST=duokai.duckdns.org bash deploy/bootstrap-and-deploy.sh
+```
+
+脚本会自动：
+
+- 修正 `duokai-api / duokai-admin / fingerprint-dashboard` 的关键 `.env.local`
+- 安装依赖
+- 安装 Playwright Chromium
+- 构建 API / admin / frontend
+- 启动或重启 PM2 进程
+- 执行本地健康检查
+
+### 3. 后续更新
+
+以后不要再在线上手改代码，统一使用：
+
+```bash
+cd /var/www/duokai
+BRANCH=main PUBLIC_HOST=duokai.duckdns.org bash deploy/update-from-git.sh
+```
+
+如果已经上 HTTPS：
+
+```bash
+cd /var/www/duokai
+BRANCH=main PUBLIC_SCHEME=https PUBLIC_HOST=duokai.duckdns.org bash deploy/update-from-git.sh
+```
+
+这个脚本会自动：
+
+- `git fetch`
+- `git pull --ff-only`
+- 调用 `deploy/bootstrap-and-deploy.sh`
+
+### 4. 手工拆分步骤
+
+如果你不想一键脚本，也可以手工执行。
+
+#### 安装依赖
 
 ```bash
 cd /var/www/duokai/duokai-api && npm install
@@ -116,15 +176,15 @@ cd /var/www/duokai/fingerprint-dashboard/stealth-engine && npm install
 cd /var/www/duokai/fingerprint-dashboard/stealth-engine && npx playwright install chromium
 ```
 
-### 3. 构建
+#### 构建
 
 ```bash
 cd /var/www/duokai/duokai-api && npm run build
-cd /var/www/duokai/duokai-admin && npm run build
-cd /var/www/duokai/fingerprint-dashboard && npm run build
+cd /var/www/duokai/duokai-admin && npx next build --webpack
+cd /var/www/duokai/fingerprint-dashboard && npx next build --webpack
 ```
 
-### 4. 配置环境变量
+#### 配置环境变量
 
 建议分别创建：
 
@@ -133,28 +193,14 @@ cd /var/www/duokai/fingerprint-dashboard && npm run build
 - `/var/www/duokai/fingerprint-dashboard/.env.local`
 - `/var/www/duokai/fingerprint-dashboard/stealth-engine/.env.local`（如需单独管理）
 
-### 5. 一键部署脚本
+#### 一键部署脚本
 
-可直接使用：
+参考：
 
 - [deploy/bootstrap-and-deploy.sh](/Users/jj/Desktop/duokai/deploy/bootstrap-and-deploy.sh)
+- [deploy/update-from-git.sh](/Users/jj/Desktop/duokai/deploy/update-from-git.sh)
 
-```bash
-cd /var/www/duokai
-git pull origin main
-bash deploy/bootstrap-and-deploy.sh
-```
-
-该脚本会自动完成：
-
-- 修正 `duokai-api / duokai-admin / fingerprint-dashboard` 的关键 `.env.local` 配置
-- 安装依赖
-- 安装 Playwright Chromium
-- 构建 API / admin / frontend
-- 启动或重启 PM2 进程
-- 执行本地健康检查
-
-### 6. 使用 PM2 启动
+### 5. 使用 PM2 启动
 
 参考：
 
@@ -173,11 +219,84 @@ pm2 startup
 
 - [deploy/nginx/duokai.conf.example](/Users/jj/Desktop/duokai/deploy/nginx/duokai.conf.example)
 
-建议域名拆分：
+本仓库同时支持两种方案：
 
-- `api.your-domain.com` -> `duokai-api`
-- `admin.your-domain.com` -> `duokai-admin`
-- `app.your-domain.com` -> `fingerprint-dashboard`
+- 子域名拆分
+- 单域名路径拆分（你当前使用的 `duokai.duckdns.org` + `/admin` + `/api`）
+
+你当前更推荐用单域名路径拆分。
+
+单域名示例：
+
+```nginx
+server {
+    listen 80;
+    listen [::]:80;
+    server_name your-domain.com _;
+
+    location = /api/health {
+        proxy_pass http://127.0.0.1:3100/health;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:3100;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /admin {
+        proxy_pass http://127.0.0.1:3000/admin;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+
+    location = /admin/ {
+        proxy_pass http://127.0.0.1:3000/admin;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+
+    location /admin/ {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+```
 
 ## 上线前最小检查
 
@@ -197,14 +316,14 @@ curl http://127.0.0.1:3101/health
 
 打开：
 
-- `https://admin.your-domain.com`
+- `https://your-domain.com/admin/login`
 
 ### Frontend
 
 打开：
 
-- `https://app.your-domain.com`
+- `https://your-domain.com/login`
 
 ## 说明
 
-当前桌面端 `apps/duokai2` 不需要部署到服务器。它后续只需要打包发布给用户，并默认指向你的线上 API。
+当前桌面端 `apps/duokai2` 不需要部署到服务器。它后续只需要打包发布给用户，并默认指向你的线上控制面地址。

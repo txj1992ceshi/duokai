@@ -1,7 +1,9 @@
 import type { NextConfig } from "next";
 
+const adminBasePath = (process.env.ADMIN_BASE_PATH || '').replace(/\/$/, '');
+
 const nextConfig: NextConfig = {
-  /* config options here */
+  basePath: adminBasePath || undefined,
 };
 
 export default nextConfig;

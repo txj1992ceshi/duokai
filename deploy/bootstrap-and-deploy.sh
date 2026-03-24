@@ -4,6 +4,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVER_IP="${SERVER_IP:-$(hostname -I | awk '{print $1}')}"
+PUBLIC_SCHEME="${PUBLIC_SCHEME:-http}"
+PUBLIC_HOST="${PUBLIC_HOST:-$SERVER_IP}"
+EXTRA_CORS_ORIGINS="${EXTRA_CORS_ORIGINS:-}"
 
 API_DIR="$ROOT_DIR/duokai-api"
 ADMIN_DIR="$ROOT_DIR/duokai-admin"
@@ -11,9 +14,10 @@ FRONTEND_DIR="$ROOT_DIR/fingerprint-dashboard"
 RUNTIME_DIR="$FRONTEND_DIR/stealth-engine"
 ECOSYSTEM_FILE="$ROOT_DIR/deploy/ecosystem.config.cjs"
 
-API_BASE="http://${SERVER_IP}:3100"
-ADMIN_BASE="http://${SERVER_IP}:3000"
-APP_BASE="http://${SERVER_IP}:3001"
+PUBLIC_BASE="${PUBLIC_SCHEME}://${PUBLIC_HOST}"
+API_BASE="$PUBLIC_BASE"
+ADMIN_BASE="${PUBLIC_SCHEME}://${PUBLIC_HOST}:3000"
+APP_BASE="${PUBLIC_SCHEME}://${PUBLIC_HOST}:3001"
 
 log() {
   printf '\n[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1"
@@ -51,6 +55,8 @@ ensure_admin_env() {
   local file="$ADMIN_DIR/.env.local"
   log "Ensuring admin env"
   ensure_line "$file" "NEXT_PUBLIC_DUOKAI_API_BASE" "$API_BASE"
+  ensure_line "$file" "NEXT_PUBLIC_ADMIN_BASE_PATH" "/admin"
+  ensure_line "$file" "ADMIN_BASE_PATH" "/admin"
 }
 
 ensure_frontend_env() {
@@ -63,12 +69,26 @@ ensure_api_env() {
   local file="$API_DIR/.env.local"
   log "Ensuring API env"
   ensure_line "$file" "RUNTIME_URL" "http://127.0.0.1:3101"
-  ensure_line "$file" "CORS_ORIGINS" "${ADMIN_BASE},${APP_BASE},http://127.0.0.1:3000,http://127.0.0.1:3001"
+  local cors_origins="${PUBLIC_BASE},${ADMIN_BASE},${APP_BASE},http://127.0.0.1:3000,http://127.0.0.1:3001"
+  if [[ -n "$EXTRA_CORS_ORIGINS" ]]; then
+    cors_origins="${cors_origins},${EXTRA_CORS_ORIGINS}"
+  fi
+  ensure_line "$file" "CORS_ORIGINS" "$cors_origins"
 }
 
 patch_ecosystem() {
   log "Patching PM2 ecosystem"
-  sed -i.bak "s#https://app.your-domain.com#${APP_BASE}#g" "$ECOSYSTEM_FILE"
+  node - "$ECOSYSTEM_FILE" "$PUBLIC_BASE" <<'EOF'
+const fs = require('fs');
+
+const [file, publicBase] = process.argv.slice(2);
+let content = fs.readFileSync(file, 'utf8');
+content = content.replace(
+  /DASHBOARD_URL:\s*process\.env\.DASHBOARD_URL\s*\|\|\s*'[^']*'/,
+  `DASHBOARD_URL: process.env.DASHBOARD_URL || '${publicBase}'`
+);
+fs.writeFileSync(file, content);
+EOF
 }
 
 install_dependencies() {
@@ -93,10 +113,10 @@ build_apps() {
   (cd "$API_DIR" && npm run build)
 
   log "Building admin"
-  (cd "$ADMIN_DIR" && npm run build)
+  (cd "$ADMIN_DIR" && npx next build --webpack)
 
   log "Building frontend"
-  (cd "$FRONTEND_DIR" && npm run build)
+  (cd "$FRONTEND_DIR" && npx next build --webpack)
 }
 
 restart_pm2() {
@@ -127,6 +147,7 @@ health_check() {
 main() {
   log "Deploy root: $ROOT_DIR"
   log "Detected server IP: $SERVER_IP"
+  log "Public base: $PUBLIC_BASE"
 
   ensure_admin_env
   ensure_frontend_env

@@ -1,3 +1,5 @@
+import { withAdminBasePath } from '@/lib/base-path';
+
 const API_BASE =
   (process.env.NEXT_PUBLIC_DUOKAI_API_BASE || 'http://127.0.0.1:3100').replace(/\/$/, '');
 
@@ -34,8 +36,9 @@ export async function adminFetch(
   if (res.status === 401 && typeof window !== 'undefined') {
     localStorage.removeItem('duokai_admin_token');
     localStorage.removeItem('duokai_admin_user');
-    if (!window.location.pathname.startsWith('/login')) {
-      window.location.replace('/login');
+    const loginPath = withAdminBasePath('/login');
+    if (window.location.pathname !== loginPath) {
+      window.location.replace(loginPath);
     }
   }
 

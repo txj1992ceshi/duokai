@@ -4605,6 +4605,19 @@ function App() {
                 </select>
               </label>
               <label>
+                <span>{t.settings.controlPlaneApiBase}</span>
+                <input
+                  value={settings.controlPlaneApiBase ?? ''}
+                  onChange={(event) =>
+                    setSettings((current) => ({
+                      ...current,
+                      controlPlaneApiBase: event.target.value,
+                    }))
+                  }
+                  placeholder="http://duokai.duckdns.org"
+                />
+              </label>
+              <label>
                 <span>{t.settings.workspaceName}</span>
                 <input
                   value={settings.workspaceName ?? ''}

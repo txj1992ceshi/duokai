@@ -203,6 +203,7 @@ type Dictionary = {
   }
   settings: {
     title: string
+    controlPlaneApiBase: string
     workspaceName: string
     defaultHomePage: string
     notes: string
@@ -460,6 +461,7 @@ export const dictionaries: Record<LocaleCode, Dictionary> = {
     },
     settings: {
       title: '应用设置',
+      controlPlaneApiBase: '控制面地址',
       workspaceName: '工作区名称',
       defaultHomePage: '默认首页',
       notes: '运营备注',
@@ -715,6 +717,7 @@ export const dictionaries: Record<LocaleCode, Dictionary> = {
     },
     settings: {
       title: 'Application settings',
+      controlPlaneApiBase: 'Control plane URL',
       workspaceName: 'Workspace name',
       defaultHomePage: 'Default home page',
       notes: 'Operational notes',

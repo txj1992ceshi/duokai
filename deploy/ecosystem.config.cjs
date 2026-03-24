@@ -18,7 +18,7 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         RUNTIME_PORT: '3101',
-        DASHBOARD_URL: 'https://app.your-domain.com',
+        DASHBOARD_URL: process.env.DASHBOARD_URL || 'http://127.0.0.1:3001',
       },
     },
     {
