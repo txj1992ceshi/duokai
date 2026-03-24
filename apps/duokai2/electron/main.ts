@@ -529,6 +529,47 @@ type ControlPlaneProfile = {
 
 type ProxyEntryTransport = 'https-entry' | 'http-entry' | 'socks5-entry' | 'direct'
 
+function findMatchingSavedProxyForRemoteProfile(
+  remoteProfile: Pick<
+    ControlPlaneProfile,
+    'proxyType' | 'proxyHost' | 'proxyPort' | 'proxyUsername' | 'proxyPassword'
+  >,
+  existing?: ProfileRecord | null,
+): ProxyRecord | null {
+  if (!remoteProfile.proxyHost || !remoteProfile.proxyPort) {
+    return null
+  }
+
+  const normalizedPort = Number(remoteProfile.proxyPort || 0)
+  const savedProxies = requireDatabase()
+    .listProxies()
+    .filter(
+      (proxy) =>
+        proxy.host === remoteProfile.proxyHost &&
+        proxy.port === normalizedPort &&
+        proxy.username === (remoteProfile.proxyUsername || '') &&
+        proxy.password === (remoteProfile.proxyPassword || ''),
+    )
+
+  if (savedProxies.length === 0) {
+    return null
+  }
+
+  if (existing?.proxyId) {
+    const preferred = savedProxies.find((proxy) => proxy.id === existing.proxyId)
+    if (preferred) {
+      return preferred
+    }
+  }
+
+  const exactType = savedProxies.find((proxy) => proxy.type === remoteProfile.proxyType)
+  if (exactType) {
+    return exactType
+  }
+
+  return savedProxies.length === 1 ? savedProxies[0] : null
+}
+
 function mapControlPlaneStatus(status: string | undefined): ProfileRecord['status'] {
   if (status === 'Running') {
     return 'running'
@@ -761,18 +802,33 @@ function buildFingerprintFromRemoteProfile(
   next.userAgent = remoteProfile.ua || next.userAgent
   next.basicSettings.platform = remoteProfile.startupPlatform || next.basicSettings.platform
   next.basicSettings.customPlatformUrl = remoteProfile.startupUrl || next.basicSettings.customPlatformUrl
-  next.proxySettings.proxyMode =
-    remoteProfile.proxyType === 'direct' || !remoteProfile.proxyHost ? 'direct' : 'custom'
-  next.proxySettings.proxyType =
-    remoteProfile.proxyType === 'http' ||
-    remoteProfile.proxyType === 'https' ||
-    remoteProfile.proxyType === 'socks5'
-      ? remoteProfile.proxyType
-      : next.proxySettings.proxyType
-  next.proxySettings.host = remoteProfile.proxyHost || ''
-  next.proxySettings.port = Number(remoteProfile.proxyPort || 0)
-  next.proxySettings.username = remoteProfile.proxyUsername || ''
-  next.proxySettings.password = remoteProfile.proxyPassword || ''
+  const matchedSavedProxy = findMatchingSavedProxyForRemoteProfile(remoteProfile, existing)
+  if (remoteProfile.proxyType === 'direct' || !remoteProfile.proxyHost) {
+    next.proxySettings.proxyMode = 'direct'
+    next.proxySettings.host = ''
+    next.proxySettings.port = 0
+    next.proxySettings.username = ''
+    next.proxySettings.password = ''
+  } else if (matchedSavedProxy) {
+    next.proxySettings.proxyMode = 'manager'
+    next.proxySettings.proxyType = matchedSavedProxy.type
+    next.proxySettings.host = matchedSavedProxy.host
+    next.proxySettings.port = matchedSavedProxy.port
+    next.proxySettings.username = matchedSavedProxy.username
+    next.proxySettings.password = matchedSavedProxy.password
+  } else {
+    next.proxySettings.proxyMode = 'custom'
+    next.proxySettings.proxyType =
+      remoteProfile.proxyType === 'http' ||
+      remoteProfile.proxyType === 'https' ||
+      remoteProfile.proxyType === 'socks5'
+        ? remoteProfile.proxyType
+        : next.proxySettings.proxyType
+    next.proxySettings.host = remoteProfile.proxyHost || ''
+    next.proxySettings.port = Number(remoteProfile.proxyPort || 0)
+    next.proxySettings.username = remoteProfile.proxyUsername || ''
+    next.proxySettings.password = remoteProfile.proxyPassword || ''
+  }
   next.advanced.deviceMode = remoteProfile.isMobile ? 'android' : 'desktop'
   next.runtimeMetadata.lastEffectiveProxyTransport =
     remoteProfile.lastResolvedProxyTransport ||
@@ -797,10 +853,11 @@ function buildFingerprintFromRemoteProfile(
 
 function mapRemoteProfileToLocalInput(remoteProfile: ControlPlaneProfile): UpdateProfileInput {
   const existing = requireDatabase().getProfileById(remoteProfile.id)
+  const matchedSavedProxy = findMatchingSavedProxyForRemoteProfile(remoteProfile, existing)
   return {
     id: remoteProfile.id,
     name: remoteProfile.name || 'Remote Profile',
-    proxyId: existing?.proxyId || null,
+    proxyId: matchedSavedProxy?.id || null,
     groupName: remoteProfile.groupId || existing?.groupName || '',
     tags: Array.isArray(remoteProfile.tags) ? remoteProfile.tags : existing?.tags || [],
     notes: existing?.notes || '',
@@ -810,16 +867,17 @@ function mapRemoteProfileToLocalInput(remoteProfile: ControlPlaneProfile): Updat
 
 function mapLocalProfileToRemotePayload(profile: UpdateProfileInput | ProfileRecord) {
   const proxySettings = profile.fingerprintConfig.proxySettings
+  const resolvedProxy = resolveProfileProxy(profile, requireDatabase())
   const startupUrl = resolveProfileStartupUrl(profile)
   return {
     name: profile.name,
     tags: profile.tags,
     status: 'Ready',
-    proxyType: proxySettings.proxyMode === 'direct' ? 'direct' : proxySettings.proxyType,
-    proxyHost: proxySettings.host,
-    proxyPort: proxySettings.port > 0 ? String(proxySettings.port) : '',
-    proxyUsername: proxySettings.username,
-    proxyPassword: proxySettings.password,
+    proxyType: resolvedProxy ? resolvedProxy.type : proxySettings.proxyMode === 'direct' ? 'direct' : proxySettings.proxyType,
+    proxyHost: resolvedProxy?.host || proxySettings.host,
+    proxyPort: resolvedProxy ? String(resolvedProxy.port) : proxySettings.port > 0 ? String(proxySettings.port) : '',
+    proxyUsername: resolvedProxy?.username || proxySettings.username,
+    proxyPassword: resolvedProxy?.password || proxySettings.password,
     ua: profile.fingerprintConfig.userAgent,
     seed: profile.fingerprintConfig.basicSettings.cookieSeed,
     isMobile: profile.fingerprintConfig.advanced.deviceMode !== 'desktop',
