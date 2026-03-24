@@ -220,7 +220,7 @@ function checkViaHttpProxy(proxy: string, proxyType: ProxyProtocol) {
   return new Promise<Response>((resolve) => {
     const target = 'http://ip-api.com/json';
     const startTime = Date.now();
-    const transport = proxyType === 'https' ? https : http;
+    const transport = http;
     const headers: Record<string, string> = {
       Host: 'ip-api.com',
       'User-Agent': 'duokai-proxy-check/1.0',
