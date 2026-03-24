@@ -22,6 +22,7 @@ import { errorMiddleware } from './middlewares/error.js';
 
 const app = express();
 const port = Number(process.env.PORT || 3100);
+const host = process.env.HOST || '0.0.0.0';
 const allowedOrigins = (process.env.CORS_ORIGINS ||
   'http://localhost:3000,http://localhost:3001')
   .split(',')
@@ -82,7 +83,7 @@ async function bootstrapMongoMaintenance() {
   }
 }
 
-app.listen(port, () => {
-  console.log(`[duokai-api] listening on http://localhost:${port}`);
+app.listen(port, host, () => {
+  console.log(`[duokai-api] listening on http://${host}:${port}`);
   void bootstrapMongoMaintenance();
 });

@@ -19,6 +19,21 @@ log() {
   printf '\n[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1"
 }
 
+wait_for_http() {
+  local url="$1"
+  local attempts="${2:-20}"
+  local delay="${3:-2}"
+
+  for ((i = 1; i <= attempts; i++)); do
+    if curl -fsS "$url" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep "$delay"
+  done
+
+  return 1
+}
+
 ensure_line() {
   local file="$1"
   local key="$2"
@@ -96,10 +111,14 @@ restart_pm2() {
 
 health_check() {
   log "Health checks"
-  curl -fsS http://127.0.0.1:3100/health
+  wait_for_http http://localhost:3100/health
+  curl -fsS http://localhost:3100/health
   echo
+  wait_for_http http://127.0.0.1:3101/health
   curl -fsS http://127.0.0.1:3101/health
   echo
+  wait_for_http http://127.0.0.1:3000
+  wait_for_http http://127.0.0.1:3001
   curl -I -fsS http://127.0.0.1:3000 >/dev/null
   curl -I -fsS http://127.0.0.1:3001 >/dev/null
   pm2 status
