@@ -21,6 +21,7 @@ jobs:
           username: ${{ secrets.VULTR_USER }}
           key: ${{ secrets.VULTR_SSH_KEY }}
           port: ${{ secrets.VULTR_PORT || '22' }}
+          envs: VULTR_ROOT_DIR,PUBLIC_SCHEME,PUBLIC_HOST,EXTRA_CORS_ORIGINS
           script_stop: true
           command_timeout: 45m
           script: |
@@ -31,7 +32,6 @@ jobs:
             PUBLIC_HOST="${PUBLIC_HOST}" \
             EXTRA_CORS_ORIGINS="${EXTRA_CORS_ORIGINS:-}" \
             bash deploy/update-from-git.sh
-        envs: VULTR_ROOT_DIR,PUBLIC_SCHEME,PUBLIC_HOST,EXTRA_CORS_ORIGINS
     env:
       VULTR_ROOT_DIR: ${{ secrets.VULTR_ROOT_DIR }}
       PUBLIC_SCHEME: ${{ secrets.VULTR_PUBLIC_SCHEME }}
