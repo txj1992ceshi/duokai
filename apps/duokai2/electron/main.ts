@@ -1995,11 +1995,6 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     })
   }
 
-  persistStateOnLastPageClose(page)
-  context.on('page', (newPage) => {
-    persistStateOnLastPageClose(newPage)
-  })
-
   context.on('close', () => {
     clearProfileStorageSyncTimer(profileId)
     runtimeContexts.delete(profileId)
@@ -2013,6 +2008,10 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
 
   const pages = context.pages()
   const page = pages[0] ?? (await context.newPage())
+  persistStateOnLastPageClose(page)
+  context.on('page', (newPage) => {
+    persistStateOnLastPageClose(newPage)
+  })
   if (fingerprint.commonSettings.blockImages) {
     await page.route('**/*', async (route) => {
       const request = route.request()
