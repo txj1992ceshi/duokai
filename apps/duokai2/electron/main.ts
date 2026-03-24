@@ -1066,6 +1066,16 @@ async function uploadProfileStorageStateToControlPlane(
       Number(pendingProfile.fingerprintConfig.runtimeMetadata.lastStorageStateVersion || 0),
     )
     const baseVersion = remoteState ? localVersion : 0
+    if (remoteState && remoteState.stateHash && remoteState.stateHash === stateHash) {
+      updateRuntimeMetadata(pendingProfile, {
+        lastStorageStateVersion: remoteState.version,
+        lastStorageStateSyncedAt: remoteState.updatedAt || new Date().toISOString(),
+        lastStorageStateDeviceId: remoteState.deviceId || '',
+        lastStorageStateSyncStatus: 'synced',
+        lastStorageStateSyncMessage: '云端登录态已同步',
+      })
+      return
+    }
     if (remoteState && remoteState.version > localVersion) {
       updateRuntimeMetadata(pendingProfile, {
         lastStorageStateVersion: remoteState.version,
@@ -1082,12 +1092,7 @@ async function uploadProfileStorageStateToControlPlane(
       })
       return
     }
-    if (
-      remoteState &&
-      remoteState.version === localVersion &&
-      remoteState.stateHash &&
-      remoteState.stateHash === stateHash
-    ) {
+    if (remoteState && remoteState.version === localVersion && remoteState.stateHash && remoteState.stateHash === stateHash) {
       updateRuntimeMetadata(pendingProfile, {
         lastStorageStateSyncStatus: 'synced',
         lastStorageStateSyncMessage: '云端登录态已同步',
