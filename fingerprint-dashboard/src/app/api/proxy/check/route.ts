@@ -241,7 +241,6 @@ function checkViaHttpProxy(proxy: string, proxyType: ProxyProtocol) {
         path: target,
         headers,
         timeout: 10000,
-        rejectUnauthorized: false,
       },
       (res) => {
         let data = '';
