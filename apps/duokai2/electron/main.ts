@@ -2532,6 +2532,20 @@ async function registerIpcHandlers(): Promise<void> {
   ipcMain.handle('profiles.bulkDelete', async (_event, payload: ProfileBulkActionPayload) => {
     ensureWritable('profiles.bulkDelete')
     await stopMany(payload.profileIds)
+    if (getDesktopAuthState().authenticated) {
+      for (const profileId of payload.profileIds) {
+        try {
+          await requestControlPlane(`/api/profiles/${encodeURIComponent(profileId)}`, {
+            method: 'DELETE',
+          })
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          if (!/profile not found/i.test(message)) {
+            throw error
+          }
+        }
+      }
+    }
     requireDatabase().bulkDeleteProfiles(payload.profileIds)
     await syncConfigToControlPlaneOrThrow()
     logEvent('warn', 'profile', `Deleted ${payload.profileIds.length} profiles`, null)
