@@ -63,6 +63,7 @@ ensure_frontend_env() {
   local file="$FRONTEND_DIR/.env.local"
   log "Ensuring frontend env"
   ensure_line "$file" "NEXT_PUBLIC_DUOKAI_API_BASE" "$API_BASE"
+  ensure_line "$file" "NEXT_PUBLIC_RUNTIME_EXECUTION_MODE" "control-plane"
 }
 
 ensure_api_env() {

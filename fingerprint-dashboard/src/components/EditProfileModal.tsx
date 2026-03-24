@@ -36,6 +36,7 @@ type Props = {
   groups: GroupItem[];
   proxyChecking: boolean;
   proxyBrowserChecking: boolean;
+  controlPlaneOnly: boolean;
   proxyResult: ProxyVerificationRecord | null;
   proxyBrowserResult: ProxyVerificationRecord | null;
   platformOptions: readonly PlatformOption[];
@@ -62,6 +63,7 @@ export default function EditProfileModal({
   groups,
   proxyChecking,
   proxyBrowserChecking,
+  controlPlaneOnly,
   proxyResult,
   proxyBrowserResult,
   platformOptions,
@@ -277,6 +279,11 @@ export default function EditProfileModal({
                   ? ` 当前严格期望出口: ${formatExpectedTarget(profile)}`
                   : ' 如需严格拦截 VPN 串流，请填写期望 IP，并先运行一次真实浏览器检测自动生成国家/地区。'}
               </p>
+              {controlPlaneOnly ? (
+                <div className="mt-2 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+                  当前是云端控制面模式。真实浏览器检测只能在桌面端本地运行，云端页面仅保留网关检测和配置管理。
+                </div>
+              ) : null}
               <div className="mt-2 flex items-center gap-2">
                 <div className="flex-1 break-all rounded-lg border border-slate-800 bg-slate-950/80 px-3 py-2 font-mono text-[11px] text-slate-400">
                   {buildProxyFromDraft(profile) || '填写代理主机和端口后，将在这里生成代理串'}
@@ -297,7 +304,7 @@ export default function EditProfileModal({
                 </AppButton>
                 <AppButton
                   type="button"
-                  disabled={proxyBrowserChecking}
+                  disabled={proxyBrowserChecking || controlPlaneOnly}
                   onClick={onBrowserCheckProxy}
                   variant="primary"
                   size="sm"

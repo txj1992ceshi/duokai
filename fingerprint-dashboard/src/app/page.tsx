@@ -52,6 +52,11 @@ type RuntimeSessionSummary = {
   profileId?: string;
 };
 
+const RUNTIME_EXECUTION_MODE =
+  process.env.NEXT_PUBLIC_RUNTIME_EXECUTION_MODE === 'control-plane'
+    ? 'control-plane'
+    : 'local';
+
 declare global {
   interface Window { electronAPI?: unknown; }
 }
@@ -265,6 +270,7 @@ export default function Home() {
     message: string;
     variant: 'error' | 'success' | 'info';
   }>({ message: '', variant: 'info' });
+  const controlPlaneOnly = RUNTIME_EXECUTION_MODE === 'control-plane';
 
   const loadStorageStateStatus = useCallback(async (items: Array<{ id: string }>) => {
     try {
@@ -499,6 +505,10 @@ export default function Home() {
   }
 
   const handleStartSession = async (p: Profile) => {
+    if (controlPlaneOnly) {
+      alert('当前云端页面只负责环境配置与同步。请在桌面端前台启动真实浏览器环境。');
+      return;
+    }
     setStartingProfileIds(prev => ({ ...prev, [p.id]: true }));
     try {
       if (runtimeOnline === false) {
@@ -663,6 +673,17 @@ export default function Home() {
 
   const handleBrowserCheckProxy = async () => {
     if (!editingProfile) return;
+    if (controlPlaneOnly) {
+      setProxyBrowserResult({
+        layer: 'environment',
+        status: 'unknown',
+        browserVerified: false,
+        latencyMs: 0,
+        error: '云端控制面不提供真实浏览器检测，请在桌面端执行',
+        detail: '当前部署模式下，真实浏览器检测和环境启动均应由桌面端本地运行时完成。',
+      } as ProxyVerificationRecord);
+      return;
+    }
     const proxy = buildProxyFromDraft(editingProfile);
     if (!proxy) { alert('请先填写代理类型、主机和端口'); return; }
     setProxyBrowserChecking(true); setProxyBrowserResult(null);
@@ -1226,6 +1247,7 @@ export default function Home() {
         groups={groups}
         proxyChecking={proxyChecking}
         proxyBrowserChecking={proxyBrowserChecking}
+        controlPlaneOnly={controlPlaneOnly}
         proxyResult={proxyResult}
         proxyBrowserResult={proxyBrowserResult}
         platformOptions={STARTUP_PLATFORM_OPTIONS}

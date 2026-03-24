@@ -528,9 +528,6 @@ type ControlPlaneProfile = {
 }
 
 type ProxyEntryTransport = 'https-entry' | 'http-entry' | 'socks5-entry' | 'direct'
-type NegotiatedNetworkHealthResult = NetworkHealthResult & {
-  effectiveProxyTransport?: ProxyEntryTransport
-}
 
 function mapControlPlaneStatus(status: string | undefined): ProfileRecord['status'] {
   if (status === 'Running') {
@@ -1237,64 +1234,6 @@ async function updateProfileStatus(
   await syncProfileStatusToControlPlane(profileId, status)
 }
 
-async function checkNetworkHealthViaControlPlane(
-  profile: ProfileRecord,
-  proxy: ProxyRecord,
-): Promise<NegotiatedNetworkHealthResult | null> {
-  if (!getDesktopAuthState().authenticated) {
-    return null
-  }
-
-  try {
-    const result = await requestControlPlane('/api/proxy/browser-check', {
-      method: 'POST',
-      body: JSON.stringify({
-        profileId: profile.id,
-        proxyType: proxy.type,
-        proxyHost: proxy.host,
-        proxyPort: String(proxy.port),
-        proxyUsername: proxy.username,
-        proxyPassword: proxy.password,
-      }),
-    })
-
-    const ok = Boolean(result.status === 'verified' || result.browserVerified === true)
-    return {
-      ok,
-      ip: String(result.ip || ''),
-      country: String(result.country || ''),
-      region: String(result.region || ''),
-      city: String(result.city || ''),
-      timezone: profile.fingerprintConfig.timezone || DEFAULT_TIMEZONE_FALLBACK,
-      languageHint: profile.fingerprintConfig.language || 'en-US',
-      geolocation: profile.fingerprintConfig.advanced.geolocation || '',
-      message: String(
-        result.detail ||
-          result.error ||
-          (ok ? 'Proxy verified successfully via control plane' : 'Proxy verification failed'),
-      ),
-      source: proxy ? 'proxy' : 'local',
-      checkedAt: String(result.checkedAt || new Date().toISOString()),
-      effectiveProxyTransport:
-        result.effectiveProxyTransport === 'https-entry' ||
-        result.effectiveProxyTransport === 'http-entry' ||
-        result.effectiveProxyTransport === 'socks5-entry' ||
-        result.effectiveProxyTransport === 'direct'
-          ? (result.effectiveProxyTransport as ProxyEntryTransport)
-          : undefined,
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    logEvent(
-      'warn',
-      'runtime',
-      `Control plane proxy preflight failed for "${profile.name}", falling back to local check: ${message}`,
-      profile.id,
-    )
-    return null
-  }
-}
-
 function toCandidateProxy(
   proxy: ProxyRecord | null,
   candidateTransport?: ProxyEntryTransport,
@@ -1369,41 +1308,6 @@ async function performProxyConnectivityTest(
   },
 ) {
   const category = options.category ?? 'proxy'
-  if (getDesktopAuthState().authenticated) {
-    try {
-      const result = await requestControlPlane('/api/proxy/browser-check', {
-        method: 'POST',
-        body: JSON.stringify({
-          proxyType: proxy.type,
-          proxyHost: proxy.host,
-          proxyPort: String(proxy.port),
-          proxyUsername: proxy.username,
-          proxyPassword: proxy.password,
-        }),
-      })
-      const success = Boolean(result.status === 'verified' || result.browserVerified === true)
-      const checkedAt = String(result.checkedAt || new Date().toISOString())
-      if (options.syncStoredProxyId) {
-        requireDatabase().setProxyStatus(options.syncStoredProxyId, success ? 'online' : 'offline')
-      }
-      logEvent(
-        success ? 'info' : 'warn',
-        category,
-        success
-          ? `Proxy "${options.label}" verified via control plane browser check`
-          : `Proxy "${options.label}" failed control plane browser check`,
-        null,
-      )
-      return {
-        success,
-        message: String(result.detail || result.error || (success ? 'Proxy verified successfully' : 'Proxy verification failed')),
-        checkedAt,
-      }
-    } catch {
-      logEvent('warn', category, `Control plane proxy check failed for "${options.label}", falling back to local test`, null)
-    }
-  }
-
   try {
     const browser = await chromium.launch({
       headless: true,
@@ -1418,18 +1322,70 @@ async function performProxyConnectivityTest(
     if (options.syncStoredProxyId) {
       requireDatabase().setProxyStatus(options.syncStoredProxyId, 'online')
     }
-    logEvent('info', category, `Proxy "${options.label}" is reachable`, null)
+    logEvent('info', category, `Proxy "${options.label}" verified locally`, null)
     return {
       success: true,
-      message: 'Proxy connected successfully',
+      message: 'Proxy verified locally',
       checkedAt,
     }
   } catch (error) {
+    if (getDesktopAuthState().authenticated) {
+      logEvent(
+        'warn',
+        category,
+        `Local proxy check failed for "${options.label}", attempting control plane fallback`,
+        null,
+      )
+      try {
+        const result = await requestControlPlane('/api/proxy/browser-check', {
+          method: 'POST',
+          body: JSON.stringify({
+            proxyType: proxy.type,
+            proxyHost: proxy.host,
+            proxyPort: String(proxy.port),
+            proxyUsername: proxy.username,
+            proxyPassword: proxy.password,
+          }),
+        })
+        const success = Boolean(result.status === 'verified' || result.browserVerified === true)
+        const checkedAt = String(result.checkedAt || new Date().toISOString())
+        if (options.syncStoredProxyId) {
+          requireDatabase().setProxyStatus(options.syncStoredProxyId, success ? 'online' : 'offline')
+        }
+        logEvent(
+          success ? 'info' : 'warn',
+          category,
+          success
+            ? `Proxy "${options.label}" verified via control plane fallback`
+            : `Proxy "${options.label}" failed local and control plane verification`,
+          null,
+        )
+        return {
+          success,
+          message: String(
+            result.detail ||
+              result.error ||
+              (success
+                ? 'Proxy verified successfully via control plane fallback'
+                : 'Proxy verification failed')
+          ),
+          checkedAt,
+        }
+      } catch (remoteError) {
+        logEvent(
+          'warn',
+          category,
+          `Control plane proxy check also failed for "${options.label}": ${remoteError instanceof Error ? remoteError.message : String(remoteError)}`,
+          null,
+        )
+      }
+    }
+
     const checkedAt = new Date().toISOString()
     if (options.syncStoredProxyId) {
       requireDatabase().setProxyStatus(options.syncStoredProxyId, 'offline')
     }
-    logEvent('error', category, `Proxy "${options.label}" test failed`, null)
+    logEvent('error', category, `Proxy "${options.label}" test failed locally`, null)
     return {
       success: false,
       message: error instanceof Error ? error.message : 'Unknown proxy error',
@@ -1706,11 +1662,8 @@ async function runProxyPreflight(
   database: DatabaseService,
 ): Promise<{ proxy: ProxyRecord | null; check: NetworkHealthResult }> {
   const originalProxy = resolveProfileProxy(profile, database)
-  const controlPlaneCheck = originalProxy
-    ? await checkNetworkHealthViaControlPlane(profile, originalProxy)
-    : null
-  const check = controlPlaneCheck || (await checkNetworkHealth(profile, originalProxy))
-  const proxy = toCandidateProxy(originalProxy, controlPlaneCheck?.effectiveProxyTransport)
+  const check = await checkNetworkHealth(profile, originalProxy)
+  const proxy = toCandidateProxy(originalProxy, toEntryTransport(originalProxy))
   updateRuntimeMetadata(profile, {
     lastResolvedIp: check.ip,
     lastResolvedCountry: check.country,
