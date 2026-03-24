@@ -267,9 +267,13 @@ async function saveProfileStorageStateToDiskSafely(
   try {
     await saveProfileStorageStateToDisk(profileId, context)
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (/Target page, context or browser has been closed/i.test(message)) {
+      return
+    }
     audit('storage_state_save_failed', {
       profileId,
-      err: String(error),
+      err: message,
     })
   }
 }
