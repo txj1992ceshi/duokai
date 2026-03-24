@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SERVER_IP="${SERVER_IP:-$(hostname -I | awk '{print $1}')}"
+
+API_DIR="$ROOT_DIR/duokai-api"
+ADMIN_DIR="$ROOT_DIR/duokai-admin"
+FRONTEND_DIR="$ROOT_DIR/fingerprint-dashboard"
+RUNTIME_DIR="$FRONTEND_DIR/stealth-engine"
+ECOSYSTEM_FILE="$ROOT_DIR/deploy/ecosystem.config.cjs"
+
+API_BASE="http://${SERVER_IP}:3100"
+ADMIN_BASE="http://${SERVER_IP}:3000"
+APP_BASE="http://${SERVER_IP}:3001"
+
+log() {
+  printf '\n[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1"
+}
+
+ensure_line() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+
+  touch "$file"
+  if grep -q "^${key}=" "$file"; then
+    sed -i.bak "s#^${key}=.*#${key}=${value}#g" "$file"
+  else
+    printf '%s=%s\n' "$key" "$value" >> "$file"
+  fi
+}
+
+ensure_admin_env() {
+  local file="$ADMIN_DIR/.env.local"
+  log "Ensuring admin env"
+  ensure_line "$file" "NEXT_PUBLIC_DUOKAI_API_BASE" "$API_BASE"
+}
+
+ensure_frontend_env() {
+  local file="$FRONTEND_DIR/.env.local"
+  log "Ensuring frontend env"
+  ensure_line "$file" "NEXT_PUBLIC_DUOKAI_API_BASE" "$API_BASE"
+}
+
+ensure_api_env() {
+  local file="$API_DIR/.env.local"
+  log "Ensuring API env"
+  ensure_line "$file" "RUNTIME_URL" "http://127.0.0.1:3101"
+  ensure_line "$file" "CORS_ORIGINS" "${ADMIN_BASE},${APP_BASE},http://127.0.0.1:3000,http://127.0.0.1:3001"
+}
+
+patch_ecosystem() {
+  log "Patching PM2 ecosystem"
+  sed -i.bak "s#https://app.your-domain.com#${APP_BASE}#g" "$ECOSYSTEM_FILE"
+}
+
+install_dependencies() {
+  log "Installing API dependencies"
+  (cd "$API_DIR" && npm install)
+
+  log "Installing admin dependencies"
+  (cd "$ADMIN_DIR" && npm install)
+
+  log "Installing frontend dependencies"
+  (cd "$FRONTEND_DIR" && npm install)
+
+  log "Installing runtime dependencies"
+  (cd "$RUNTIME_DIR" && npm install)
+
+  log "Installing Playwright Chromium"
+  (cd "$RUNTIME_DIR" && npx playwright install chromium)
+}
+
+build_apps() {
+  log "Building API"
+  (cd "$API_DIR" && npm run build)
+
+  log "Building admin"
+  (cd "$ADMIN_DIR" && npm run build)
+
+  log "Building frontend"
+  (cd "$FRONTEND_DIR" && npm run build)
+}
+
+restart_pm2() {
+  log "Restarting PM2 services"
+  if pm2 describe duokai-api >/dev/null 2>&1; then
+    (cd "$ROOT_DIR" && pm2 startOrRestart "$ECOSYSTEM_FILE")
+  else
+    (cd "$ROOT_DIR" && pm2 start "$ECOSYSTEM_FILE")
+  fi
+  pm2 save
+}
+
+health_check() {
+  log "Health checks"
+  curl -fsS http://127.0.0.1:3100/health
+  echo
+  curl -fsS http://127.0.0.1:3101/health
+  echo
+  curl -I -fsS http://127.0.0.1:3000 >/dev/null
+  curl -I -fsS http://127.0.0.1:3001 >/dev/null
+  pm2 status
+}
+
+main() {
+  log "Deploy root: $ROOT_DIR"
+  log "Detected server IP: $SERVER_IP"
+
+  ensure_admin_env
+  ensure_frontend_env
+  ensure_api_env
+  patch_ecosystem
+  install_dependencies
+  build_apps
+  restart_pm2
+  health_check
+
+  log "Bootstrap and deploy completed"
+}
+
+main "$@"

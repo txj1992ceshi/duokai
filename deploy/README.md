@@ -133,7 +133,28 @@ cd /var/www/duokai/fingerprint-dashboard && npm run build
 - `/var/www/duokai/fingerprint-dashboard/.env.local`
 - `/var/www/duokai/fingerprint-dashboard/stealth-engine/.env.local`（如需单独管理）
 
-### 5. 使用 PM2 启动
+### 5. 一键部署脚本
+
+可直接使用：
+
+- [deploy/bootstrap-and-deploy.sh](/Users/jj/Desktop/duokai/deploy/bootstrap-and-deploy.sh)
+
+```bash
+cd /var/www/duokai
+git pull origin main
+bash deploy/bootstrap-and-deploy.sh
+```
+
+该脚本会自动完成：
+
+- 修正 `duokai-api / duokai-admin / fingerprint-dashboard` 的关键 `.env.local` 配置
+- 安装依赖
+- 安装 Playwright Chromium
+- 构建 API / admin / frontend
+- 启动或重启 PM2 进程
+- 执行本地健康检查
+
+### 6. 使用 PM2 启动
 
 参考：
 
