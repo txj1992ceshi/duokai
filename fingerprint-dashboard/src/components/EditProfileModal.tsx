@@ -38,7 +38,7 @@ type Props = {
   proxyBrowserChecking: boolean;
   proxyResult: ProxyVerificationRecord | null;
   proxyBrowserResult: ProxyVerificationRecord | null;
-  platformOptions: PlatformOption[];
+  platformOptions: readonly PlatformOption[];
   onClose: () => void;
   onSubmit: (e: React.FormEvent<HTMLFormElement>) => void;
   onProfileChange: (profile: Profile) => void;
