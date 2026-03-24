@@ -1,3 +1,4 @@
+import { MongoServerError } from 'mongodb';
 import { AdminActionLogModel } from '../models/AdminActionLog.js';
 import { AgentSessionModel } from '../models/AgentSession.js';
 import { ControlTaskModel } from '../models/ControlTask.js';
@@ -15,20 +16,42 @@ function daysToSeconds(days: number): number {
   return Math.floor(days * 24 * 60 * 60);
 }
 
+type IndexModel = {
+  collection: {
+    createIndex(keys: Record<string, 1 | -1>, options: Record<string, unknown>): Promise<string>;
+  };
+};
+
+function isIndexOptionsConflict(error: unknown): error is MongoServerError {
+  return error instanceof MongoServerError && error.codeName === 'IndexOptionsConflict';
+}
+
 async function ensureTtlIndex(
-  model: { collection: { createIndex(keys: Record<string, 1 | -1>, options: Record<string, unknown>): Promise<string> } },
+  model: IndexModel,
   keys: Record<string, 1 | -1>,
   expireAfterSeconds: number,
-  name: string
+  name: string,
+  collectionName: string
 ) {
   if (expireAfterSeconds <= 0) {
     return;
   }
-  await model.collection.createIndex(keys, {
-    name,
-    expireAfterSeconds,
-    background: true,
-  });
+
+  try {
+    await model.collection.createIndex(keys, {
+      name,
+      expireAfterSeconds,
+      background: true,
+    });
+  } catch (error) {
+    if (isIndexOptionsConflict(error)) {
+      console.warn(
+        `[duokai-api] Skipping TTL index ${name} on ${collectionName}: equivalent index already exists with different options/name`
+      );
+      return;
+    }
+    throw error;
+  }
 }
 
 export async function ensureMongoIndexes() {
@@ -50,25 +73,29 @@ export async function ensureMongoIndexes() {
       AdminActionLogModel,
       { createdAt: 1 },
       adminActionLogTtlSeconds,
-      'ttl_admin_action_logs_created_at'
+      'ttl_admin_action_logs_created_at',
+      'AdminActionLog'
     ),
     ensureTtlIndex(
       TaskEventModel,
       { createdAt: 1 },
       taskEventTtlSeconds,
-      'ttl_task_events_created_at'
+      'ttl_task_events_created_at',
+      'TaskEvent'
     ),
     ensureTtlIndex(
       AgentSessionModel,
       { expiresAt: 1 },
       agentSessionTtlSeconds,
-      'ttl_agent_sessions_expires_at'
+      'ttl_agent_sessions_expires_at',
+      'AgentSession'
     ),
     ensureTtlIndex(
       ControlTaskModel,
       { createdAt: 1 },
       controlTaskTtlSeconds,
-      'ttl_control_tasks_created_at'
+      'ttl_control_tasks_created_at',
+      'ControlTask'
     ),
   ]);
 }
