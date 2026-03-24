@@ -133,6 +133,37 @@ async function lookupWithProxy(proxy: ProxyRecord): Promise<ProxyCheckResult> {
       message: 'Proxy egress resolved successfully',
       source: 'proxy',
     }
+  } catch (error) {
+    try {
+      if (browser) {
+        await browser.close().catch(() => undefined)
+        browser = null
+      }
+      browser = await chromium.launch({
+        headless: true,
+        executablePath: resolveChromiumExecutable(),
+        proxy: proxyToPlaywrightConfig(proxy) ?? undefined,
+      })
+      const page = await browser.newPage()
+      await page.goto('https://example.com', { waitUntil: 'domcontentloaded', timeout: 20_000 })
+      return {
+        ok: true,
+        ip: '',
+        country: '',
+        region: '',
+        city: '',
+        timezone: '',
+        languageHint: '',
+        geolocation: '',
+        message:
+          error instanceof Error
+            ? `Proxy connectivity verified, but IP metadata lookup failed: ${error.message}`
+            : 'Proxy connectivity verified, but IP metadata lookup failed',
+        source: 'proxy',
+      }
+    } catch {
+      throw error
+    }
   } finally {
     await browser?.close().catch(() => undefined)
   }
