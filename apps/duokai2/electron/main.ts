@@ -488,6 +488,25 @@ function clearDesktopAuth(): DesktopAuthState {
   return getDesktopAuthState()
 }
 
+function buildControlPlaneLoginCandidates(explicitApiBase?: string): string[] {
+  const candidates = new Set<string>()
+  const normalizedExplicit = String(explicitApiBase || '').trim().replace(/\/$/, '')
+  const normalizedStored = getControlPlaneApiBase()
+  const normalizedDefault = DEFAULT_CONTROL_PLANE_API_BASE
+
+  if (normalizedExplicit) {
+    candidates.add(normalizedExplicit)
+  }
+  if (normalizedStored) {
+    candidates.add(normalizedStored)
+  }
+  if (normalizedDefault) {
+    candidates.add(normalizedDefault)
+  }
+
+  return [...candidates]
+}
+
 async function requestControlPlane(
   pathName: string,
   init: RequestInit = {},
@@ -2129,36 +2148,46 @@ async function registerIpcHandlers(): Promise<void> {
     async (_event, payload: { identifier: string; password: string; apiBase?: string }) => {
       const identifier = String(payload.identifier || '').trim()
       const password = String(payload.password || '')
-      const apiBase = String(payload.apiBase || '').trim() || getControlPlaneApiBase()
       if (!identifier || !password) {
         throw new Error('请输入账号和密码')
       }
-      const response = await fetch(`${apiBase.replace(/\/$/, '')}/api/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          identifier,
-          password,
-          device: {
-            deviceId: getControlPlaneDeviceId(),
-            deviceName: `${os.hostname()} (${process.platform})`,
-            platform: process.platform,
-            source: 'desktop',
-          },
-        }),
-      })
-      const data = (await response.json().catch(() => ({}))) as Record<string, unknown>
-      if (!response.ok || data.success === false) {
-        throw new Error(String(data.error || '登录失败'))
+      let lastError: Error | null = null
+
+      for (const apiBase of buildControlPlaneLoginCandidates(payload.apiBase)) {
+        try {
+          const response = await fetchWithRetry(`${apiBase}/api/auth/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              identifier,
+              password,
+              device: {
+                deviceId: getControlPlaneDeviceId(),
+                deviceName: `${os.hostname()} (${process.platform})`,
+                platform: process.platform,
+                source: 'desktop',
+              },
+            }),
+          })
+          const data = (await response.json().catch(() => ({}))) as Record<string, unknown>
+          if (!response.ok || data.success === false) {
+            throw new Error(String(data.error || '登录失败'))
+          }
+          const user = (data.user || null) as AuthUser | null
+          const token = String(data.token || '')
+          if (!user || !token) {
+            throw new Error('登录响应缺少用户或令牌')
+          }
+          const nextAuthState = saveDesktopAuth(apiBase, token, user)
+          await syncProfilesFromControlPlane()
+          return nextAuthState
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error))
+          audit('auth_login_failed', { apiBase, err: lastError.message })
+        }
       }
-      const user = (data.user || null) as AuthUser | null
-      const token = String(data.token || '')
-      if (!user || !token) {
-        throw new Error('登录响应缺少用户或令牌')
-      }
-      const nextAuthState = saveDesktopAuth(apiBase, token, user)
-      await syncProfilesFromControlPlane()
-      return nextAuthState
+
+      throw lastError || new Error('登录失败')
     },
   )
   ipcMain.handle(
