@@ -8,8 +8,12 @@
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite --force",
-    "build": "tsc -b && vite build && electron-builder",
-    "build:dir": "tsc -b && vite build && electron-builder --dir",
+    "clean": "rm -rf dist dist-electron release build-resources/ms-playwright",
+    "prepare:runtime-assets": "node scripts/prepare-playwright-browsers.mjs && electron-builder install-app-deps",
+    "build": "npm run prepare:runtime-assets && tsc -b && vite build && ELECTRON_BUILDER_CACHE=.cache/electron-builder CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
+    "build:dir": "npm run prepare:runtime-assets && tsc -b && vite build && ELECTRON_BUILDER_CACHE=.cache/electron-builder CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir",
+    "build:mac": "npm run prepare:runtime-assets && tsc -b && vite build && ELECTRON_BUILDER_CACHE=.cache/electron-builder CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --publish never",
+    "build:win": "npm run prepare:runtime-assets && tsc -b && vite build && electron-builder --win nsis zip --publish never",
     "install:chromium": "playwright install chromium",
     "lint": "eslint .",
     "preview": "vite preview"
@@ -52,7 +56,18 @@
       "dist-electron/**/*",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "build-resources/ms-playwright",
+        "to": "ms-playwright"
+      }
+    ],
     "mac": {
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "signIgnore": [
+        "Contents\\/Resources\\/ms-playwright\\/.*"
+      ],
       "target": [
         "dmg",
         "zip"

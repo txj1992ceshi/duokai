@@ -1,12 +1,12 @@
-name: Build Windows Installer
+name: Build Windows Test Package
 
 on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Release tag / version label, e.g. v0.1.0'
+        description: 'Release tag / version label, e.g. v0.1.0-test'
         required: true
-        default: 'v0.1.0'
+        default: 'v0.1.0-test'
 
 permissions:
   contents: write
@@ -14,6 +14,11 @@ permissions:
 jobs:
   build-windows:
     runs-on: windows-latest
+    env:
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\\apps\\duokai2\\.cache\\electron-builder
+    defaults:
+      run:
+        working-directory: apps/duokai2
 
     steps:
       - name: Checkout
@@ -24,6 +29,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: apps/duokai2/package-lock.json
 
       - name: Install dependencies
         run: npm install
@@ -32,7 +38,7 @@ jobs:
         run: npm run install:chromium
 
       - name: Build Windows installer
-        run: npx tsc -b && npx vite build && npx electron-builder --win nsis zip --publish never
+        run: npm run build:win
 
       - name: Prepare Windows release assets
         shell: pwsh
@@ -51,8 +57,8 @@ jobs:
       - name: Upload Actions artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: duokai2-windows-installer
-          path: release-assets/*
+          name: duokai2-windows-test-package
+          path: apps/duokai2/release-assets/*
           if-no-files-found: error
 
       - name: Publish GitHub Release
@@ -62,7 +68,7 @@ jobs:
           target_commitish: ${{ github.sha }}
           generate_release_notes: true
           files: |
-            release-assets/Duokai2 Setup.exe
-            release-assets/Duokai2-win.zip
+            apps/duokai2/release-assets/Duokai2 Setup.exe
+            apps/duokai2/release-assets/Duokai2-win.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
