@@ -246,7 +246,7 @@ type Dictionary = {
 
 export const dictionaries: Record<LocaleCode, Dictionary> = {
   'zh-CN': {
-    appName: '浏览器工作台',
+    appName: 'Duokai 工作台',
     appTagline: '核心功能版',
     nav: {
       dashboard: '概览',

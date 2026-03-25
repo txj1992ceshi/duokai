@@ -1960,9 +1960,9 @@ function App() {
     return (
       <div className="auth-shell">
         <div className="auth-card">
-          <div className="auth-badge">Duokai Desktop</div>
-          <h1>登录桌面工作台</h1>
-          <p>登录后桌面端会与控制台共享同一套云端环境数据。</p>
+          <div className="auth-badge">Duokai</div>
+          <h1>登录工作台</h1>
+          <p>登录后将与控制台共享同一套云端环境数据。</p>
           {errorMessage ? <div className="banner error">{errorMessage}</div> : null}
           <form className="auth-form" onSubmit={handleDesktopLogin}>
             <label>
@@ -1982,8 +1982,8 @@ function App() {
                 placeholder="请输入密码"
               />
             </label>
-            <button type="submit" disabled={authSubmitting}>
-              {authSubmitting ? '登录中...' : '登录桌面端'}
+            <button type="submit" className="primary auth-submit" disabled={authSubmitting}>
+              {authSubmitting ? '登录中...' : '登录'}
             </button>
           </form>
         </div>
