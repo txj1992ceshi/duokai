@@ -28,7 +28,7 @@ jobs:
         id: desktop-version
         shell: bash
         run: |
-          PACKAGE_VERSION=$(node -p "require('./apps/duokai2/package.json').version")
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
           if [ -n "${{ github.event.inputs.release_tag }}" ]; then
             RELEASE_TAG="${{ github.event.inputs.release_tag }}"
           else
