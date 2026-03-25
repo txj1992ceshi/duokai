@@ -1,7 +1,9 @@
 import { copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const repoRoot = path.resolve(__dirname, '..')
 const outputRoot = path.join(repoRoot, 'build-resources')
 const webFavicon = path.join(repoRoot, '..', '..', 'fingerprint-dashboard', 'src', 'app', 'favicon.ico')
 const fallbackIcns = path.join(
