@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Release tag / version label, e.g. v0.1.0-test'
-        required: true
-        default: 'v0.1.0-test'
+        description: 'Optional release tag. Leave blank to use v + apps/duokai2 package version.'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -23,6 +23,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve desktop version
+        id: desktop-version
+        shell: bash
+        run: |
+          PACKAGE_VERSION=$(node -p "require('./apps/duokai2/package.json').version")
+          if [ -n "${{ github.event.inputs.release_tag }}" ]; then
+            RELEASE_TAG="${{ github.event.inputs.release_tag }}"
+          else
+            RELEASE_TAG="v${PACKAGE_VERSION}"
+          fi
+          echo "package_version=${PACKAGE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -64,8 +77,9 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.release_tag }}
+          tag_name: ${{ steps.desktop-version.outputs.release_tag }}
           target_commitish: ${{ github.sha }}
+          name: Duokai2 ${{ steps.desktop-version.outputs.release_tag }}
           generate_release_notes: true
           files: |
             apps/duokai2/release-assets/Duokai2 Setup.exe
