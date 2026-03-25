@@ -102,6 +102,7 @@ let agentService: AgentService | null = null
 const runtimeContexts = new Map<string, BrowserContext>()
 const runtimeStorageSyncTimers = new Map<string, NodeJS.Timeout>()
 const MAX_QUEUE = Number(process.env.MAX_QUEUE_LENGTH || 200)
+const CONTROL_PLANE_FETCH_RETRY_MS = 1200
 
 type ControlPlaneStorageState = {
   id: string
@@ -503,7 +504,7 @@ async function requestControlPlane(
     }
     headers.set('Authorization', `Bearer ${token}`)
   }
-  const response = await fetch(`${getControlPlaneApiBase()}${pathName}`, {
+  const response = await fetchWithRetry(`${getControlPlaneApiBase()}${pathName}`, {
     ...init,
     headers,
   })
@@ -516,6 +517,22 @@ async function requestControlPlane(
     throw new Error(message)
   }
   return payload
+}
+
+async function fetchWithRetry(input: string, init: RequestInit, retries = 1): Promise<Response> {
+  let lastError: unknown = null
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await fetch(input, init)
+    } catch (error) {
+      lastError = error
+      if (attempt >= retries) {
+        throw error
+      }
+      await new Promise((resolve) => setTimeout(resolve, CONTROL_PLANE_FETCH_RETRY_MS))
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('Control plane fetch failed')
 }
 
 function getSettings(): SettingsPayload {
@@ -918,11 +935,26 @@ function syncRemoteProfileIntoLocal(remoteProfile: ControlPlaneProfile): Profile
 }
 
 async function syncProfilesFromControlPlane(): Promise<number> {
-  const payload = await requestControlPlane('/api/profiles')
+  const database = requireDatabase()
+  const cachedProfiles = database.listProfiles()
+  let payload: Record<string, unknown>
+  try {
+    payload = await requestControlPlane('/api/profiles')
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    audit('profiles_sync_failed', {
+      message,
+      cachedCount: cachedProfiles.length,
+    })
+    if (cachedProfiles.length > 0) {
+      logEvent('warn', 'runtime', `Control plane profile sync failed, using cached profiles: ${message}`, null)
+      return cachedProfiles.length
+    }
+    throw error
+  }
   const remoteProfiles = Array.isArray(payload.profiles)
     ? (payload.profiles as ControlPlaneProfile[])
     : []
-  const database = requireDatabase()
   const remoteIds = new Set(remoteProfiles.map((item) => item.id))
   const remoteNames = new Set(remoteProfiles.map((item) => item.name))
 
