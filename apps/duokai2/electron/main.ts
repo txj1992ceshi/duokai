@@ -85,6 +85,14 @@ const DEFAULT_TIMEZONE_FALLBACK = 'America/Los_Angeles'
 const DEFAULT_CONCURRENT_STARTS = 2
 const DEFAULT_ACTIVE_LIMIT = 6
 const DEFAULT_LAUNCH_RETRIES = 2
+const GOOGLE_PROXY_BYPASS_LIST = [
+  '*.google.com',
+  '*.google.com.*',
+  '*.gstatic.com',
+  '*.googleusercontent.com',
+  '*.googleapis.com',
+  '*.ggpht.com',
+].join(';')
 const DEFAULT_CONTROL_PLANE_API_BASE = (
   String(process.env.DUOKAI_API_BASE || '').trim() || 'http://duokai.duckdns.org'
 ).replace(/\/$/, '')
@@ -561,6 +569,8 @@ function getSettings(): SettingsPayload {
 type ControlPlaneProfile = {
   id: string
   name: string
+  createdAt?: string
+  updatedAt?: string
   status?: string
   tags?: string[]
   proxyType?: string
@@ -579,6 +589,87 @@ type ControlPlaneProfile = {
   proxyFingerprintHash?: string
   lastQuickIsolationCheck?: TrustedIsolationCheck | null
   trustedLaunchSnapshot?: TrustedLaunchSnapshot | null
+}
+
+function normalizeProfileName(name: string | undefined): string {
+  return String(name || '').trim()
+}
+
+function normalizeProfileNameKey(name: string | undefined): string {
+  return normalizeProfileName(name).toLocaleLowerCase()
+}
+
+function assertProfileNameUniqueOrThrow(name: string | undefined, ignoreProfileId?: string): void {
+  const normalizedName = normalizeProfileName(name)
+  const normalizedKey = normalizeProfileNameKey(name)
+  if (!normalizedName) {
+    throw new Error('环境名称不能为空')
+  }
+  const duplicated = requireDatabase()
+    .listProfiles()
+    .find(
+      (profile) =>
+        profile.id !== ignoreProfileId && normalizeProfileNameKey(profile.name) === normalizedKey,
+    )
+  if (duplicated) {
+    throw new Error('已存在同名环境，请使用不同名称')
+  }
+}
+
+function resolveRemoteProfileTimestamp(profile: Pick<ControlPlaneProfile, 'createdAt' | 'updatedAt'>): number {
+  const value = Date.parse(profile.updatedAt || profile.createdAt || '')
+  return Number.isFinite(value) ? value : 0
+}
+
+async function dedupeRemoteProfilesByName(remoteProfiles: ControlPlaneProfile[]): Promise<ControlPlaneProfile[]> {
+  const grouped = new Map<string, ControlPlaneProfile[]>()
+  for (const profile of remoteProfiles) {
+    const key = normalizeProfileName(profile.name) || `__EMPTY__:${profile.id}`
+    const list = grouped.get(key)
+    if (list) {
+      list.push(profile)
+    } else {
+      grouped.set(key, [profile])
+    }
+  }
+
+  const deduped: ControlPlaneProfile[] = []
+  for (const [key, list] of grouped.entries()) {
+    list.sort((a, b) => {
+      const timestampDelta = resolveRemoteProfileTimestamp(b) - resolveRemoteProfileTimestamp(a)
+      if (timestampDelta !== 0) {
+        return timestampDelta
+      }
+      return String(b.id || '').localeCompare(String(a.id || ''))
+    })
+    const keep = list[0]
+    deduped.push(keep)
+    if (list.length <= 1) {
+      continue
+    }
+    for (let index = 1; index < list.length; index += 1) {
+      const stale = list[index]
+      try {
+        await requestControlPlane(`/api/profiles/${encodeURIComponent(stale.id)}`, {
+          method: 'DELETE',
+        })
+        audit('profiles_remote_duplicate_removed', {
+          keepId: keep.id,
+          removedId: stale.id,
+          name: key,
+        })
+      } catch (error) {
+        audit('profiles_remote_duplicate_remove_failed', {
+          keepId: keep.id,
+          removedId: stale.id,
+          name: key,
+          err: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+  }
+
+  return deduped
 }
 
 type ProxyEntryTransport = 'https-entry' | 'http-entry' | 'socks5-entry' | 'direct'
@@ -971,14 +1062,24 @@ async function syncProfilesFromControlPlane(): Promise<number> {
     }
     throw error
   }
-  const remoteProfiles = Array.isArray(payload.profiles)
+  const remoteProfilesRaw = Array.isArray(payload.profiles)
     ? (payload.profiles as ControlPlaneProfile[])
     : []
+  const remoteProfiles = await dedupeRemoteProfilesByName(remoteProfilesRaw)
   const remoteIds = new Set(remoteProfiles.map((item) => item.id))
-  const remoteNames = new Set(remoteProfiles.map((item) => item.name))
+  const remoteNames = new Set(remoteProfiles.map((item) => normalizeProfileName(item.name)))
 
   for (const localProfile of database.listProfiles()) {
-    if (remoteIds.has(localProfile.id) || remoteNames.has(localProfile.name)) {
+    if (remoteIds.has(localProfile.id)) {
+      continue
+    }
+    const localName = normalizeProfileName(localProfile.name)
+    if (localName && remoteNames.has(localName)) {
+      database.deleteProfile(localProfile.id)
+      audit('profiles_local_stale_removed', {
+        profileId: localProfile.id,
+        name: localName,
+      })
       continue
     }
     const createdPayload = await requestControlPlane('/api/profiles', {
@@ -2010,6 +2111,10 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
 
   const proxyConfig = proxyToPlaywrightConfig(resolvedProxy)
   if (proxyConfig) {
+    const bypassArg = `--proxy-bypass-list=${GOOGLE_PROXY_BYPASS_LIST}`
+    if (!launchOptions.args?.some((arg) => arg.startsWith('--proxy-bypass-list='))) {
+      launchOptions.args = [...(launchOptions.args ?? []), bypassArg]
+    }
     launchOptions.proxy = proxyConfig
   }
 
@@ -2495,6 +2600,7 @@ async function registerIpcHandlers(): Promise<void> {
       createProfilePayload(input, createDefaultFingerprint),
       requireDatabase(),
     )
+    assertProfileNameUniqueOrThrow(payload.name)
     let profile: ProfileRecord
     if (getDesktopAuthState().authenticated) {
       const remotePayload = await requestControlPlane('/api/profiles', {
@@ -2515,6 +2621,7 @@ async function registerIpcHandlers(): Promise<void> {
       createProfilePayload(input, createDefaultFingerprint),
       requireDatabase(),
     )
+    assertProfileNameUniqueOrThrow(payload.name, payload.id)
     let profile: ProfileRecord
     if (getDesktopAuthState().authenticated) {
       try {
