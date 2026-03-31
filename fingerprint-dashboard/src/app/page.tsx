@@ -509,17 +509,20 @@ export default function Home() {
   }, []);
 
   async function readResponseError(res: Response, fallbackMessage: string) {
-    const clone = res.clone();
-    const json = await res.json().catch(() => null) as Record<string, unknown> | null;
-    if (json) {
-      const detail = json.detail && typeof json.detail === 'object'
-        ? `\n${JSON.stringify(json.detail)}`
-        : '';
-      const primary = String(json.error || json.message || fallbackMessage);
-      return `${primary}${detail}${res.status ? `\nHTTP ${res.status}` : ''}`;
+    const text = await res.text().catch(() => '');
+    if (text) {
+      try {
+        const json = JSON.parse(text) as Record<string, unknown>;
+        const detail = json.detail && typeof json.detail === 'object'
+          ? `\n${JSON.stringify(json.detail)}`
+          : '';
+        const primary = String(json.error || json.message || fallbackMessage);
+        return `${primary}${detail}${res.status ? `\nHTTP ${res.status}` : ''}`;
+      } catch {
+        return `${fallbackMessage}\n${text.slice(0, 500)}${res.status ? `\nHTTP ${res.status}` : ''}`;
+      }
     }
-    const text = await clone.text().catch(() => '');
-    return `${fallbackMessage}${text ? `\n${text.slice(0, 500)}` : ''}${res.status ? `\nHTTP ${res.status}` : ''}`;
+    return `${fallbackMessage}${res.status ? `\nHTTP ${res.status}` : ''}`;
   }
 
   const handleStartSession = async (p: Profile) => {
@@ -530,11 +533,12 @@ export default function Home() {
           method: 'POST',
           body: JSON.stringify({ action: 'start', profileId: p.id }),
         });
+        if (!res.ok) {
+          throw new Error(await readResponseError(res, '启动任务下发失败'));
+        }
         const json = await res.json().catch(() => null) as Record<string, unknown> | null;
-        if (!res.ok || json?.success === false) {
-          const detail = json && typeof json === 'object'
-            ? `${String(json.error || '启动任务下发失败')}${json.detail ? `\n${JSON.stringify(json.detail)}` : ''}${res.status ? `\nHTTP ${res.status}` : ''}`
-            : await readResponseError(res, '启动任务下发失败');
+        if (json?.success === false) {
+          const detail = `${String(json.error || '启动任务下发失败')}${json.detail ? `\n${JSON.stringify(json.detail)}` : ''}${res.status ? `\nHTTP ${res.status}` : ''}`;
           throw new Error(detail);
         }
         setRuntimeOnline(true);
@@ -603,11 +607,12 @@ export default function Home() {
           method: 'POST',
           body: JSON.stringify({ action: 'stop', profileId: p.id }),
         });
+        if (!res.ok) {
+          throw new Error(await readResponseError(res, '停止任务下发失败'));
+        }
         const json = await res.json().catch(() => null) as Record<string, unknown> | null;
-        if (!res.ok || json?.success === false) {
-          const detail = json && typeof json === 'object'
-            ? `${String(json.error || '停止任务下发失败')}${json.detail ? `\n${JSON.stringify(json.detail)}` : ''}${res.status ? `\nHTTP ${res.status}` : ''}`
-            : await readResponseError(res, '停止任务下发失败');
+        if (json?.success === false) {
+          const detail = `${String(json.error || '停止任务下发失败')}${json.detail ? `\n${JSON.stringify(json.detail)}` : ''}${res.status ? `\nHTTP ${res.status}` : ''}`;
           throw new Error(detail);
         }
         setProfiles(prev => prev.map(profile => (
