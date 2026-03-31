@@ -868,18 +868,22 @@ function clearDesktopAuth(): DesktopAuthState {
 
 function buildControlPlaneLoginCandidates(explicitApiBase?: string): string[] {
   const candidates = new Set<string>()
-  const normalizedExplicit = String(explicitApiBase || '').trim().replace(/\/$/, '')
-  const normalizedStored = getControlPlaneApiBase()
-  const normalizedDefault = DEFAULT_CONTROL_PLANE_API_BASE
+  const rawCandidates = [
+    String(explicitApiBase || '').trim().replace(/\/$/, ''),
+    getControlPlaneApiBase(),
+    DEFAULT_CONTROL_PLANE_API_BASE,
+  ].filter(Boolean)
 
-  if (normalizedExplicit) {
-    candidates.add(normalizedExplicit)
-  }
-  if (normalizedStored) {
-    candidates.add(normalizedStored)
-  }
-  if (normalizedDefault) {
-    candidates.add(normalizedDefault)
+  for (const candidate of rawCandidates) {
+    candidates.add(candidate)
+    if (/^http:\/\//i.test(candidate)) {
+      candidates.add(candidate.replace(/^http:\/\//i, 'https://'))
+    } else if (/^https:\/\//i.test(candidate)) {
+      candidates.add(candidate.replace(/^https:\/\//i, 'http://'))
+    } else {
+      candidates.add(`https://${candidate}`)
+      candidates.add(`http://${candidate}`)
+    }
   }
 
   return [...candidates]
@@ -2631,8 +2635,10 @@ async function registerIpcHandlers(): Promise<void> {
         throw new Error('请输入账号和密码')
       }
       let lastError: Error | null = null
+      const attemptedBases: string[] = []
 
       for (const apiBase of buildControlPlaneLoginCandidates(payload.apiBase)) {
+        attemptedBases.push(apiBase)
         try {
           const response = await fetchWithRetry(`${apiBase}/api/auth/login`, {
             method: 'POST',
@@ -2666,7 +2672,10 @@ async function registerIpcHandlers(): Promise<void> {
         }
       }
 
-      throw lastError || new Error('登录失败')
+      if (lastError) {
+        throw new Error(`登录失败：${lastError.message}（已尝试：${attemptedBases.join(', ')}）`)
+      }
+      throw new Error('登录失败')
     },
   )
   ipcMain.handle(
