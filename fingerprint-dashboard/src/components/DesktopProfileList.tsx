@@ -36,6 +36,7 @@ type Props = {
   storageStateInput: Record<string, string>;
   storageStateEditorOpen: Record<string, boolean>;
   isStartingProfile: (profileId: string) => boolean;
+  isRunningProfile: (profile: Profile) => boolean;
   onStartSession: (profile: Profile) => void;
   onStopSession: (profile: Profile) => void;
   onEditProfile: (profile: Profile) => void;
@@ -53,6 +54,7 @@ export default function DesktopProfileList({
   storageStateInput,
   storageStateEditorOpen,
   isStartingProfile,
+  isRunningProfile,
   onStartSession,
   onStopSession,
   onEditProfile,
@@ -164,7 +166,7 @@ export default function DesktopProfileList({
                   </div>
 
                   <div className="flex shrink-0 items-center gap-1 self-center">
-                    {profile.runtimeSessionId ? (
+                    {isRunningProfile(profile) ? (
                       <AppButton
                         onClick={() => onStopSession(profile)}
                         variant="danger"

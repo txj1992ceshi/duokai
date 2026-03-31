@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { connectMongo } from '@/lib/mongodb';
 import { requireUser } from '@/lib/requireUser';
+import { AgentModel } from '@/models/Agent';
 import { ProfileModel } from '@/models/Profile';
 import { SettingModel } from '@/models/Setting';
 
 export const runtime = 'nodejs';
+const AGENT_ACTIVE_WINDOW_MS = 2 * 60 * 1000;
 
 function resolveRuntimeUrl(raw: string): string {
   const value = String(raw || '').trim();
@@ -12,6 +14,29 @@ function resolveRuntimeUrl(raw: string): string {
     return 'http://127.0.0.1:3101';
   }
   return value;
+}
+
+function isControlPlaneMode() {
+  return process.env.NEXT_PUBLIC_RUNTIME_EXECUTION_MODE === 'control-plane';
+}
+
+function resolveEffectiveAgentStatus(item: { status?: string; lastSeenAt?: Date | string | null }) {
+  if (item.status === 'DISABLED') {
+    return 'DISABLED';
+  }
+  if (!item.lastSeenAt) {
+    return 'OFFLINE';
+  }
+  const lastSeenAt = new Date(item.lastSeenAt);
+  if (!Number.isFinite(lastSeenAt.getTime())) {
+    return 'OFFLINE';
+  }
+  return lastSeenAt.getTime() >= Date.now() - AGENT_ACTIVE_WINDOW_MS ? 'ONLINE' : 'OFFLINE';
+}
+
+function getRunningProfileIds(runtimeStatus: Record<string, unknown> | null | undefined) {
+  const raw = runtimeStatus?.runningProfileIds;
+  return Array.isArray(raw) ? raw.map((item) => String(item || '').trim()).filter(Boolean) : [];
 }
 
 /**
@@ -44,6 +69,45 @@ export async function GET(req: NextRequest) {
       .lean()) as Array<Record<string, unknown>>;
   } catch {
     dbDegraded = true;
+  }
+
+  if (isControlPlaneMode()) {
+    try {
+      const agents = await AgentModel.find({
+        ownerUserId: authUser.userId,
+        status: { $ne: 'DISABLED' },
+      })
+        .sort({ lastSeenAt: -1, updatedAt: -1 })
+        .lean();
+
+      const onlineAgents = agents.filter((agent) => resolveEffectiveAgentStatus(agent) === 'ONLINE');
+      const sessions = onlineAgents.flatMap((agent) =>
+        getRunningProfileIds((agent.runtimeStatus || null) as Record<string, unknown> | null).map((profileId) => {
+          const profile = profiles.find((p) => String(p._id) === profileId) as { name?: string } | undefined;
+          return {
+            profileId,
+            profileName: profile?.name || profileId,
+            agentId: agent.agentId,
+            agentName: agent.name || agent.agentId,
+          };
+        })
+      );
+
+      return NextResponse.json({
+        online: onlineAgents.length > 0,
+        sessions,
+        mode: 'control-plane',
+        agents: onlineAgents.map((agent) => ({
+          agentId: agent.agentId,
+          name: agent.name || '',
+          lastSeenAt: agent.lastSeenAt || null,
+          capabilities: Array.isArray(agent.capabilities) ? agent.capabilities : [],
+        })),
+        degraded: dbDegraded,
+      });
+    } catch {
+      return NextResponse.json({ online: false, sessions: [], mode: 'control-plane', degraded: true });
+    }
   }
 
   const runtimeUrl = resolveRuntimeUrl(

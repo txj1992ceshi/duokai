@@ -17,6 +17,7 @@ type Props = {
   storageStateInput: Record<string, string>;
   storageStateEditorOpen: Record<string, boolean>;
   isStartingProfile: (profileId: string) => boolean;
+  isRunningProfile: (profile: Profile) => boolean;
   onStartSession: (profile: Profile) => void;
   onStopSession: (profile: Profile) => void;
   onEditProfile: (profile: Profile) => void;
@@ -34,6 +35,7 @@ export default function MobileProfileTable({
   storageStateInput,
   storageStateEditorOpen,
   isStartingProfile,
+  isRunningProfile,
   onStartSession,
   onStopSession,
   onEditProfile,
@@ -106,7 +108,7 @@ export default function MobileProfileTable({
                     </div>
                   </td>
                   <td className="flex justify-end space-x-1 py-3.5 text-right">
-                    {profile.runtimeSessionId ? (
+                    {isRunningProfile(profile) ? (
                       <AppButton
                         onClick={() => onStopSession(profile)}
                         variant="danger"

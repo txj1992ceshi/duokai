@@ -504,9 +504,40 @@ export default function Home() {
     } catch (err) { console.error('Failed to delete', err) }
   }
 
+  const isRunningProfile = useCallback((profile: Profile) => {
+    return profile.status === 'Running' || Boolean(profile.runtimeSessionId);
+  }, []);
+
   const handleStartSession = async (p: Profile) => {
     if (controlPlaneOnly) {
-      alert('当前云端页面只负责环境配置与同步。请在桌面端前台启动真实浏览器环境。');
+      setStartingProfileIds(prev => ({ ...prev, [p.id]: true }));
+      try {
+        const res = await apiFetch('/api/control-plane/runtime', {
+          method: 'POST',
+          body: JSON.stringify({ action: 'start', profileId: p.id }),
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok || json?.success === false) {
+          throw new Error(String(json?.error || '启动任务下发失败'));
+        }
+        setRuntimeOnline(true);
+        setProfiles(prev => prev.map(profile => (
+          profile.id === p.id
+            ? { ...profile, status: 'Running' }
+            : profile
+        )));
+        setTimeout(() => {
+          void fetchProfiles();
+        }, 1200);
+      } catch (err) {
+        alert('启动失败: ' + (err instanceof Error ? err.message : String(err)));
+      } finally {
+        setStartingProfileIds(prev => {
+          const next = { ...prev };
+          delete next[p.id];
+          return next;
+        });
+      }
       return;
     }
     setStartingProfileIds(prev => ({ ...prev, [p.id]: true }));
@@ -549,6 +580,29 @@ export default function Home() {
   }
 
   const handleStopSession = async (p: Profile) => {
+    if (controlPlaneOnly) {
+      try {
+        const res = await apiFetch('/api/control-plane/runtime', {
+          method: 'POST',
+          body: JSON.stringify({ action: 'stop', profileId: p.id }),
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok || json?.success === false) {
+          throw new Error(String(json?.error || '停止任务下发失败'));
+        }
+        setProfiles(prev => prev.map(profile => (
+          profile.id === p.id
+            ? { ...profile, status: 'Ready', runtimeSessionId: '' }
+            : profile
+        )));
+        setTimeout(() => {
+          void fetchProfiles();
+        }, 1200);
+      } catch (err) {
+        alert('停止失败: ' + (err instanceof Error ? err.message : String(err)));
+      }
+      return;
+    }
     if (!p.runtimeSessionId) return;
     try {
       await runtime.stopSession(p.runtimeSessionId);
@@ -1105,6 +1159,7 @@ export default function Home() {
                 storageStateInput={storageStateInput}
                 storageStateEditorOpen={storageStateEditorOpen}
                 isStartingProfile={isStartingProfile}
+                isRunningProfile={isRunningProfile}
                 onStartSession={handleStartSession}
                 onStopSession={handleStopSession}
                 onEditProfile={openProfileEditor}
@@ -1132,6 +1187,7 @@ export default function Home() {
                 storageStateInput={storageStateInput}
                 storageStateEditorOpen={storageStateEditorOpen}
                 isStartingProfile={isStartingProfile}
+                isRunningProfile={isRunningProfile}
                 onStartSession={handleStartSession}
                 onStopSession={handleStopSession}
                 onEditProfile={openProfileEditor}
@@ -1169,6 +1225,7 @@ export default function Home() {
                   storageStateInput={storageStateInput}
                   storageStateEditorOpen={storageStateEditorOpen}
                   isStartingProfile={isStartingProfile}
+                  isRunningProfile={isRunningProfile}
                   onBack={() => setSelectedGroupId(null)}
                   onCreateProfile={() => handleCreateProfile(false, selectedGroupId || undefined)}
                   onStartSession={handleStartSession}

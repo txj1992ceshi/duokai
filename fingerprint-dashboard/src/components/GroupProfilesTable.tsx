@@ -18,6 +18,7 @@ type Props = {
   storageStateInput: Record<string, string>;
   storageStateEditorOpen: Record<string, boolean>;
   isStartingProfile: (profileId: string) => boolean;
+  isRunningProfile: (profile: Profile) => boolean;
   onBack: () => void;
   onCreateProfile: () => void;
   onStartSession: (profile: Profile) => void;
@@ -38,6 +39,7 @@ export default function GroupProfilesTable({
   storageStateInput,
   storageStateEditorOpen,
   isStartingProfile,
+  isRunningProfile,
   onBack,
   onCreateProfile,
   onStartSession,
@@ -139,7 +141,7 @@ export default function GroupProfilesTable({
                       </div>
                     </td>
                     <td className="flex justify-end space-x-1 py-3.5 text-right">
-                      {profile.runtimeSessionId ? (
+                      {isRunningProfile(profile) ? (
                         <AppButton
                           onClick={() => onStopSession(profile)}
                           variant="danger"
