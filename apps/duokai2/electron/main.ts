@@ -1,8 +1,9 @@
-import { appendFileSync, mkdirSync } from 'node:fs'
+import { appendFileSync, createWriteStream, mkdirSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
+import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
   app,
@@ -72,6 +73,7 @@ import type {
   ProxyRecord,
   RemoteConfigSnapshot,
   SettingsPayload,
+  DesktopUpdateState,
   TrustedIsolationCheck,
   TrustedLaunchSnapshot,
   UpdateCloudPhoneInput,
@@ -111,6 +113,11 @@ const runtimeContexts = new Map<string, BrowserContext>()
 const runtimeStorageSyncTimers = new Map<string, NodeJS.Timeout>()
 const MAX_QUEUE = Number(process.env.MAX_QUEUE_LENGTH || 200)
 const CONTROL_PLANE_FETCH_RETRY_MS = 1200
+const DESKTOP_RELEASES_API = 'https://api.github.com/repos/txj1992ceshi/duokai/releases/latest'
+const DESKTOP_RELEASES_PAGE = 'https://github.com/txj1992ceshi/duokai/releases'
+const UPDATE_DOWNLOAD_DIR = 'updates'
+const AUTO_UPDATE_CHECK_DELAY_MS = 12_000
+const UPDATE_CHECK_MIN_INTERVAL_MS = 30 * 60 * 1000
 
 type ControlPlaneStorageState = {
   id: string
@@ -407,7 +414,370 @@ const CAPABILITIES: DesktopRuntimeInfo['capabilities'] = [
   'data.previewBundle',
   'data.exportBundle',
   'data.importBundle',
+  'updater.getState',
+  'updater.check',
+  'updater.download',
+  'updater.install',
+  'updater.openReleasePage',
 ]
+
+type GitHubReleaseAsset = {
+  name?: string
+  browser_download_url?: string
+  size?: number
+}
+
+type GitHubLatestRelease = {
+  tag_name?: string
+  name?: string
+  html_url?: string
+  published_at?: string
+  assets?: GitHubReleaseAsset[]
+}
+
+let updateState: DesktopUpdateState = {
+  supported: app.isPackaged,
+  status: app.isPackaged ? 'idle' : 'unsupported',
+  currentVersion: app.getVersion(),
+  latestVersion: null,
+  releaseName: '',
+  publishedAt: null,
+  releaseUrl: DESKTOP_RELEASES_PAGE,
+  assetName: '',
+  downloadedFile: '',
+  progressPercent: 0,
+  message: app.isPackaged ? '' : '仅打包后的桌面端支持自动更新检测',
+  checkedAt: null,
+}
+let updateCheckPromise: Promise<DesktopUpdateState> | null = null
+let updateDownloadPromise: Promise<DesktopUpdateState> | null = null
+
+function emitUpdateState(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
+  mainWindow.webContents.send('updater.state', updateState)
+}
+
+function setUpdateState(next: Partial<DesktopUpdateState>): DesktopUpdateState {
+  updateState = {
+    ...updateState,
+    ...next,
+  }
+  emitUpdateState()
+  return updateState
+}
+
+function normalizeReleaseVersion(input: string): string {
+  return String(input || '').trim().replace(/^v/i, '')
+}
+
+function parseComparableVersion(input: string): { main: number[]; pre: Array<string | number> } {
+  const normalized = normalizeReleaseVersion(input)
+  const [mainPart, prePart = ''] = normalized.split('-', 2)
+  const main = mainPart
+    .split('.')
+    .map((item) => Number.parseInt(item, 10))
+    .map((item) => (Number.isFinite(item) ? item : 0))
+  const pre = prePart
+    ? prePart.split('.').map((item) => {
+        const numeric = Number.parseInt(item, 10)
+        return Number.isFinite(numeric) && String(numeric) === item ? numeric : item
+      })
+    : []
+  return { main, pre }
+}
+
+function compareVersions(left: string, right: string): number {
+  const a = parseComparableVersion(left)
+  const b = parseComparableVersion(right)
+  const length = Math.max(a.main.length, b.main.length)
+  for (let index = 0; index < length; index += 1) {
+    const diff = (a.main[index] || 0) - (b.main[index] || 0)
+    if (diff !== 0) {
+      return diff
+    }
+  }
+  if (a.pre.length === 0 && b.pre.length === 0) {
+    return 0
+  }
+  if (a.pre.length === 0) {
+    return 1
+  }
+  if (b.pre.length === 0) {
+    return -1
+  }
+  const preLength = Math.max(a.pre.length, b.pre.length)
+  for (let index = 0; index < preLength; index += 1) {
+    const leftPart = a.pre[index]
+    const rightPart = b.pre[index]
+    if (leftPart === undefined) {
+      return -1
+    }
+    if (rightPart === undefined) {
+      return 1
+    }
+    if (leftPart === rightPart) {
+      continue
+    }
+    if (typeof leftPart === 'number' && typeof rightPart === 'number') {
+      return leftPart - rightPart
+    }
+    if (typeof leftPart === 'number') {
+      return -1
+    }
+    if (typeof rightPart === 'number') {
+      return 1
+    }
+    return leftPart.localeCompare(rightPart)
+  }
+  return 0
+}
+
+function pickReleaseAsset(assets: GitHubReleaseAsset[] = []): GitHubReleaseAsset | null {
+  const candidates = assets.filter((asset) => asset.name && asset.browser_download_url)
+  if (process.platform === 'win32') {
+    return (
+      candidates.find((asset) => /\.exe$/i.test(asset.name || '') && /setup/i.test(asset.name || '')) ||
+      candidates.find((asset) => /\.exe$/i.test(asset.name || '')) ||
+      null
+    )
+  }
+  if (process.platform === 'darwin') {
+    return (
+      candidates.find((asset) => /\.dmg$/i.test(asset.name || '')) ||
+      candidates.find((asset) => /\.zip$/i.test(asset.name || '') && /mac|darwin|arm|x64/i.test(asset.name || '')) ||
+      candidates.find((asset) => /\.zip$/i.test(asset.name || '')) ||
+      null
+    )
+  }
+  return candidates.find((asset) => /\.appimage$|\.deb$|\.rpm$/i.test(asset.name || '')) || null
+}
+
+async function fetchLatestRelease(): Promise<{
+  release: GitHubLatestRelease
+  latestVersion: string
+  asset: GitHubReleaseAsset | null
+}> {
+  const response = await fetch(DESKTOP_RELEASES_API, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      'User-Agent': `Duokai2/${app.getVersion()}`,
+    },
+  })
+  if (!response.ok) {
+    throw new Error(`GitHub release check failed (${response.status})`)
+  }
+  const release = (await response.json()) as GitHubLatestRelease
+  const latestVersion = normalizeReleaseVersion(release.tag_name || release.name || '')
+  if (!latestVersion) {
+    throw new Error('未获取到有效的发布版本号')
+  }
+  return {
+    release,
+    latestVersion,
+    asset: pickReleaseAsset(release.assets || []),
+  }
+}
+
+async function checkForDesktopUpdates(options: { silent?: boolean } = {}): Promise<DesktopUpdateState> {
+  if (!app.isPackaged) {
+    return setUpdateState({
+      supported: false,
+      status: 'unsupported',
+      message: '仅打包后的桌面端支持自动更新检测',
+    })
+  }
+  if (updateCheckPromise) {
+    return updateCheckPromise
+  }
+  updateCheckPromise = (async () => {
+    const now = Date.now()
+    const lastChecked = updateState.checkedAt ? new Date(updateState.checkedAt).getTime() : 0
+    if (options.silent && lastChecked > 0 && now - lastChecked < UPDATE_CHECK_MIN_INTERVAL_MS) {
+      return updateState
+    }
+    setUpdateState({
+      status: 'checking',
+      progressPercent: 0,
+      message: options.silent ? '后台检查更新中' : '正在检查更新',
+    })
+    try {
+      const { release, latestVersion, asset } = await fetchLatestRelease()
+      const releaseUrl = String(release.html_url || DESKTOP_RELEASES_PAGE)
+      if (compareVersions(latestVersion, app.getVersion()) <= 0) {
+        return setUpdateState({
+          supported: true,
+          status: 'not-available',
+          latestVersion,
+          releaseName: String(release.name || release.tag_name || latestVersion),
+          publishedAt: release.published_at || null,
+          releaseUrl,
+          assetName: '',
+          downloadedFile: '',
+          progressPercent: 100,
+          checkedAt: new Date().toISOString(),
+          message: '当前已是最新版本',
+        })
+      }
+      return setUpdateState({
+        supported: true,
+        status: 'available',
+        latestVersion,
+        releaseName: String(release.name || release.tag_name || latestVersion),
+        publishedAt: release.published_at || null,
+        releaseUrl,
+        assetName: String(asset?.name || ''),
+        downloadedFile: '',
+        progressPercent: 0,
+        checkedAt: new Date().toISOString(),
+        message: asset?.name ? `发现新版本 ${latestVersion}` : `发现新版本 ${latestVersion}，请前往发布页安装`,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      audit('update_check_failed', { error: message })
+      return setUpdateState({
+        status: 'error',
+        checkedAt: new Date().toISOString(),
+        message,
+      })
+    } finally {
+      updateCheckPromise = null
+    }
+  })()
+  return updateCheckPromise
+}
+
+async function downloadDesktopUpdate(): Promise<DesktopUpdateState> {
+  if (!app.isPackaged) {
+    return setUpdateState({
+      supported: false,
+      status: 'unsupported',
+      message: '仅打包后的桌面端支持自动更新检测',
+    })
+  }
+  if (updateDownloadPromise) {
+    return updateDownloadPromise
+  }
+  updateDownloadPromise = (async () => {
+    try {
+      let releaseInfo: Awaited<ReturnType<typeof fetchLatestRelease>> | null = null
+      if (updateState.status !== 'available' || !updateState.latestVersion) {
+        releaseInfo = await fetchLatestRelease()
+        setUpdateState({
+          latestVersion: releaseInfo.latestVersion,
+          releaseName: String(releaseInfo.release.name || releaseInfo.release.tag_name || releaseInfo.latestVersion),
+          publishedAt: releaseInfo.release.published_at || null,
+          releaseUrl: String(releaseInfo.release.html_url || DESKTOP_RELEASES_PAGE),
+          assetName: String(releaseInfo.asset?.name || ''),
+        })
+      }
+      const latestAsset =
+        releaseInfo?.asset ||
+        (await fetchLatestRelease()).asset
+      if (!latestAsset?.browser_download_url || !latestAsset.name) {
+        throw new Error('当前平台暂无可下载的安装包，请前往发布页获取新版')
+      }
+      const downloadsDir = path.join(app.getPath('downloads'), UPDATE_DOWNLOAD_DIR)
+      mkdirSync(downloadsDir, { recursive: true })
+      const destination = path.join(downloadsDir, latestAsset.name)
+      const response = await fetch(latestAsset.browser_download_url, {
+        headers: {
+          Accept: 'application/octet-stream',
+          'User-Agent': `Duokai2/${app.getVersion()}`,
+        },
+      })
+      if (!response.ok || !response.body) {
+        throw new Error(`更新包下载失败 (${response.status})`)
+      }
+      const totalBytes = Number(response.headers.get('content-length') || latestAsset.size || 0)
+      const writer = createWriteStream(destination)
+      const reader = response.body.getReader()
+      let downloaded = 0
+      setUpdateState({
+        status: 'downloading',
+        assetName: latestAsset.name,
+        downloadedFile: '',
+        progressPercent: 0,
+        message: `正在下载更新 ${latestAsset.name}`,
+      })
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) {
+          break
+        }
+        if (!value) {
+          continue
+        }
+        downloaded += value.length
+        writer.write(Buffer.from(value))
+        const progressPercent =
+          totalBytes > 0 ? Math.max(1, Math.min(100, Math.round((downloaded / totalBytes) * 100))) : 0
+        setUpdateState({
+          status: 'downloading',
+          progressPercent,
+          message:
+            totalBytes > 0
+              ? `正在下载更新 ${latestAsset.name}（${progressPercent}%）`
+              : `正在下载更新 ${latestAsset.name}`,
+        })
+      }
+      await new Promise<void>((resolve, reject) => {
+        writer.end(() => resolve())
+        writer.on('error', reject)
+      })
+      audit('update_downloaded', { assetName: latestAsset.name, destination })
+      return setUpdateState({
+        status: 'downloaded',
+        downloadedFile: destination,
+        progressPercent: 100,
+        checkedAt: new Date().toISOString(),
+        message:
+          process.platform === 'win32'
+            ? '更新包已下载完成，点击安装后将打开安装程序'
+            : '更新包已下载完成，点击安装后将打开安装包',
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      audit('update_download_failed', { error: message })
+      return setUpdateState({
+        status: 'error',
+        message,
+      })
+    } finally {
+      updateDownloadPromise = null
+    }
+  })()
+  return updateDownloadPromise
+}
+
+async function installDownloadedUpdate(): Promise<{ success: boolean; message: string }> {
+  if (!updateState.downloadedFile) {
+    throw new Error('尚未下载更新安装包')
+  }
+  const installerPath = updateState.downloadedFile
+  audit('update_install_start', { installerPath, platform: process.platform })
+  if (process.platform === 'win32') {
+    const child = spawn(installerPath, [], {
+      detached: true,
+      stdio: 'ignore',
+    })
+    child.unref()
+    setTimeout(() => app.quit(), 500)
+    return { success: true, message: '安装程序已打开，应用即将退出' }
+  }
+  const openResult = await shell.openPath(installerPath)
+  if (openResult) {
+    throw new Error(openResult)
+  }
+  return {
+    success: true,
+    message:
+      process.platform === 'darwin'
+        ? '安装包已打开，请完成替换后重新启动应用'
+        : '安装包已打开，请完成安装后重新启动应用',
+  }
+}
 
 function requireDatabase(): DatabaseService {
   if (!db) {
@@ -1451,6 +1821,10 @@ async function createMainWindow(): Promise<void> {
     },
   })
 
+  mainWindow.webContents.on('did-finish-load', () => {
+    emitUpdateState()
+  })
+
   if (rendererUrl) {
     await mainWindow.loadURL(rendererUrl)
     mainWindow.webContents.openDevTools({ mode: 'detach' })
@@ -2423,6 +2797,13 @@ async function registerIpcHandlers(): Promise<void> {
     capabilities: CAPABILITIES,
   }))
   ipcMain.handle('meta.getAgentState', async () => getAgentStateSnapshot())
+  ipcMain.handle('updater.getState', async () => updateState)
+  ipcMain.handle('updater.check', async () => checkForDesktopUpdates())
+  ipcMain.handle('updater.download', async () => downloadDesktopUpdate())
+  ipcMain.handle('updater.install', async () => installDownloadedUpdate())
+  ipcMain.handle('updater.openReleasePage', async () => {
+    await shell.openExternal(updateState.releaseUrl || DESKTOP_RELEASES_PAGE)
+  })
 
   ipcMain.handle('dashboard.summary', async () => requireDatabase().getDashboardSummary())
 
@@ -2998,6 +3379,13 @@ async function bootstrap(): Promise<void> {
     logEvent('warn', 'system', `Initial config sync failed: ${error instanceof Error ? error.message : String(error)}`)
   }
   await createMainWindow()
+  if (app.isPackaged) {
+    setTimeout(() => {
+      void checkForDesktopUpdates({ silent: true })
+    }, AUTO_UPDATE_CHECK_DELAY_MS)
+  } else {
+    emitUpdateState()
+  }
   logEvent('info', 'system', isDev ? 'Development session started' : 'Application started')
   logEvent(
     'info',

@@ -12,6 +12,7 @@ import type {
   DashboardSummary,
   DesktopAuthState,
   DesktopRuntimeInfo,
+  DesktopUpdateState,
   DetectedLocalEmulator,
   ExportBundle,
   ImportResult,
@@ -71,6 +72,14 @@ export interface DesktopApi {
       lastTaskStatus: 'RECEIVED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | null
       lastTaskFinishedAt: string | null
     }>
+  }
+  updater: {
+    getState: () => Promise<DesktopUpdateState>
+    check: () => Promise<DesktopUpdateState>
+    download: () => Promise<DesktopUpdateState>
+    install: () => Promise<{ success: boolean; message: string }>
+    openReleasePage: () => Promise<void>
+    onStateChange: (listener: (state: DesktopUpdateState) => void) => () => void
   }
   dashboard: {
     summary: () => Promise<DashboardSummary>

@@ -259,6 +259,32 @@
   color: #fff6dc;
 }
 
+.banner.info {
+  background: rgba(26, 84, 168, 0.24);
+  border-color: rgba(132, 181, 255, 0.28);
+  color: #eef5ff;
+}
+
+.updater-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  -webkit-app-region: no-drag;
+}
+
+.updater-banner p {
+  margin: 6px 0 0;
+  color: rgba(238, 245, 255, 0.86);
+}
+
+.updater-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
 .toast {
   position: fixed;
   top: 56px;
@@ -978,6 +1004,44 @@ button.danger {
   word-break: break-word;
 }
 
+.details-list.compact {
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.details-list.compact div {
+  padding: 14px 16px;
+}
+
+.update-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 20px;
+  padding: 20px;
+  border-radius: 20px;
+  background: linear-gradient(135deg, #f7fbff, #edf5ff);
+  border: 1px solid rgba(47, 119, 233, 0.14);
+}
+
+.update-card-main strong {
+  display: block;
+  color: #102339;
+  font-size: 1rem;
+}
+
+.update-card-main p {
+  margin: 8px 0 0;
+  color: #496481;
+  line-height: 1.6;
+}
+
+.update-card-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 168px;
+}
+
 .import-summary {
   margin-top: 18px;
   padding: 16px;
@@ -1205,6 +1269,17 @@ button.danger {
 
   .split {
     grid-template-columns: 1fr;
+  }
+
+  .updater-banner,
+  .update-card {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+
+  .updater-banner-actions,
+  .update-card-actions {
+    width: 100%;
   }
 
   .drawer-backdrop {

@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import {
   dictionaries,
@@ -21,6 +21,7 @@ import type {
   DashboardSummary,
   DesktopAuthState,
   DesktopRuntimeInfo,
+  DesktopUpdateState,
   DetectedLocalEmulator,
   FingerprintConfig,
   ImportResult,
@@ -48,6 +49,7 @@ type ProxyPanelMode = 'create' | 'edit'
 type DesktopRuntimeApi = DesktopApi
 type AgentState = Awaited<ReturnType<DesktopApi['meta']['getAgentState']>>
 type AuthState = DesktopAuthState
+type UpdateState = DesktopUpdateState
 type ProfileFormState = {
   name: string
   proxyId: string | null
@@ -540,6 +542,7 @@ function App() {
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(null)
   const [runtimeHostInfo, setRuntimeHostInfo] = useState<RuntimeHostInfo | null>(null)
   const [agentState, setAgentState] = useState<AgentState | null>(null)
+  const [updateState, setUpdateState] = useState<UpdateState | null>(null)
   const [busyMessage, setBusyMessage] = useState('')
   const [noticeMessage, setNoticeMessage] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
@@ -565,9 +568,11 @@ function App() {
   const [cloudPhoneDetails, setCloudPhoneDetails] = useState<CloudPhoneDetails | null>(null)
   const [showMoreProfileCommon, setShowMoreProfileCommon] = useState(false)
   const [showMoreProfileFingerprint, setShowMoreProfileFingerprint] = useState(false)
+  const lastUpdateNoticeKeyRef = useRef('')
 
   const locale = getLocaleFromSettings(settings.uiLanguage)
   const t = dictionaries[locale]
+  const rendererOperatingSystem = detectRendererOperatingSystem()
   const defaultEnvironmentLanguage = normalizeEnvironmentLanguage(
     settings.defaultEnvironmentLanguage,
   )
@@ -835,6 +840,79 @@ function App() {
     return new Date(value).toLocaleString(locale)
   }
 
+  function describeUpdateStatus(state: UpdateState | null) {
+    if (!state) {
+      return locale === 'zh-CN' ? '正在读取更新状态…' : 'Loading update status...'
+    }
+    switch (state.status) {
+      case 'unsupported':
+        return locale === 'zh-CN'
+          ? '当前是开发环境，自动更新只在正式打包后的桌面端启用。'
+          : 'Auto update is only enabled in packaged desktop builds.'
+      case 'checking':
+        return locale === 'zh-CN' ? '正在检查最新版本…' : 'Checking for the latest version...'
+      case 'available':
+        return locale === 'zh-CN'
+          ? `发现新版本 ${state.latestVersion || ''}${state.assetName ? `，可下载 ${state.assetName}` : ''}。`
+          : `Update ${state.latestVersion || ''} is available${state.assetName ? ` as ${state.assetName}` : ''}.`
+      case 'not-available':
+        return locale === 'zh-CN' ? '当前已是最新版本。' : 'You already have the latest version.'
+      case 'downloading':
+        return locale === 'zh-CN'
+          ? `正在下载更新 ${state.progressPercent ? `${state.progressPercent}%` : ''}`
+          : `Downloading update ${state.progressPercent ? `${state.progressPercent}%` : ''}`
+      case 'downloaded':
+        return locale === 'zh-CN'
+          ? rendererOperatingSystem === 'Windows'
+            ? '安装程序已下载完成，点击下方按钮开始安装。'
+            : '安装包已下载完成，点击下方按钮打开安装。'
+          : rendererOperatingSystem === 'Windows'
+            ? 'The installer is ready. Use the button below to start installation.'
+            : 'The update package is ready. Use the button below to open the installer.'
+      case 'error':
+        return state.message || (locale === 'zh-CN' ? '更新检查失败。' : 'Update check failed.')
+      default:
+        return locale === 'zh-CN' ? '自动更新已就绪，可随时检查。' : 'Auto update is ready. You can check at any time.'
+    }
+  }
+
+  function getUpdateActionLabel(state: UpdateState | null) {
+    if (!state) {
+      return locale === 'zh-CN' ? '检查更新' : 'Check for updates'
+    }
+    if (state.status === 'available') {
+      return locale === 'zh-CN' ? '下载更新' : 'Download update'
+    }
+    if (state.status === 'downloading') {
+      return locale === 'zh-CN' ? '下载中…' : 'Downloading...'
+    }
+    if (state.status === 'downloaded') {
+      return locale === 'zh-CN'
+        ? rendererOperatingSystem === 'Windows'
+          ? '开始安装'
+          : '打开安装包'
+        : rendererOperatingSystem === 'Windows'
+          ? 'Install update'
+          : 'Open installer'
+    }
+    return locale === 'zh-CN' ? '检查更新' : 'Check for updates'
+  }
+
+  async function handlePrimaryUpdateAction() {
+    if (updateState?.status === 'available') {
+      await downloadUpdate()
+      return
+    }
+    if (updateState?.status === 'downloaded') {
+      await installUpdate()
+      return
+    }
+    if (updateState?.status === 'downloading') {
+      return
+    }
+    await checkForUpdates(true)
+  }
+
   const pageHeading =
     view === 'cloudPhones'
       ? { title: t.cloudPhones.title, subtitle: t.cloudPhones.subtitle }
@@ -871,6 +949,7 @@ function App() {
       'logs.list',
       'settings.get',
       'profiles.getDirectoryInfo',
+      'updater.getState',
     ])
     const [
       ,
@@ -888,6 +967,7 @@ function App() {
       nextSettings,
       dirInfo,
       nextAgentState,
+      nextUpdateState,
     ] =
       await Promise.all([
         api.auth.syncProfiles(),
@@ -905,6 +985,7 @@ function App() {
         api.settings.get(),
         api.profiles.getDirectoryInfo(),
         api.meta.getAgentState(),
+        api.updater.getState(),
       ])
     const info = await api.meta.getInfo()
 
@@ -922,6 +1003,7 @@ function App() {
     setSettings(nextSettings)
     setDirectoryInfo(dirInfo)
     setAgentState(nextAgentState)
+    setUpdateState(nextUpdateState)
     setRuntimeInfo({
       ...info,
       rendererVersion: __APP_VERSION__,
@@ -1081,6 +1163,42 @@ function App() {
     }, 3000)
     return () => window.clearTimeout(timer)
   }, [noticeMessage])
+
+  useEffect(() => {
+    const api = window.desktop as DesktopRuntimeApi | undefined
+    if (!api?.updater?.onStateChange) {
+      return
+    }
+    return api.updater.onStateChange((nextState) => {
+      setUpdateState(nextState)
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!updateState) {
+      return
+    }
+    const noticeKey = `${updateState.status}:${updateState.latestVersion || ''}:${updateState.progressPercent}`
+    if (lastUpdateNoticeKeyRef.current === noticeKey) {
+      return
+    }
+    if (updateState.status === 'available' && updateState.latestVersion) {
+      lastUpdateNoticeKeyRef.current = noticeKey
+      setNoticeMessage(
+        locale === 'zh-CN'
+          ? `发现新版本 ${updateState.latestVersion}，可在设置中下载安装。`
+          : `Update ${updateState.latestVersion} is available. Download it from Settings.`,
+      )
+    }
+    if (updateState.status === 'downloaded') {
+      lastUpdateNoticeKeyRef.current = noticeKey
+      setNoticeMessage(
+        locale === 'zh-CN'
+          ? '更新包已准备好，可在设置中开始安装。'
+          : 'The update package is ready to install from Settings.',
+      )
+    }
+  }, [locale, updateState])
 
   useEffect(() => {
     setPendingProfileLaunches((current) => {
@@ -1628,6 +1746,51 @@ function App() {
     setProxyForm(emptyProxy())
   }
 
+  async function checkForUpdates(manual = true) {
+    setErrorMessage('')
+    try {
+      const api = requireDesktopApi(['updater.check'])
+      const nextState = await api.updater.check()
+      setUpdateState(nextState)
+      if (manual && nextState.status === 'not-available') {
+        setNoticeMessage(locale === 'zh-CN' ? '当前已是最新版本。' : 'You already have the latest version.')
+      }
+    } catch (error) {
+      setErrorMessage(localizeError(error))
+    }
+  }
+
+  async function downloadUpdate() {
+    setErrorMessage('')
+    try {
+      const api = requireDesktopApi(['updater.download'])
+      const nextState = await api.updater.download()
+      setUpdateState(nextState)
+    } catch (error) {
+      setErrorMessage(localizeError(error))
+    }
+  }
+
+  async function installUpdate() {
+    setErrorMessage('')
+    try {
+      const api = requireDesktopApi(['updater.install'])
+      const result = await api.updater.install()
+      setNoticeMessage(result.message)
+    } catch (error) {
+      setErrorMessage(localizeError(error))
+    }
+  }
+
+  async function openReleasePage() {
+    try {
+      const api = requireDesktopApi(['updater.openReleasePage'])
+      await api.updater.openReleasePage()
+    } catch (error) {
+      setErrorMessage(localizeError(error))
+    }
+  }
+
   async function saveSettings() {
     await withBusy(t.busy.saveSettings, async () => {
       const api = requireDesktopApi(['settings.set'])
@@ -2051,6 +2214,31 @@ function App() {
         {errorMessage ? <div className="banner error">{errorMessage}</div> : null}
         {!errorMessage && agentReadOnlyMessage ? <div className="banner warning">{agentReadOnlyMessage}</div> : null}
         {!errorMessage && noticeMessage ? <div className="toast success">{noticeMessage}</div> : null}
+        {updateState && (updateState.status === 'available' || updateState.status === 'downloading' || updateState.status === 'downloaded') ? (
+          <div className="banner info updater-banner">
+            <div>
+              <strong>
+                {locale === 'zh-CN'
+                  ? `桌面端更新 ${updateState.latestVersion || ''}`
+                  : `Desktop update ${updateState.latestVersion || ''}`}
+              </strong>
+              <p>{describeUpdateStatus(updateState)}</p>
+            </div>
+            <div className="updater-banner-actions">
+              <button
+                type="button"
+                className="primary"
+                onClick={() => void handlePrimaryUpdateAction()}
+                disabled={updateState.status === 'downloading'}
+              >
+                {getUpdateActionLabel(updateState)}
+              </button>
+              <button type="button" className="secondary-button" onClick={() => void openReleasePage()}>
+                {locale === 'zh-CN' ? '发布页' : 'Release page'}
+              </button>
+            </div>
+          </div>
+        ) : null}
 
         {view === 'dashboard' ? (
           <section className="panel-grid">
@@ -4938,6 +5126,68 @@ function App() {
                   <dd>{runtimeInfo?.capabilities.join(', ') ?? t.common.loading}</dd>
                 </div>
               </dl>
+
+              <div className="section-title section-title-sub">
+                <h2>{locale === 'zh-CN' ? '桌面端更新' : 'Desktop updates'}</h2>
+              </div>
+              <div className="update-card">
+                <div className="update-card-main">
+                  <strong>
+                    {locale === 'zh-CN'
+                      ? `当前版本 ${runtimeInfo?.appVersion ?? __APP_VERSION__}`
+                      : `Current version ${runtimeInfo?.appVersion ?? __APP_VERSION__}`}
+                  </strong>
+                  <p>{describeUpdateStatus(updateState)}</p>
+                  <dl className="details-list compact">
+                    <div>
+                      <dt>{locale === 'zh-CN' ? '最新版本' : 'Latest version'}</dt>
+                      <dd>{updateState?.latestVersion || '-'}</dd>
+                    </div>
+                    <div>
+                      <dt>{locale === 'zh-CN' ? '发布时间' : 'Published at'}</dt>
+                      <dd>{updateState?.publishedAt ? formatDate(updateState.publishedAt) : t.common.never}</dd>
+                    </div>
+                    <div>
+                      <dt>{locale === 'zh-CN' ? '安装包' : 'Installer asset'}</dt>
+                      <dd>{updateState?.assetName || '-'}</dd>
+                    </div>
+                    <div>
+                      <dt>{locale === 'zh-CN' ? '最近检查' : 'Last checked'}</dt>
+                      <dd>{updateState?.checkedAt ? formatDate(updateState.checkedAt) : t.common.never}</dd>
+                    </div>
+                  </dl>
+                  {updateState?.downloadedFile ? (
+                    <p className="section-note">
+                      {locale === 'zh-CN'
+                        ? `已下载到：${updateState.downloadedFile}`
+                        : `Downloaded to: ${updateState.downloadedFile}`}
+                    </p>
+                  ) : null}
+                  {rendererOperatingSystem === 'macOS' ? (
+                    <p className="section-note">
+                      {locale === 'zh-CN'
+                        ? 'Mac 当前采用“检测更新并提示安装”模式，下载后会打开安装包。'
+                        : 'On macOS the app checks for updates and opens the installer package after download.'}
+                    </p>
+                  ) : null}
+                </div>
+                <div className="update-card-actions">
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={() => void handlePrimaryUpdateAction()}
+                    disabled={updateState?.status === 'downloading'}
+                  >
+                    {getUpdateActionLabel(updateState)}
+                  </button>
+                  <button type="button" className="secondary-button" onClick={() => void checkForUpdates(true)}>
+                    {locale === 'zh-CN' ? '重新检查' : 'Check again'}
+                  </button>
+                  <button type="button" className="secondary-button" onClick={() => void openReleasePage()}>
+                    {locale === 'zh-CN' ? '打开发布页' : 'Open release page'}
+                  </button>
+                </div>
+              </div>
             </div>
           </section>
         ) : null}

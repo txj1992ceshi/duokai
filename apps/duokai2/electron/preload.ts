@@ -30,6 +30,22 @@ const api: DesktopApi = {
     getInfo: () => ipcRenderer.invoke('meta.getInfo'),
     getAgentState: () => ipcRenderer.invoke('meta.getAgentState'),
   },
+  updater: {
+    getState: () => ipcRenderer.invoke('updater.getState'),
+    check: () => ipcRenderer.invoke('updater.check'),
+    download: () => ipcRenderer.invoke('updater.download'),
+    install: () => ipcRenderer.invoke('updater.install'),
+    openReleasePage: () => ipcRenderer.invoke('updater.openReleasePage'),
+    onStateChange: (listener) => {
+      const wrapped = (_event: Electron.IpcRendererEvent, payload: unknown) => {
+        listener(payload as never)
+      }
+      ipcRenderer.on('updater.state', wrapped)
+      return () => {
+        ipcRenderer.removeListener('updater.state', wrapped)
+      }
+    },
+  },
   dashboard: {
     summary: () => ipcRenderer.invoke('dashboard.summary'),
   },

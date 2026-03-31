@@ -1,0 +1,133 @@
+name: Desktop Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Optional release tag. Leave blank to use v + apps/duokai2 package version.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: mac
+            runner: macos-latest
+            artifact_name: duokai2-mac-release
+            build_command: npm run build:mac
+          - platform: win
+            runner: windows-latest
+            artifact_name: duokai2-win-release
+            build_command: npm run build:win
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: apps/duokai2
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/duokai2/package-lock.json
+
+      - name: Resolve desktop version
+        id: desktop-version
+        shell: bash
+        run: |
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          if [ -n "${{ github.event.inputs.release_tag }}" ]; then
+            RELEASE_TAG="${{ github.event.inputs.release_tag }}"
+          else
+            RELEASE_TAG="v${PACKAGE_VERSION}"
+          fi
+          echo "package_version=${PACKAGE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Chromium
+        run: npm run install:chromium
+
+      - name: Build desktop package
+        run: ${{ matrix.build_command }}
+
+      - name: Collect release assets (macOS)
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          find release -type f \( -name '*.dmg' -o -name '*.zip' \) -maxdepth 3 -print0 | while IFS= read -r -d '' file; do
+            cp "$file" "release-assets/$(basename "$file")"
+          done
+          ls -la release-assets
+
+      - name: Collect release assets (Windows)
+        if: matrix.platform == 'win'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
+          Get-ChildItem -Path release -Recurse -File |
+            Where-Object { $_.Extension -in '.exe', '.zip' } |
+            ForEach-Object {
+              Copy-Item $_.FullName (Join-Path $PWD "release-assets/$($_.Name)") -Force
+            }
+          Get-ChildItem release-assets
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: apps/duokai2/release-assets/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Resolve release tag
+        id: desktop-version
+        run: |
+          PACKAGE_VERSION=$(node -p "require('./apps/duokai2/package.json').version")
+          if [ -n "${{ github.event.inputs.release_tag }}" ]; then
+            RELEASE_TAG="${{ github.event.inputs.release_tag }}"
+          else
+            RELEASE_TAG="v${PACKAGE_VERSION}"
+          fi
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Download matrix artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: duokai2-*-release
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.desktop-version.outputs.release_tag }}
+          name: Duokai2 ${{ steps.desktop-version.outputs.release_tag }}
+          draft: false
+          prerelease: false
+          files: release-assets/*

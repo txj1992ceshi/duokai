@@ -546,3 +546,28 @@ export interface DesktopRuntimeInfo {
   rendererVersion: string
   capabilities: string[]
 }
+
+export type DesktopUpdateStatus =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'not-available'
+  | 'downloading'
+  | 'downloaded'
+  | 'error'
+  | 'unsupported'
+
+export interface DesktopUpdateState {
+  supported: boolean
+  status: DesktopUpdateStatus
+  currentVersion: string
+  latestVersion: string | null
+  releaseName: string
+  publishedAt: string | null
+  releaseUrl: string
+  assetName: string
+  downloadedFile: string
+  progressPercent: number
+  message: string
+  checkedAt: string | null
+}
