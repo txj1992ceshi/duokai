@@ -80,10 +80,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           success: false,
+          code: action === 'start' ? 'NO_ONLINE_AGENT' : 'NO_STOP_AGENT',
           error:
             action === 'start'
               ? '当前没有在线的桌面 Agent 可用于启动环境'
               : '当前没有在线的桌面 Agent 可用于停止环境',
+          detail: {
+            ownerUserId: authUser.userId,
+            onlineAgentCount: onlineAgents.length,
+            capableAgentCount: capableAgents.length,
+            requiredCapability,
+          },
         },
         { status: 409 }
       );
@@ -136,6 +143,6 @@ export async function POST(req: NextRequest) {
     if (message === 'Unauthorized') {
       return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
     }
-    return NextResponse.json({ success: false, error: message }, { status: 500 });
+    return NextResponse.json({ success: false, code: 'CONTROL_PLANE_RUNTIME_ERROR', error: message }, { status: 500 });
   }
 }

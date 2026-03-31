@@ -508,6 +508,20 @@ export default function Home() {
     return profile.status === 'Running' || Boolean(profile.runtimeSessionId);
   }, []);
 
+  async function readResponseError(res: Response, fallbackMessage: string) {
+    const clone = res.clone();
+    const json = await res.json().catch(() => null) as Record<string, unknown> | null;
+    if (json) {
+      const detail = json.detail && typeof json.detail === 'object'
+        ? `\n${JSON.stringify(json.detail)}`
+        : '';
+      const primary = String(json.error || json.message || fallbackMessage);
+      return `${primary}${detail}${res.status ? `\nHTTP ${res.status}` : ''}`;
+    }
+    const text = await clone.text().catch(() => '');
+    return `${fallbackMessage}${text ? `\n${text.slice(0, 500)}` : ''}${res.status ? `\nHTTP ${res.status}` : ''}`;
+  }
+
   const handleStartSession = async (p: Profile) => {
     if (controlPlaneOnly) {
       setStartingProfileIds(prev => ({ ...prev, [p.id]: true }));
@@ -516,9 +530,12 @@ export default function Home() {
           method: 'POST',
           body: JSON.stringify({ action: 'start', profileId: p.id }),
         });
-        const json = await res.json().catch(() => ({}));
+        const json = await res.json().catch(() => null) as Record<string, unknown> | null;
         if (!res.ok || json?.success === false) {
-          throw new Error(String(json?.error || '启动任务下发失败'));
+          const detail = json && typeof json === 'object'
+            ? `${String(json.error || '启动任务下发失败')}${json.detail ? `\n${JSON.stringify(json.detail)}` : ''}${res.status ? `\nHTTP ${res.status}` : ''}`
+            : await readResponseError(res, '启动任务下发失败');
+          throw new Error(detail);
         }
         setRuntimeOnline(true);
         setProfiles(prev => prev.map(profile => (
@@ -586,9 +603,12 @@ export default function Home() {
           method: 'POST',
           body: JSON.stringify({ action: 'stop', profileId: p.id }),
         });
-        const json = await res.json().catch(() => ({}));
+        const json = await res.json().catch(() => null) as Record<string, unknown> | null;
         if (!res.ok || json?.success === false) {
-          throw new Error(String(json?.error || '停止任务下发失败'));
+          const detail = json && typeof json === 'object'
+            ? `${String(json.error || '停止任务下发失败')}${json.detail ? `\n${JSON.stringify(json.detail)}` : ''}${res.status ? `\nHTTP ${res.status}` : ''}`
+            : await readResponseError(res, '停止任务下发失败');
+          throw new Error(detail);
         }
         setProfiles(prev => prev.map(profile => (
           profile.id === p.id
