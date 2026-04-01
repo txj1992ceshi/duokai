@@ -1,6 +1,9 @@
+import { lookup } from 'node:dns/promises'
+import net from 'node:net'
 import { chromium } from 'playwright'
 import type { ProfileRecord, ProxyRecord } from '../../src/shared/types'
-import { proxyToPlaywrightConfig, resolveChromiumExecutable } from './runtime'
+import { resolveLaunchProxy } from './proxyBridge'
+import { buildChromiumLaunchEnv, proxyToPlaywrightConfig, resolveChromiumExecutable } from './runtime'
 
 const LOOKUP_URL = 'https://ipwho.is/?output=json'
 
@@ -26,6 +29,14 @@ interface LookupPayload {
   countryCode: string
   latitude: number | null
   longitude: number | null
+}
+
+interface ProxyEndpointDiagnostic {
+  host: string
+  port: number
+  resolvedIps: string[]
+  reachableIps: string[]
+  failedIps: string[]
 }
 
 function languageFromCountry(countryCode: string): string {
@@ -108,11 +119,13 @@ async function lookupWithoutProxy(): Promise<ProxyCheckResult> {
 
 async function lookupWithProxy(proxy: ProxyRecord): Promise<ProxyCheckResult> {
   let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null
+  const launchProxy = await resolveLaunchProxy(proxy)
   try {
     browser = await chromium.launch({
       headless: true,
       executablePath: resolveChromiumExecutable(),
-      proxy: proxyToPlaywrightConfig(proxy) ?? undefined,
+      proxy: launchProxy.config ?? proxyToPlaywrightConfig(proxy) ?? undefined,
+      env: buildChromiumLaunchEnv(),
     })
     const page = await browser.newPage()
     await page.goto(LOOKUP_URL, { waitUntil: 'domcontentloaded', timeout: 20_000 })
@@ -142,7 +155,8 @@ async function lookupWithProxy(proxy: ProxyRecord): Promise<ProxyCheckResult> {
       browser = await chromium.launch({
         headless: true,
         executablePath: resolveChromiumExecutable(),
-        proxy: proxyToPlaywrightConfig(proxy) ?? undefined,
+        proxy: launchProxy.config ?? proxyToPlaywrightConfig(proxy) ?? undefined,
+        env: buildChromiumLaunchEnv(),
       })
       const page = await browser.newPage()
       await page.goto('https://example.com', { waitUntil: 'domcontentloaded', timeout: 20_000 })
@@ -157,7 +171,7 @@ async function lookupWithProxy(proxy: ProxyRecord): Promise<ProxyCheckResult> {
         geolocation: '',
         message:
           error instanceof Error
-            ? `Proxy connectivity verified, but IP metadata lookup failed: ${error.message}`
+            ? `Proxy connectivity verified${launchProxy.bridgeActive ? ` ${launchProxy.detail}` : ''}, but IP metadata lookup failed: ${error.message}`
             : 'Proxy connectivity verified, but IP metadata lookup failed',
         source: 'proxy',
       }
@@ -169,6 +183,82 @@ async function lookupWithProxy(proxy: ProxyRecord): Promise<ProxyCheckResult> {
   }
 }
 
+async function connectTcp(host: string, port: number, timeoutMs = 5_000): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const socket = net.createConnection({ host, port })
+    const cleanup = () => {
+      socket.removeAllListeners()
+      socket.destroy()
+    }
+    socket.setTimeout(timeoutMs)
+    socket.once('connect', () => {
+      cleanup()
+      resolve()
+    })
+    socket.once('timeout', () => {
+      cleanup()
+      reject(new Error('timeout'))
+    })
+    socket.once('error', (error) => {
+      cleanup()
+      reject(error)
+    })
+  })
+}
+
+async function diagnoseProxyEndpoint(proxy: ProxyRecord): Promise<ProxyEndpointDiagnostic | null> {
+  const port = Number(proxy.port)
+  if (!Number.isFinite(port) || port <= 0) {
+    return null
+  }
+
+  let resolvedIps: string[] = []
+  try {
+    const entries = await lookup(proxy.host, { all: true, verbatim: false })
+    resolvedIps = Array.from(new Set(entries.map((entry) => entry.address).filter(Boolean)))
+  } catch {
+    return {
+      host: proxy.host,
+      port,
+      resolvedIps: [],
+      reachableIps: [],
+      failedIps: [],
+    }
+  }
+
+  const reachableIps: string[] = []
+  const failedIps: string[] = []
+  for (const ip of resolvedIps.slice(0, 3)) {
+    try {
+      await connectTcp(ip, port)
+      reachableIps.push(ip)
+    } catch {
+      failedIps.push(ip)
+    }
+  }
+
+  return {
+    host: proxy.host,
+    port,
+    resolvedIps,
+    reachableIps,
+    failedIps,
+  }
+}
+
+function formatProxyDiagnostic(diagnostic: ProxyEndpointDiagnostic | null): string {
+  if (!diagnostic) {
+    return ''
+  }
+  if (diagnostic.resolvedIps.length === 0) {
+    return ` Proxy endpoint diagnostic: failed to resolve ${diagnostic.host}.`
+  }
+  if (diagnostic.reachableIps.length === 0) {
+    return ` Proxy endpoint diagnostic: resolved ${diagnostic.host}:${diagnostic.port} to ${diagnostic.resolvedIps.join(', ')}, but TCP connection timed out or failed for all tested IPs.`
+  }
+  return ` Proxy endpoint diagnostic: resolved ${diagnostic.host}:${diagnostic.port} to ${diagnostic.resolvedIps.join(', ')}; reachable IPs: ${diagnostic.reachableIps.join(', ')}.`
+}
+
 export async function checkProfileEgress(
   profile: ProfileRecord,
   proxy: ProxyRecord | null,
@@ -176,6 +266,7 @@ export async function checkProfileEgress(
   try {
     return proxy ? await lookupWithProxy(proxy) : await lookupWithoutProxy()
   } catch (error) {
+    const diagnostic = proxy ? await diagnoseProxyEndpoint(proxy).catch(() => null) : null
     return {
       ok: false,
       ip: '',
@@ -185,7 +276,9 @@ export async function checkProfileEgress(
       timezone: '',
       languageHint: profile.fingerprintConfig.language,
       geolocation: '',
-      message: error instanceof Error ? error.message : 'Unknown proxy check error',
+      message:
+        (error instanceof Error ? error.message : 'Unknown proxy check error') +
+        formatProxyDiagnostic(diagnostic),
       source: proxy ? 'proxy' : 'local',
     }
   }

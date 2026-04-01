@@ -39,8 +39,7 @@ export function buildRuntimeArgs(
 }
 
 export function buildProxyServer(proxy: ProxyRecord): string {
-  const normalizedType = normalizeProxyTypeForRuntime(proxy)
-  return `${normalizedType}://${proxy.host}:${proxy.port}`
+  return `${proxy.type}://${proxy.host}:${proxy.port}`
 }
 
 export function proxyToPlaywrightConfig(proxy: ProxyRecord | null) {
@@ -54,11 +53,21 @@ export function proxyToPlaywrightConfig(proxy: ProxyRecord | null) {
   }
 }
 
-function normalizeProxyTypeForRuntime(proxy: ProxyRecord): ProxyRecord['type'] {
-  if (process.platform === 'win32' && proxy.type === 'https') {
-    return 'http'
+export function buildChromiumLaunchEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env = { ...baseEnv }
+  for (const key of [
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'ALL_PROXY',
+    'http_proxy',
+    'https_proxy',
+    'all_proxy',
+    'GIT_HTTP_PROXY',
+    'GIT_HTTPS_PROXY',
+  ]) {
+    delete env[key]
   }
-  return proxy.type
+  return env
 }
 
 export function resolveChromiumExecutable(): string | undefined {

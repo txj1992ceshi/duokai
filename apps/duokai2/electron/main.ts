@@ -39,6 +39,7 @@ import {
   getProfilePath,
 } from './services/paths'
 import {
+  buildChromiumLaunchEnv,
   buildProxyServer,
   buildRuntimeArgs,
   normalizeResolution,
@@ -48,6 +49,7 @@ import {
 } from './services/runtime'
 import { buildFingerprintInitScript } from './services/fingerprint'
 import { applyNetworkDerivedFingerprint } from './services/networkProfileResolver'
+import { resolveLaunchProxy } from './services/proxyBridge'
 import { RuntimeScheduler } from './services/runtimeScheduler'
 import { AgentService } from './services/agentService'
 import { validateProfileForLaunch } from './services/profileValidator'
@@ -2216,10 +2218,12 @@ async function performProxyConnectivityTest(
 ) {
   const category = options.category ?? 'proxy'
   try {
+    const launchProxy = await resolveLaunchProxy(proxy)
     const browser = await chromium.launch({
       headless: true,
       executablePath: resolveChromiumExecutable(),
-      proxy: proxyToPlaywrightConfig(proxy) ?? undefined,
+      proxy: launchProxy.config ?? proxyToPlaywrightConfig(proxy) ?? undefined,
+      env: buildChromiumLaunchEnv(),
     })
     const page = await browser.newPage()
     await page.goto('https://example.com', { waitUntil: 'domcontentloaded', timeout: 20000 })
@@ -2572,31 +2576,6 @@ async function runProxyPreflight(
   let proxy = toCandidateProxy(originalProxy, toEntryTransport(originalProxy))
   let check = await checkNetworkHealth(profile, proxy)
 
-  if (
-    !check.ok &&
-    process.platform === 'win32' &&
-    originalProxy?.type === 'https'
-  ) {
-    const fallbackProxy = { ...originalProxy, type: 'http' as const }
-    logEvent(
-      'warn',
-      'runtime',
-      `Proxy preflight failed for "${profile.name}" via HTTPS entry, retrying with HTTP entry on Windows`,
-      profile.id,
-    )
-    const fallbackCheck = await checkNetworkHealth(profile, fallbackProxy)
-    if (fallbackCheck.ok) {
-      proxy = fallbackProxy
-      check = fallbackCheck
-      logEvent(
-        'info',
-        'runtime',
-        `Proxy preflight recovered for "${profile.name}" using HTTP proxy entry on Windows`,
-        profile.id,
-      )
-    }
-  }
-
   updateRuntimeMetadata(profile, {
     lastResolvedIp: check.ip,
     lastResolvedCountry: check.country,
@@ -2622,16 +2601,7 @@ async function runProxyPreflight(
       detail,
       source: check.source,
     })
-    if (process.platform === 'win32') {
-      logEvent(
-        'warn',
-        'runtime',
-        `Proxy preflight failed for "${profile.name}" on Windows, continuing launch: ${detail}`,
-        profile.id,
-      )
-    } else {
-      throw new Error(`Proxy preflight failed for "${profile.name}": ${detail}`)
-    }
+    throw new Error(`Proxy preflight failed for "${profile.name}": ${detail}`)
   }
   return { proxy, check }
 }
@@ -2827,13 +2797,15 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
   }
 
   const proxyConfig = proxyToPlaywrightConfig(resolvedProxy)
-  if (proxyConfig) {
+  const launchProxy = await resolveLaunchProxy(resolvedProxy)
+  if (proxyConfig || launchProxy.config) {
     const bypassArg = `--proxy-bypass-list=${GOOGLE_PROXY_BYPASS_LIST}`
     if (!launchOptions.args?.some((arg) => arg.startsWith('--proxy-bypass-list='))) {
       launchOptions.args = [...(launchOptions.args ?? []), bypassArg]
     }
-    launchOptions.proxy = proxyConfig
+    launchOptions.proxy = launchProxy.config ?? proxyConfig ?? undefined
   }
+  launchOptions.env = buildChromiumLaunchEnv()
 
   const diagnostics = buildNetworkDiagnosticsSummary(runtimeHost, check)
   audit('runtime_network_diagnostics', {
@@ -2858,7 +2830,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
   logEvent(
     'info',
     'runtime',
-    `Launched profile "${profile.name}"${resolvedProxy ? ` via ${buildProxyServer(resolvedProxy)}` : ''}`,
+    `Launched profile "${profile.name}"${resolvedProxy ? ` via ${buildProxyServer(resolvedProxy)}` : ''}${launchProxy.bridgeActive ? ` ${launchProxy.detail}` : ''}`,
     profileId,
   )
   await context.addInitScript(buildFingerprintInitScript(profile.id, profile.fingerprintConfig))
