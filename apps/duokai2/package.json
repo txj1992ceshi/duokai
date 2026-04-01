@@ -1,7 +1,7 @@
 {
   "name": "duokai2-desktop",
   "private": true,
-  "version": "0.1.0-test.1",
+  "version": "0.1.0-test.2",
   "description": "Duokai2 desktop app for local browser profile management and multi-environment testing.",
   "author": "jj",
   "type": "module",
