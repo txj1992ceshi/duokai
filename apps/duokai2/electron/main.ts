@@ -1,6 +1,8 @@
 import { appendFileSync, createWriteStream, mkdirSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
+import http from 'node:http'
+import https from 'node:https'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
@@ -905,11 +907,17 @@ async function requestControlPlane(
     }
     headers.set('Authorization', `Bearer ${token}`)
   }
-  const response = await fetchWithRetry(`${getControlPlaneApiBase()}${pathName}`, {
-    ...init,
+  const response = await requestJsonWithRetry(`${getControlPlaneApiBase()}${pathName}`, {
+    method: init.method,
     headers,
+    body:
+      typeof init.body === 'string'
+        ? init.body
+        : init.body == null
+          ? undefined
+          : String(init.body),
   })
-  const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>
+  const payload = response.json
   if (!response.ok || payload.success === false) {
     const message = String(payload.error || `${response.status} ${response.statusText}` || 'Control plane request failed')
     if (response.status === 401) {
@@ -920,11 +928,93 @@ async function requestControlPlane(
   return payload
 }
 
-async function fetchWithRetry(input: string, init: RequestInit, retries = 1): Promise<Response> {
+type JsonRequestInit = {
+  method?: string
+  headers?: Headers | Record<string, string> | Array<[string, string]>
+  body?: string
+}
+
+type JsonResponse = {
+  status: number
+  statusText: string
+  ok: boolean
+  text: string
+  json: Record<string, unknown>
+}
+
+function headersToObject(input?: Headers | Record<string, string> | Array<[string, string]>): Record<string, string> {
+  if (!input) {
+    return {}
+  }
+  const headers =
+    input instanceof Headers
+      ? input
+      : Array.isArray(input)
+        ? new Headers(input)
+        : new Headers(Object.entries(input))
+  const result: Record<string, string> = {}
+  headers.forEach((value, key) => {
+    result[key] = value
+  })
+  return result
+}
+
+async function requestJson(input: string, init: JsonRequestInit = {}): Promise<JsonResponse> {
+  const url = new URL(input)
+  const isHttps = url.protocol === 'https:'
+  const transport = isHttps ? https : http
+  const headers = headersToObject(init.headers)
+  const body = init.body
+  if (body != null && body !== '' && !Object.keys(headers).some((key) => key.toLowerCase() === 'content-length')) {
+    headers['Content-Length'] = String(Buffer.byteLength(body))
+  }
+
+  return await new Promise<JsonResponse>((resolve, reject) => {
+    const request = transport.request(
+      url,
+      {
+        method: init.method || 'GET',
+        headers,
+      },
+      (response) => {
+        const chunks: Buffer[] = []
+        response.on('data', (chunk) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+        })
+        response.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8')
+          let json: Record<string, unknown> = {}
+          try {
+            json = text ? (JSON.parse(text) as Record<string, unknown>) : {}
+          } catch {
+            json = {}
+          }
+          resolve({
+            status: response.statusCode || 0,
+            statusText: response.statusMessage || '',
+            ok: Boolean(response.statusCode && response.statusCode >= 200 && response.statusCode < 300),
+            text,
+            json,
+          })
+        })
+      },
+    )
+    request.on('error', reject)
+    request.setTimeout(15_000, () => {
+      request.destroy(new Error('Request timeout'))
+    })
+    if (body != null && body !== '') {
+      request.write(body)
+    }
+    request.end()
+  })
+}
+
+async function requestJsonWithRetry(input: string, init: JsonRequestInit, retries = 1): Promise<JsonResponse> {
   let lastError: unknown = null
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
-      return await fetch(input, init)
+      return await requestJson(input, init)
     } catch (error) {
       lastError = error
       if (attempt >= retries) {
@@ -933,7 +1023,7 @@ async function fetchWithRetry(input: string, init: RequestInit, retries = 1): Pr
       await new Promise((resolve) => setTimeout(resolve, CONTROL_PLANE_FETCH_RETRY_MS))
     }
   }
-  throw lastError instanceof Error ? lastError : new Error('Control plane fetch failed')
+  throw lastError instanceof Error ? lastError : new Error('Control plane JSON request failed')
 }
 
 function getSettings(): SettingsPayload {
@@ -2640,7 +2730,7 @@ async function registerIpcHandlers(): Promise<void> {
       for (const apiBase of buildControlPlaneLoginCandidates(payload.apiBase)) {
         attemptedBases.push(apiBase)
         try {
-          const response = await fetchWithRetry(`${apiBase}/api/auth/login`, {
+          const response = await requestJsonWithRetry(`${apiBase}/api/auth/login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -2654,9 +2744,9 @@ async function registerIpcHandlers(): Promise<void> {
               },
             }),
           })
-          const data = (await response.json().catch(() => ({}))) as Record<string, unknown>
+          const data = response.json
           if (!response.ok || data.success === false) {
-            throw new Error(String(data.error || '登录失败'))
+            throw new Error(String(data.error || `${response.status} ${response.statusText}` || '登录失败'))
           }
           const user = (data.user || null) as AuthUser | null
           const token = String(data.token || '')
