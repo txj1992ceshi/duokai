@@ -39,7 +39,8 @@ export function buildRuntimeArgs(
 }
 
 export function buildProxyServer(proxy: ProxyRecord): string {
-  return `${proxy.type}://${proxy.host}:${proxy.port}`
+  const normalizedType = normalizeProxyTypeForRuntime(proxy)
+  return `${normalizedType}://${proxy.host}:${proxy.port}`
 }
 
 export function proxyToPlaywrightConfig(proxy: ProxyRecord | null) {
@@ -51,6 +52,13 @@ export function proxyToPlaywrightConfig(proxy: ProxyRecord | null) {
     username: proxy.username || undefined,
     password: proxy.password || undefined,
   }
+}
+
+function normalizeProxyTypeForRuntime(proxy: ProxyRecord): ProxyRecord['type'] {
+  if (process.platform === 'win32' && proxy.type === 'https') {
+    return 'http'
+  }
+  return proxy.type
 }
 
 export function resolveChromiumExecutable(): string | undefined {
