@@ -943,6 +943,91 @@ type JsonResponse = {
   json: Record<string, unknown>
 }
 
+function escapePowerShellString(value: string): string {
+  return value.replace(/'/g, "''")
+}
+
+async function requestJsonViaPowerShell(input: string, init: JsonRequestInit = {}): Promise<JsonResponse> {
+  const headers = headersToObject(init.headers)
+  const body = init.body || ''
+  const script = `
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$uri = '${escapePowerShellString(input)}'
+$method = '${escapePowerShellString(init.method || 'GET')}'
+$headers = ConvertFrom-Json @'
+${JSON.stringify(headers)}
+'@ -AsHashtable
+$body = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${Buffer.from(body, 'utf8').toString('base64')}'))
+try {
+  $response = Invoke-WebRequest -Uri $uri -Method $method -Headers $headers -Body $body -UseBasicParsing
+  $payload = @{
+    status = [int]$response.StatusCode
+    statusText = [string]$response.StatusDescription
+    text = [string]$response.Content
+  }
+} catch {
+  $webResponse = $_.Exception.Response
+  if ($null -eq $webResponse) {
+    Write-Error $_.Exception.Message
+    exit 1
+  }
+  $reader = New-Object System.IO.StreamReader($webResponse.GetResponseStream())
+  $content = $reader.ReadToEnd()
+  $reader.Close()
+  $payload = @{
+    status = [int]$webResponse.StatusCode
+    statusText = [string]$webResponse.StatusDescription
+    text = [string]$content
+  }
+}
+$payload | ConvertTo-Json -Compress
+`.trim()
+
+  return await new Promise<JsonResponse>((resolve, reject) => {
+    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    const stdoutChunks: Buffer[] = []
+    const stderrChunks: Buffer[] = []
+
+    child.stdout.on('data', (chunk) => {
+      stdoutChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    })
+    child.stderr.on('data', (chunk) => {
+      stderrChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    })
+    child.on('error', reject)
+    child.on('close', (code) => {
+      const stdout = Buffer.concat(stdoutChunks).toString('utf8').trim()
+      const stderr = Buffer.concat(stderrChunks).toString('utf8').trim()
+      if (code !== 0 && !stdout) {
+        reject(new Error(stderr || `PowerShell request failed with exit code ${code ?? -1}`))
+        return
+      }
+      try {
+        const parsed = stdout ? (JSON.parse(stdout) as { status?: number; statusText?: string; text?: string }) : {}
+        const text = String(parsed.text || '')
+        let json: Record<string, unknown> = {}
+        try {
+          json = text ? (JSON.parse(text) as Record<string, unknown>) : {}
+        } catch {
+          json = {}
+        }
+        resolve({
+          status: Number(parsed.status || 0),
+          statusText: String(parsed.statusText || ''),
+          ok: Number(parsed.status || 0) >= 200 && Number(parsed.status || 0) < 300,
+          text,
+          json,
+        })
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error(String(error)))
+      }
+    })
+  })
+}
+
 function headersToObject(input?: Headers | Record<string, string> | Array<[string, string]>): Record<string, string> {
   if (!input) {
     return {}
@@ -1030,8 +1115,15 @@ async function requestJsonWithRetry(input: string, init: JsonRequestInit, retrie
       return await requestJson(input, init)
     } catch (error) {
       lastError = error
+      if (process.platform === 'win32') {
+        try {
+          return await requestJsonViaPowerShell(input, init)
+        } catch (fallbackError) {
+          lastError = fallbackError
+        }
+      }
       if (attempt >= retries) {
-        throw error
+        throw lastError
       }
       await new Promise((resolve) => setTimeout(resolve, CONTROL_PLANE_FETCH_RETRY_MS))
     }
