@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { mkdirSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
@@ -71,6 +71,10 @@ export function buildChromiumLaunchEnv(baseEnv: NodeJS.ProcessEnv = process.env)
 }
 
 export function resolveChromiumExecutable(): string | undefined {
+  const existingExecutable = resolveExistingChromiumExecutable()
+  if (existingExecutable) {
+    return existingExecutable
+  }
   const bundledExecutable = resolveBundledChromiumExecutable()
   if (bundledExecutable) {
     return bundledExecutable
@@ -80,6 +84,53 @@ export function resolveChromiumExecutable(): string | undefined {
   } catch {
     return undefined
   }
+}
+
+function resolveExistingChromiumExecutable(): string | undefined {
+  try {
+    const extractedRoot = path.join(app.getPath('userData'), 'playwright-browsers')
+    if (!existsSync(extractedRoot)) {
+      return undefined
+    }
+
+    const candidates = readdirSync(extractedRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort((left, right) => right.localeCompare(left, undefined, { numeric: true }))
+
+    for (const directory of candidates) {
+      const browserRoot = path.join(extractedRoot, directory)
+      const platformCandidates =
+        process.platform === 'win32'
+          ? [
+              path.join(browserRoot, 'chrome-win', 'chrome.exe'),
+              path.join(browserRoot, 'chrome-win64', 'chrome.exe'),
+            ]
+          : process.platform === 'darwin'
+            ? [
+                path.join(
+                  browserRoot,
+                  'chrome-mac',
+                  'Chromium.app',
+                  'Contents',
+                  'MacOS',
+                  'Chromium',
+                ),
+              ]
+            : [
+                path.join(browserRoot, 'chrome-linux', 'chrome'),
+                path.join(browserRoot, 'chrome-linux64', 'chrome'),
+              ]
+
+      const executablePath = platformCandidates.find((candidate) => existsSync(candidate))
+      if (executablePath) {
+        return executablePath
+      }
+    }
+  } catch {
+    return undefined
+  }
+  return undefined
 }
 
 function resolveBundledChromiumExecutable(): string | undefined {
