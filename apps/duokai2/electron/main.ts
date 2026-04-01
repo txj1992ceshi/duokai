@@ -947,6 +947,13 @@ function escapePowerShellString(value: string): string {
   return value.replace(/'/g, "''")
 }
 
+function buildPowerShellHashtableLiteral(values: Record<string, string>): string {
+  const entries = Object.entries(values)
+    .map(([key, value]) => `  '${escapePowerShellString(key)}' = '${escapePowerShellString(value)}'`)
+    .join('\n')
+  return `@{\n${entries}\n}`
+}
+
 async function requestJsonViaPowerShell(input: string, init: JsonRequestInit = {}): Promise<JsonResponse> {
   const headers = headersToObject(init.headers)
   const body = init.body || ''
@@ -954,9 +961,7 @@ async function requestJsonViaPowerShell(input: string, init: JsonRequestInit = {
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $uri = '${escapePowerShellString(input)}'
 $method = '${escapePowerShellString(init.method || 'GET')}'
-$headers = ConvertFrom-Json @'
-${JSON.stringify(headers)}
-'@ -AsHashtable
+$headers = ${buildPowerShellHashtableLiteral(headers)}
 $body = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${Buffer.from(body, 'utf8').toString('base64')}'))
 try {
   $response = Invoke-WebRequest -Uri $uri -Method $method -Headers $headers -Body $body -UseBasicParsing
