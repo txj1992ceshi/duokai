@@ -21,16 +21,28 @@ const electronBinary = path.join(
   process.platform === 'win32' ? 'electron.cmd' : 'electron',
 )
 
-const child = spawn(electronBinary, ['.'], {
-  cwd,
-  env: {
-    ...process.env,
-    CI: '1',
-    SMOKE_TEST: '1',
-    SMOKE_OUTPUT_DIR: outputDir,
-  },
-  stdio: ['ignore', 'pipe', 'pipe'],
-})
+const child =
+  process.platform === 'win32'
+    ? spawn('cmd.exe', ['/d', '/s', '/c', `"${electronBinary}" .`], {
+        cwd,
+        env: {
+          ...process.env,
+          CI: '1',
+          SMOKE_TEST: '1',
+          SMOKE_OUTPUT_DIR: outputDir,
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    : spawn(electronBinary, ['.'], {
+        cwd,
+        env: {
+          ...process.env,
+          CI: '1',
+          SMOKE_TEST: '1',
+          SMOKE_OUTPUT_DIR: outputDir,
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
 
 child.stdout.on('data', (chunk) => {
   writeFileSync(logPath, chunk, { flag: 'a' })
