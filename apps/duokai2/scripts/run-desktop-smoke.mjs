@@ -10,6 +10,10 @@ const outputDir = process.env.SMOKE_OUTPUT_DIR
   : path.join(os.tmpdir(), 'duokai2-smoke-artifacts')
 const logPath = path.join(outputDir, 'desktop-main.log')
 const resultPath = path.join(outputDir, 'smoke-result.json')
+const packagedExecutable =
+  process.platform === 'win32'
+    ? path.join(cwd, 'release', 'win-unpacked', 'Duokai2.exe')
+    : null
 
 mkdirSync(outputDir, { recursive: true })
 writeFileSync(logPath, '', 'utf8')
@@ -21,8 +25,18 @@ const electronBinary = path.join(
   process.platform === 'win32' ? 'electron.cmd' : 'electron',
 )
 
-const child =
-  process.platform === 'win32'
+const child = packagedExecutable && existsSync(packagedExecutable)
+  ? spawn(packagedExecutable, [], {
+      cwd: path.dirname(packagedExecutable),
+      env: {
+        ...process.env,
+        CI: '1',
+        SMOKE_TEST: '1',
+        SMOKE_OUTPUT_DIR: outputDir,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+  : process.platform === 'win32'
     ? spawn('cmd.exe', ['/d', '/s', '/c', `"${electronBinary}" .`], {
         cwd,
         env: {
@@ -57,6 +71,12 @@ const exitCode = await new Promise((resolve) => {
 })
 
 if (!existsSync(resultPath)) {
+  if (existsSync(logPath)) {
+    const logContent = readFileSync(logPath, 'utf8')
+    if (logContent.trim()) {
+      console.error(logContent)
+    }
+  }
   console.error(`Smoke result missing at ${resultPath}`)
   process.exit(typeof exitCode === 'number' ? exitCode : 1)
 }
