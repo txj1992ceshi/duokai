@@ -1,6 +1,7 @@
 import { appendFileSync, createWriteStream, mkdirSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
+import dns from 'node:dns'
 import http from 'node:http'
 import https from 'node:https'
 import os from 'node:os'
@@ -975,6 +976,18 @@ async function requestJson(input: string, init: JsonRequestInit = {}): Promise<J
       {
         method: init.method || 'GET',
         headers,
+        family: 4,
+        lookup(hostname, options, callback) {
+          dns.lookup(
+            hostname,
+            {
+              ...(typeof options === 'number' ? { family: options } : options),
+              family: 4,
+              hints: dns.ADDRCONFIG,
+            },
+            callback,
+          )
+        },
       },
       (response) => {
         const chunks: Buffer[] = []
