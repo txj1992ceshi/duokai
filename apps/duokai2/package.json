@@ -14,6 +14,7 @@
     "build:dir": "npm run prepare:desktop-assets && tsc -b && vite build && ELECTRON_BUILDER_CACHE=.cache/electron-builder CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir",
     "build:mac": "npm run prepare:desktop-assets && tsc -b && vite build && ELECTRON_BUILDER_CACHE=.cache/electron-builder CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --publish never",
     "build:win": "npm run prepare:desktop-assets && tsc -b && vite build && electron-builder --win nsis zip --publish never",
+    "smoke:win": "node scripts/run-desktop-smoke.mjs",
     "install:chromium": "playwright install chromium",
     "lint": "eslint .",
     "preview": "vite preview"

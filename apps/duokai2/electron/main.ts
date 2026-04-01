@@ -1,4 +1,4 @@
-import { appendFileSync, createWriteStream, mkdirSync } from 'node:fs'
+import { appendFileSync, createWriteStream, existsSync, mkdirSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import dns from 'node:dns'
@@ -107,6 +107,9 @@ const CONTROL_PLANE_API_BASE_KEY = 'controlPlaneApiBase'
 const CONTROL_PLANE_DEVICE_ID_KEY = 'controlPlaneDeviceId'
 const CONTROL_PLANE_AUTH_TOKEN_KEY = 'controlPlaneAuthToken'
 const CONTROL_PLANE_AUTH_USER_KEY = 'controlPlaneAuthUser'
+const SMOKE_TEST_ENABLED = process.env.SMOKE_TEST === '1'
+const SMOKE_RESULT_FILE = 'smoke-result.json'
+const SMOKE_AUDIT_FILE = 'runtime-audit.log'
 
 let mainWindow: BrowserWindow | null = null
 let db: DatabaseService | null = null
@@ -150,6 +153,18 @@ function resolveAuditLogPath(): string {
     return path.join(app.getPath('userData'), process.env.RUNTIME_AUDIT_FILE || 'runtime-audit.log')
   } catch {
     return path.join(process.cwd(), process.env.RUNTIME_AUDIT_FILE || 'runtime-audit.log')
+  }
+}
+
+function resolveSmokeOutputDir(): string {
+  const configured = String(process.env.SMOKE_OUTPUT_DIR || '').trim()
+  if (configured) {
+    return configured
+  }
+  try {
+    return path.join(app.getPath('userData'), 'smoke')
+  } catch {
+    return path.join(process.cwd(), 'smoke')
   }
 }
 
@@ -2948,59 +2963,406 @@ async function enqueueLaunch(profileId: string): Promise<void> {
   audit('enqueue', { profileId, queueLen: scheduler.getQueuedIds().length })
 }
 
+async function performDesktopLogin(payload: {
+  identifier: string
+  password: string
+  apiBase?: string
+}): Promise<DesktopAuthState> {
+  const identifier = String(payload.identifier || '').trim()
+  const password = String(payload.password || '')
+  if (!identifier || !password) {
+    throw new Error('请输入账号和密码')
+  }
+  let lastError: Error | null = null
+  const attemptedBases: string[] = []
+
+  for (const apiBase of buildControlPlaneLoginCandidates(payload.apiBase)) {
+    attemptedBases.push(apiBase)
+    try {
+      const response = await requestJsonWithRetry(`${apiBase}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          identifier,
+          password,
+          device: {
+            deviceId: getControlPlaneDeviceId(),
+            deviceName: `${os.hostname()} (${process.platform})`,
+            platform: process.platform,
+            source: 'desktop',
+          },
+        }),
+      })
+      const data = response.json
+      if (!response.ok || data.success === false) {
+        throw new Error(String(data.error || `${response.status} ${response.statusText}` || '登录失败'))
+      }
+      const user = (data.user || null) as AuthUser | null
+      const token = String(data.token || '')
+      if (!user || !token) {
+        throw new Error('登录响应缺少用户或令牌')
+      }
+      const nextAuthState = saveDesktopAuth(apiBase, token, user)
+      await syncProfilesFromControlPlane()
+      return nextAuthState
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error))
+      audit('auth_login_failed', { apiBase, err: lastError.message })
+    }
+  }
+
+  if (lastError) {
+    throw new Error(`登录失败：${lastError.message}（已尝试：${attemptedBases.join(', ')}）`)
+  }
+  throw new Error('登录失败')
+}
+
+async function performRuntimeLaunch(profileId: string): Promise<void> {
+  ensureWritable('runtime.launch')
+  try {
+    await enqueueLaunch(profileId)
+  } catch (error) {
+    await updateProfileStatus(profileId, 'error')
+    logEvent(
+      'error',
+      'runtime',
+      error instanceof Error ? error.message : 'Unknown runtime error',
+      profileId,
+    )
+    throw error
+  }
+}
+
+function getRuntimeStatusSnapshot() {
+  return {
+    runningProfileIds: [...runtimeContexts.keys()],
+    queuedProfileIds: scheduler.getQueuedIds(),
+    startingProfileIds: scheduler.getStartingIds(),
+    launchStages: Object.fromEntries(
+      requireDatabase()
+        .listProfiles()
+        .map((profile) => [profile.id, profile.fingerprintConfig.runtimeMetadata.launchValidationStage]),
+    ),
+    retryCounts: scheduler.getRetryCounts(),
+  }
+}
+
+function getProfilesDirectoryInfoPayload() {
+  const info = getProfileDirectoryInfo(app)
+  return {
+    ...info,
+    chromiumExecutable: resolveChromiumExecutable(),
+  }
+}
+
+type SmokeStepStatus = 'passed' | 'failed' | 'skipped'
+
+type SmokeStepResult = {
+  step: string
+  status: SmokeStepStatus
+  detail: string
+  data?: unknown
+}
+
+type SmokeResultPayload = {
+  success: boolean
+  platform: NodeJS.Platform
+  appVersion: string
+  startedAt: string
+  finishedAt?: string
+  outputDir: string
+  smokeMode: 'ci'
+  steps: SmokeStepResult[]
+}
+
+function pushSmokeStep(
+  steps: SmokeStepResult[],
+  step: string,
+  status: SmokeStepStatus,
+  detail: string,
+  data?: unknown,
+): void {
+  steps.push({ step, status, detail, data })
+}
+
+async function writeSmokeArtifacts(result: SmokeResultPayload): Promise<void> {
+  const outputDir = resolveSmokeOutputDir()
+  mkdirSync(outputDir, { recursive: true })
+  result.finishedAt = new Date().toISOString()
+  await writeFile(path.join(outputDir, SMOKE_RESULT_FILE), JSON.stringify(result, null, 2), 'utf8')
+  if (existsSync(AUDIT_LOG_PATH)) {
+    const auditContent = await readFile(AUDIT_LOG_PATH, 'utf8').catch(() => '')
+    if (auditContent) {
+      await writeFile(path.join(outputDir, SMOKE_AUDIT_FILE), auditContent, 'utf8')
+    }
+  }
+}
+
+async function waitForRuntimeOutcome(
+  profileId: string,
+  timeoutMs = 45_000,
+): Promise<{
+  profile: ProfileRecord | null
+  runtimeStatus: ReturnType<typeof getRuntimeStatusSnapshot>
+  elapsedMs: number
+}> {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    const profile = requireDatabase().getProfileById(profileId)
+    const runtimeStatus = getRuntimeStatusSnapshot()
+    const isActive =
+      runtimeStatus.runningProfileIds.includes(profileId) ||
+      runtimeStatus.startingProfileIds.includes(profileId) ||
+      runtimeStatus.queuedProfileIds.includes(profileId)
+    if (!profile) {
+      return { profile: null, runtimeStatus, elapsedMs: Date.now() - startedAt }
+    }
+    if (!isActive && profile.status !== 'queued' && profile.status !== 'starting') {
+      return { profile, runtimeStatus, elapsedMs: Date.now() - startedAt }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+  }
+  return {
+    profile: requireDatabase().getProfileById(profileId),
+    runtimeStatus: getRuntimeStatusSnapshot(),
+    elapsedMs: timeoutMs,
+  }
+}
+
+function buildSmokeFingerprint(proxy: ProxyRecord | null, startupUrl: string): FingerprintConfig {
+  const fingerprint = createDefaultFingerprint()
+  fingerprint.basicSettings.platform = 'custom'
+  fingerprint.basicSettings.customPlatformUrl = startupUrl
+  if (proxy) {
+    fingerprint.proxySettings.proxyMode = 'custom'
+    fingerprint.proxySettings.proxyType = proxy.type
+    fingerprint.proxySettings.host = proxy.host
+    fingerprint.proxySettings.port = proxy.port
+    fingerprint.proxySettings.username = proxy.username
+    fingerprint.proxySettings.password = proxy.password
+  }
+  return fingerprint
+}
+
+async function ensureSmokeProxyAndProfile(): Promise<{
+  proxy: ProxyRecord | null
+  profile: ProfileRecord | null
+}> {
+  const database = requireDatabase()
+  const smokeProxyHost = String(process.env.DUOKAI_SMOKE_PROXY_HOST || '').trim()
+  const smokeProxyPort = Number(process.env.DUOKAI_SMOKE_PROXY_PORT || 0)
+  const smokeStartupUrl = String(process.env.DUOKAI_SMOKE_STARTUP_URL || 'https://example.com').trim()
+
+  if (!smokeProxyHost || !smokeProxyPort) {
+    const existingProfile = database.listProfiles()[0] ?? null
+    return { proxy: existingProfile ? resolveProfileProxy(existingProfile, database) : null, profile: existingProfile }
+  }
+
+  const smokeProxyName = String(process.env.DUOKAI_SMOKE_PROXY_NAME || 'CI Windows Smoke Proxy').trim()
+  const smokeProfileName = String(process.env.DUOKAI_SMOKE_PROFILE_NAME || 'CI Windows Smoke Profile').trim()
+  const smokeProxyType = String(process.env.DUOKAI_SMOKE_PROXY_TYPE || 'https').trim()
+  const proxyPayload = createProxyPayload({
+    name: smokeProxyName,
+    type: smokeProxyType === 'socks5' ? 'socks5' : smokeProxyType === 'https' ? 'https' : 'http',
+    host: smokeProxyHost,
+    port: smokeProxyPort,
+    username: String(process.env.DUOKAI_SMOKE_PROXY_USERNAME || '').trim(),
+    password: String(process.env.DUOKAI_SMOKE_PROXY_PASSWORD || ''),
+  })
+
+  const existingProxy = database.listProxies().find((item) => item.name === smokeProxyName)
+  const proxy = existingProxy
+    ? database.updateProxy({ ...proxyPayload, id: existingProxy.id })
+    : database.createProxy(proxyPayload)
+
+  const existingProfile = database.listProfiles().find((item) => item.name === smokeProfileName)
+  const profilePayload = createProfilePayload(
+    {
+      id: existingProfile?.id || randomUUID(),
+      name: smokeProfileName,
+      proxyId: null,
+      groupName: 'CI Smoke',
+      tags: ['ci', 'windows-smoke'],
+      notes: 'Generated by desktop smoke harness',
+      fingerprintConfig: buildSmokeFingerprint(proxy, smokeStartupUrl),
+    },
+    createDefaultFingerprint,
+  )
+
+  const profile = existingProfile
+    ? database.updateProfile(profilePayload)
+    : database.createProfile(profilePayload)
+
+  return { proxy, profile }
+}
+
+async function runDesktopSmokeScenario(): Promise<void> {
+  const result: SmokeResultPayload = {
+    success: false,
+    platform: process.platform,
+    appVersion: app.getVersion(),
+    startedAt: new Date().toISOString(),
+    outputDir: resolveSmokeOutputDir(),
+    smokeMode: 'ci',
+    steps: [],
+  }
+
+  try {
+    pushSmokeStep(result.steps, 'meta.getInfo', 'passed', 'Loaded desktop metadata', {
+      mode: isDev ? 'development' : 'production',
+      capabilities: CAPABILITIES.length,
+    })
+
+    const directoryInfo = getProfilesDirectoryInfoPayload()
+    pushSmokeStep(
+      result.steps,
+      'profiles.getDirectoryInfo',
+      directoryInfo.chromiumExecutable ? 'passed' : 'failed',
+      directoryInfo.chromiumExecutable ? 'Chromium executable resolved' : 'Chromium executable missing',
+      directoryInfo,
+    )
+
+    const smokeIdentifier = String(process.env.DUOKAI_SMOKE_IDENTIFIER || '').trim()
+    const smokePassword = String(process.env.DUOKAI_SMOKE_PASSWORD || '')
+    const smokeApiBase = String(process.env.DUOKAI_SMOKE_API_BASE || '').trim()
+
+    if (smokeIdentifier && smokePassword) {
+      try {
+        const authState = await performDesktopLogin({
+          identifier: smokeIdentifier,
+          password: smokePassword,
+          apiBase: smokeApiBase || undefined,
+        })
+        pushSmokeStep(result.steps, 'auth.login', 'passed', 'Desktop login succeeded', authState)
+      } catch (error) {
+        pushSmokeStep(
+          result.steps,
+          'auth.login',
+          'failed',
+          error instanceof Error ? error.message : String(error),
+        )
+      }
+    } else {
+      pushSmokeStep(result.steps, 'auth.login', 'skipped', 'Missing DUOKAI_SMOKE_IDENTIFIER / DUOKAI_SMOKE_PASSWORD')
+    }
+
+    const { proxy, profile } = await ensureSmokeProxyAndProfile()
+    pushSmokeStep(
+      result.steps,
+      'smoke.setup',
+      profile ? 'passed' : 'skipped',
+      profile ? `Using profile "${profile.name}"` : 'No profile available for runtime smoke',
+      {
+        profileId: profile?.id || null,
+        proxyId: proxy?.id || null,
+        proxyServer: proxy ? buildProxyServer(proxy) : null,
+        proxyType: proxy?.type || null,
+      },
+    )
+
+    if (proxy) {
+      try {
+        const proxyTest = await testProxyById(proxy.id)
+        pushSmokeStep(
+          result.steps,
+          'proxies.test',
+          proxyTest.success ? 'passed' : 'failed',
+          proxyTest.message || (proxyTest.success ? 'Proxy test succeeded' : 'Proxy test failed'),
+          {
+            ...proxyTest,
+            proxyServer: buildProxyServer(proxy),
+            proxyType: proxy.type,
+          },
+        )
+      } catch (error) {
+        pushSmokeStep(
+          result.steps,
+          'proxies.test',
+          'failed',
+          error instanceof Error ? error.message : String(error),
+          {
+            proxyServer: buildProxyServer(proxy),
+            proxyType: proxy.type,
+          },
+        )
+      }
+    } else {
+      pushSmokeStep(result.steps, 'proxies.test', 'skipped', 'No proxy configured for smoke scenario')
+    }
+
+    if (profile) {
+      try {
+        await performRuntimeLaunch(profile.id)
+        const outcome = await waitForRuntimeOutcome(profile.id)
+        const latestProfile = outcome.profile
+        const logs = requireDatabase().listLogs().slice(-20)
+        const metadata = latestProfile?.fingerprintConfig.runtimeMetadata || null
+        const launchPassed = Boolean(
+          latestProfile &&
+            (latestProfile.status === 'running' ||
+              latestProfile.status === 'stopped' ||
+              (metadata?.lastProxyCheckSuccess === true && metadata.launchValidationStage === 'idle')),
+        )
+        pushSmokeStep(
+          result.steps,
+          'runtime.launch',
+          launchPassed ? 'passed' : 'failed',
+          latestProfile
+            ? `Runtime finished with profile status "${latestProfile.status}" after ${outcome.elapsedMs}ms`
+            : 'Profile disappeared during runtime smoke',
+          {
+            elapsedMs: outcome.elapsedMs,
+            runtimeStatus: outcome.runtimeStatus,
+            profileStatus: latestProfile?.status || null,
+            profileId: latestProfile?.id || profile.id,
+            lastProxyCheckSuccess: metadata?.lastProxyCheckSuccess ?? null,
+            lastProxyCheckMessage: metadata?.lastProxyCheckMessage || '',
+            lastResolvedIp: metadata?.lastResolvedIp || '',
+            lastResolvedCountry: metadata?.lastResolvedCountry || '',
+            lastResolvedTimezone: metadata?.lastResolvedTimezone || '',
+            logs,
+          },
+        )
+        if (runtimeContexts.has(profile.id)) {
+          await stopRuntime(profile.id)
+        }
+      } catch (error) {
+        pushSmokeStep(
+          result.steps,
+          'runtime.launch',
+          'failed',
+          error instanceof Error ? error.message : String(error),
+          {
+            runtimeStatus: getRuntimeStatusSnapshot(),
+            logs: requireDatabase().listLogs().slice(-20),
+          },
+        )
+      }
+    } else {
+      pushSmokeStep(result.steps, 'runtime.launch', 'skipped', 'No profile available for runtime launch smoke')
+    }
+
+    result.success = result.steps.every((step) => step.status !== 'failed')
+  } catch (error) {
+    pushSmokeStep(
+      result.steps,
+      'smoke.unhandled',
+      'failed',
+      error instanceof Error ? error.message : String(error),
+    )
+    result.success = false
+  } finally {
+    await writeSmokeArtifacts(result)
+    setTimeout(() => app.exit(result.success ? 0 : 1), 300)
+  }
+}
+
 async function registerIpcHandlers(): Promise<void> {
   ipcMain.handle('auth.getState', async () => getDesktopAuthState())
   ipcMain.handle(
     'auth.login',
-    async (_event, payload: { identifier: string; password: string; apiBase?: string }) => {
-      const identifier = String(payload.identifier || '').trim()
-      const password = String(payload.password || '')
-      if (!identifier || !password) {
-        throw new Error('请输入账号和密码')
-      }
-      let lastError: Error | null = null
-      const attemptedBases: string[] = []
-
-      for (const apiBase of buildControlPlaneLoginCandidates(payload.apiBase)) {
-        attemptedBases.push(apiBase)
-        try {
-          const response = await requestJsonWithRetry(`${apiBase}/api/auth/login`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              identifier,
-              password,
-              device: {
-                deviceId: getControlPlaneDeviceId(),
-                deviceName: `${os.hostname()} (${process.platform})`,
-                platform: process.platform,
-                source: 'desktop',
-              },
-            }),
-          })
-          const data = response.json
-          if (!response.ok || data.success === false) {
-            throw new Error(String(data.error || `${response.status} ${response.statusText}` || '登录失败'))
-          }
-          const user = (data.user || null) as AuthUser | null
-          const token = String(data.token || '')
-          if (!user || !token) {
-            throw new Error('登录响应缺少用户或令牌')
-          }
-          const nextAuthState = saveDesktopAuth(apiBase, token, user)
-          await syncProfilesFromControlPlane()
-          return nextAuthState
-        } catch (error) {
-          lastError = error instanceof Error ? error : new Error(String(error))
-          audit('auth_login_failed', { apiBase, err: lastError.message })
-        }
-      }
-
-      if (lastError) {
-        throw new Error(`登录失败：${lastError.message}（已尝试：${attemptedBases.join(', ')}）`)
-      }
-      throw new Error('登录失败')
-    },
+    async (_event, payload: { identifier: string; password: string; apiBase?: string }) =>
+      performDesktopLogin(payload),
   )
   ipcMain.handle(
     'auth.updateProfile',
@@ -3396,13 +3758,7 @@ async function registerIpcHandlers(): Promise<void> {
     const profilePath = getProfilePath(app, profileId)
     await shell.openPath(profilePath)
   })
-  ipcMain.handle('profiles.getDirectoryInfo', async () => {
-    const info = getProfileDirectoryInfo(app)
-    return {
-      ...info,
-      chromiumExecutable: resolveChromiumExecutable(),
-    }
-  })
+  ipcMain.handle('profiles.getDirectoryInfo', async () => getProfilesDirectoryInfoPayload())
   ipcMain.handle('profiles.bulkStart', async (_event, payload: ProfileBulkActionPayload) => {
     ensureWritable('profiles.bulkStart')
     await launchMany(payload.profileIds)
@@ -3500,37 +3856,13 @@ async function registerIpcHandlers(): Promise<void> {
     return testProxyById(proxyId)
   })
 
-  ipcMain.handle('runtime.launch', async (_event, profileId: string) => {
-    ensureWritable('runtime.launch')
-    try {
-      await enqueueLaunch(profileId)
-    } catch (error) {
-      await updateProfileStatus(profileId, 'error')
-      logEvent(
-        'error',
-        'runtime',
-        error instanceof Error ? error.message : 'Unknown runtime error',
-        profileId,
-      )
-      throw error
-    }
-  })
+  ipcMain.handle('runtime.launch', async (_event, profileId: string) => performRuntimeLaunch(profileId))
   ipcMain.handle('runtime.stop', async (_event, profileId: string) => {
     ensureWritable('runtime.stop')
     await stopRuntime(profileId)
     await updateProfileStatus(profileId, 'stopped')
   })
-  ipcMain.handle('runtime.getStatus', async () => ({
-    runningProfileIds: [...runtimeContexts.keys()],
-    queuedProfileIds: scheduler.getQueuedIds(),
-    startingProfileIds: scheduler.getStartingIds(),
-    launchStages: Object.fromEntries(
-      requireDatabase()
-        .listProfiles()
-        .map((profile) => [profile.id, profile.fingerprintConfig.runtimeMetadata.launchValidationStage]),
-    ),
-    retryCounts: scheduler.getRetryCounts(),
-  }))
+  ipcMain.handle('runtime.getStatus', async () => getRuntimeStatusSnapshot())
   ipcMain.handle('runtime.getHostInfo', async () => getRuntimeHostInfo())
 
   ipcMain.handle('logs.list', async () => requireDatabase().listLogs())
@@ -3706,6 +4038,11 @@ async function bootstrap(): Promise<void> {
   db = new DatabaseService(app)
   resetCachedProfileStatesOnStartup()
   await registerIpcHandlers()
+  if (SMOKE_TEST_ENABLED) {
+    audit('smoke_test_bootstrap_begin', { outputDir: resolveSmokeOutputDir(), platform: process.platform })
+    await runDesktopSmokeScenario()
+    return
+  }
   initAgentService()
   try {
     await syncConfigFromControlPlane()

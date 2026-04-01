@@ -1,0 +1,66 @@
+name: Desktop Windows Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_base:
+        description: 'Optional control plane API base override'
+        required: false
+        default: ''
+      startup_url:
+        description: 'Optional startup URL for CI smoke profile'
+        required: false
+        default: 'https://example.com'
+
+jobs:
+  smoke-windows:
+    runs-on: windows-latest
+    env:
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\apps\duokai2\.cache\electron-builder
+      DUOKAI_SMOKE_API_BASE: ${{ github.event.inputs.api_base }}
+      DUOKAI_SMOKE_IDENTIFIER: ${{ secrets.DUOKAI_SMOKE_IDENTIFIER }}
+      DUOKAI_SMOKE_PASSWORD: ${{ secrets.DUOKAI_SMOKE_PASSWORD }}
+      DUOKAI_SMOKE_PROXY_HOST: ${{ secrets.DUOKAI_SMOKE_PROXY_HOST }}
+      DUOKAI_SMOKE_PROXY_PORT: ${{ secrets.DUOKAI_SMOKE_PROXY_PORT }}
+      DUOKAI_SMOKE_PROXY_TYPE: ${{ secrets.DUOKAI_SMOKE_PROXY_TYPE }}
+      DUOKAI_SMOKE_PROXY_USERNAME: ${{ secrets.DUOKAI_SMOKE_PROXY_USERNAME }}
+      DUOKAI_SMOKE_PROXY_PASSWORD: ${{ secrets.DUOKAI_SMOKE_PROXY_PASSWORD }}
+      DUOKAI_SMOKE_STARTUP_URL: ${{ github.event.inputs.startup_url }}
+      SMOKE_OUTPUT_DIR: ${{ github.workspace }}\apps\duokai2\smoke-artifacts
+    defaults:
+      run:
+        working-directory: apps/duokai2
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/duokai2/package-lock.json
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Chromium
+        run: npm run install:chromium
+
+      - name: Build Windows package
+        run: npm run build:win
+
+      - name: Run Windows smoke
+        run: npm run smoke:win
+
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: duokai2-windows-smoke-artifacts
+          path: |
+            apps/duokai2/smoke-artifacts/*
+            apps/duokai2/release/**/*.exe
+            apps/duokai2/release/**/*.zip
+          if-no-files-found: warn
