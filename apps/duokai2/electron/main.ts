@@ -2554,8 +2554,34 @@ async function runProxyPreflight(
   database: DatabaseService,
 ): Promise<{ proxy: ProxyRecord | null; check: NetworkHealthResult }> {
   const originalProxy = resolveProfileProxy(profile, database)
-  const check = await checkNetworkHealth(profile, originalProxy)
-  const proxy = toCandidateProxy(originalProxy, toEntryTransport(originalProxy))
+  let proxy = toCandidateProxy(originalProxy, toEntryTransport(originalProxy))
+  let check = await checkNetworkHealth(profile, proxy)
+
+  if (
+    !check.ok &&
+    process.platform === 'win32' &&
+    originalProxy?.type === 'https'
+  ) {
+    const fallbackProxy = { ...originalProxy, type: 'http' as const }
+    logEvent(
+      'warn',
+      'runtime',
+      `Proxy preflight failed for "${profile.name}" via HTTPS entry, retrying with HTTP entry on Windows`,
+      profile.id,
+    )
+    const fallbackCheck = await checkNetworkHealth(profile, fallbackProxy)
+    if (fallbackCheck.ok) {
+      proxy = fallbackProxy
+      check = fallbackCheck
+      logEvent(
+        'info',
+        'runtime',
+        `Proxy preflight recovered for "${profile.name}" using HTTP proxy entry on Windows`,
+        profile.id,
+      )
+    }
+  }
+
   updateRuntimeMetadata(profile, {
     lastResolvedIp: check.ip,
     lastResolvedCountry: check.country,
