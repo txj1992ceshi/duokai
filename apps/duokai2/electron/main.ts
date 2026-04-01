@@ -2573,7 +2573,24 @@ async function runProxyPreflight(
     database.setProxyStatus(profile.proxyId, check.ok ? 'online' : 'offline')
   }
   if (!check.ok && proxy) {
-    throw new Error(`Proxy preflight failed for "${profile.name}"`)
+    const detail = check.message || 'Unknown proxy preflight error'
+    audit('proxy_preflight_failed', {
+      profileId: profile.id,
+      profileName: profile.name,
+      platform: process.platform,
+      detail,
+      source: check.source,
+    })
+    if (process.platform === 'win32') {
+      logEvent(
+        'warn',
+        'runtime',
+        `Proxy preflight failed for "${profile.name}" on Windows, continuing launch: ${detail}`,
+        profile.id,
+      )
+    } else {
+      throw new Error(`Proxy preflight failed for "${profile.name}": ${detail}`)
+    }
   }
   return { proxy, check }
 }
