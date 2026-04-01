@@ -957,14 +957,24 @@ function buildPowerShellHashtableLiteral(values: Record<string, string>): string
 async function requestJsonViaPowerShell(input: string, init: JsonRequestInit = {}): Promise<JsonResponse> {
   const headers = headersToObject(init.headers)
   const body = init.body || ''
+  const method = String(init.method || 'GET').toUpperCase()
   const script = `
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $uri = '${escapePowerShellString(input)}'
-$method = '${escapePowerShellString(init.method || 'GET')}'
+$method = '${escapePowerShellString(method)}'
 $headers = ${buildPowerShellHashtableLiteral(headers)}
 $body = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${Buffer.from(body, 'utf8').toString('base64')}'))
 try {
-  $response = Invoke-WebRequest -Uri $uri -Method $method -Headers $headers -Body $body -UseBasicParsing
+  $requestParams = @{
+    Uri = $uri
+    Method = $method
+    Headers = $headers
+    UseBasicParsing = $true
+  }
+  if ($method -ne 'GET' -and $method -ne 'HEAD' -and -not [string]::IsNullOrEmpty($body)) {
+    $requestParams['Body'] = $body
+  }
+  $response = Invoke-WebRequest @requestParams
   $payload = @{
     status = [int]$response.StatusCode
     statusText = [string]$response.StatusDescription
@@ -1171,6 +1181,77 @@ function normalizeProfileName(name: string | undefined): string {
 
 function normalizeProfileNameKey(name: string | undefined): string {
   return normalizeProfileName(name).toLocaleLowerCase()
+}
+
+function resetCachedProfileStatesOnStartup(): void {
+  const database = requireDatabase()
+  const profiles = database.listProfiles()
+  const groupedByName = new Map<string, ProfileRecord[]>()
+
+  for (const profile of profiles) {
+    const key = normalizeProfileNameKey(profile.name) || `__EMPTY__:${profile.id}`
+    const existing = groupedByName.get(key)
+    if (existing) {
+      existing.push(profile)
+    } else {
+      groupedByName.set(key, [profile])
+    }
+  }
+
+  for (const [, duplicates] of groupedByName.entries()) {
+    if (duplicates.length <= 1) {
+      continue
+    }
+    duplicates.sort((left, right) => {
+      const rightTime = Date.parse(right.updatedAt || right.createdAt || '')
+      const leftTime = Date.parse(left.updatedAt || left.createdAt || '')
+      return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0)
+    })
+    const keep = duplicates[0]
+    for (const stale of duplicates.slice(1)) {
+      database.deleteProfile(stale.id)
+      audit('profiles_local_duplicate_removed_on_startup', {
+        keepId: keep.id,
+        removedId: stale.id,
+        name: stale.name,
+      })
+    }
+  }
+
+  for (const profile of database.listProfiles()) {
+    const metadata = profile.fingerprintConfig.runtimeMetadata
+    const needsStatusReset = profile.status !== 'stopped'
+    const needsMetadataReset =
+      metadata.launchValidationStage !== 'idle' ||
+      metadata.launchRetryCount !== 0
+
+    if (!needsStatusReset && !needsMetadataReset) {
+      continue
+    }
+
+    database.updateProfile({
+      id: profile.id,
+      name: profile.name,
+      proxyId: profile.proxyId,
+      groupName: profile.groupName,
+      tags: profile.tags,
+      notes: profile.notes,
+      fingerprintConfig: {
+        ...profile.fingerprintConfig,
+        runtimeMetadata: {
+          ...metadata,
+          launchValidationStage: 'idle',
+          launchRetryCount: 0,
+        },
+      },
+    })
+    database.setProfileStatus(profile.id, 'stopped')
+    audit('profiles_local_status_reset_on_startup', {
+      profileId: profile.id,
+      previousStatus: profile.status,
+      previousLaunchStage: metadata.launchValidationStage,
+    })
+  }
 }
 
 function assertProfileNameUniqueOrThrow(name: string | undefined, ignoreProfileId?: string): void {
@@ -3580,6 +3661,7 @@ async function bootstrap(): Promise<void> {
   await app.whenReady()
   syncTheme()
   db = new DatabaseService(app)
+  resetCachedProfileStatesOnStartup()
   await registerIpcHandlers()
   initAgentService()
   try {
