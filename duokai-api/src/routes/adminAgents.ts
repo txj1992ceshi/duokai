@@ -6,6 +6,7 @@ import { logAdminAction } from '../lib/audit.js';
 import { asyncHandler } from '../lib/http.js';
 import { connectMongo } from '../lib/mongodb.js';
 import { buildProxyAssetUsageMap, serializeProxyAssetWithUsage } from '../lib/proxyAssetUsage.js';
+import { buildRetryTaskPayload, normalizeTaskAttemptCount } from '../lib/taskRetries.js';
 import { resolveControlTaskReasonCode } from '../lib/taskResults.js';
 import { requireAdmin } from '../middlewares/auth.js';
 import { AdminActionLogModel } from '../models/AdminActionLog.js';
@@ -284,6 +285,7 @@ router.post(
     const type = String(req.body?.type || '').trim();
     const payload = (req.body?.payload || {}) as Record<string, unknown>;
     const idempotencyKey = String(req.body?.idempotencyKey || '').trim();
+    const maxAttempts = normalizeTaskAttemptCount(req.body?.maxAttempts, 1);
 
     if (!agentId || !type) {
       res.status(400).json({ success: false, error: 'agentId and type are required' });
@@ -317,6 +319,11 @@ router.post(
         status: 'PENDING',
         payload,
         idempotencyKey,
+        attemptCount: 1,
+        maxAttempts,
+        retryOfTaskId: '',
+        supersededByTaskId: '',
+        terminalReasonCode: '',
         createdByUserId: req.authUser?.userId || '',
         createdByEmail: req.authUser?.email || '',
       });
@@ -597,6 +604,11 @@ router.get(
         idempotencyKey: item.idempotencyKey,
         payload: item.payload ?? {},
         createdAt: item.createdAt,
+        attemptCount: Number(item.attemptCount || 1),
+        maxAttempts: Number(item.maxAttempts || 1),
+        retryOfTaskId: item.retryOfTaskId || '',
+        supersededByTaskId: item.supersededByTaskId || '',
+        terminalReasonCode: item.terminalReasonCode || '',
         pulledAt: item.pulledAt,
         startedAt: item.startedAt,
         endedAt: item.endedAt,
@@ -626,6 +638,7 @@ router.get(
           blockedReasonCode: resolveControlTaskReasonCode({
             status: item.status,
             errorCode: item.errorCode,
+            terminalReasonCode: item.terminalReasonCode,
             payload:
               item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
                 ? (item.payload as Record<string, unknown>)
@@ -738,6 +751,7 @@ router.get(
         resolveControlTaskReasonCode({
           status: item.status,
           errorCode: item.errorCode,
+          terminalReasonCode: item.terminalReasonCode,
           payload:
             item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
               ? (item.payload as Record<string, unknown>)
@@ -1021,6 +1035,98 @@ router.get(
 );
 
 router.post(
+  '/tasks/:taskId/retry',
+  asyncHandler(async (req, res) => {
+    await connectMongo();
+
+    const taskId = String(req.params.taskId || '').trim();
+    if (!taskId) {
+      res.status(400).json({ success: false, error: 'taskId is required' });
+      return;
+    }
+
+    const task = await ControlTaskModel.findOne({ taskId });
+    if (!task) {
+      res.status(404).json({ success: false, error: 'Task not found' });
+      return;
+    }
+
+    if (!['FAILED', 'CANCELLED'].includes(task.status)) {
+      res.status(409).json({ success: false, error: 'Only failed or cancelled tasks can be retried' });
+      return;
+    }
+
+    const attemptCount = normalizeTaskAttemptCount(task.attemptCount, 1);
+    const maxAttempts = normalizeTaskAttemptCount(task.maxAttempts, 1);
+    if (attemptCount >= maxAttempts) {
+      res.status(409).json({
+        success: false,
+        error: 'Task has reached maxAttempts and cannot be retried',
+        detail: { taskId: task.taskId, attemptCount, maxAttempts },
+      });
+      return;
+    }
+
+    const retryPayload = buildRetryTaskPayload({
+      existingTask: {
+        taskId: task.taskId,
+        agentId: task.agentId,
+        type: task.type,
+        payload: task.payload && typeof task.payload === 'object' && !Array.isArray(task.payload) ? task.payload : {},
+        idempotencyKey: task.idempotencyKey,
+        createdByUserId: task.createdByUserId,
+        createdByEmail: task.createdByEmail,
+        attemptCount,
+        maxAttempts,
+      },
+    });
+
+    const retriedTask = await ControlTaskModel.create(retryPayload);
+    task.supersededByTaskId = retriedTask.taskId;
+    await task.save();
+
+    await TaskEventModel.create({
+      taskId: retriedTask.taskId,
+      agentId: retriedTask.agentId,
+      status: 'PENDING',
+      idempotencyKey: retriedTask.idempotencyKey,
+      detail: {
+        source: 'admin-retry',
+        retryOfTaskId: task.taskId,
+        attemptCount: retriedTask.attemptCount,
+        maxAttempts: retriedTask.maxAttempts,
+      },
+      createdAt: new Date(),
+    });
+
+    await logAdminAction({
+      adminUserId: req.authUser?.userId || '',
+      adminEmail: req.authUser?.email || '',
+      action: 'agent.task.retry',
+      targetType: 'task',
+      targetId: retriedTask.taskId,
+      targetLabel: `${retriedTask.type}:${retriedTask.agentId}`,
+      detail: {
+        retryOfTaskId: task.taskId,
+        attemptCount: retriedTask.attemptCount,
+        maxAttempts: retriedTask.maxAttempts,
+      },
+    });
+
+    res.status(201).json({
+      success: true,
+      task: {
+        taskId: retriedTask.taskId,
+        retryOfTaskId: retriedTask.retryOfTaskId || '',
+        attemptCount: retriedTask.attemptCount || 1,
+        maxAttempts: retriedTask.maxAttempts || 1,
+        status: retriedTask.status,
+      },
+    });
+  })
+);
+
+router.post(
   '/tasks/:taskId/cancel',
   asyncHandler(async (req, res) => {
     await connectMongo();
@@ -1045,6 +1151,12 @@ router.post(
     task.status = 'CANCELLED';
     task.endedAt = new Date();
     task.cancelledByUserId = req.authUser?.userId || '';
+    task.terminalReasonCode = resolveControlTaskReasonCode({
+      status: 'CANCELLED',
+      errorCode: task.errorCode,
+      terminalReasonCode: task.terminalReasonCode,
+      payload: task.payload && typeof task.payload === 'object' && !Array.isArray(task.payload) ? task.payload : null,
+    });
     await task.save();
 
     await TaskEventModel.create({

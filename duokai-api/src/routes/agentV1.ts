@@ -15,6 +15,7 @@ import {
 } from '../lib/agentProtocol.js';
 import { asyncHandler } from '../lib/http.js';
 import { connectMongo } from '../lib/mongodb.js';
+import { resolveControlTaskReasonCode } from '../lib/taskResults.js';
 import { requireAgent, requireAgentProtocolV1 } from '../middlewares/agentAuth.js';
 import { AgentModel } from '../models/Agent.js';
 import { AgentSessionModel } from '../models/AgentSession.js';
@@ -414,6 +415,12 @@ router.post(
     task.errorMessage = errorMessage;
     task.outputRef = outputRef;
     task.diagnostics = diagnostics;
+    task.terminalReasonCode = resolveControlTaskReasonCode({
+      status,
+      errorCode,
+      terminalReasonCode: task.terminalReasonCode,
+      payload: task.payload && typeof task.payload === 'object' && !Array.isArray(task.payload) ? task.payload : null,
+    });
     await task.save();
 
     await TaskEventModel.create({

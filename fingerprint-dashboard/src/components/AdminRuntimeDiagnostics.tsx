@@ -94,7 +94,7 @@ export default function AdminRuntimeDiagnostics({
                       ) : null}
                     </div>
                     <div className="mt-2 text-[11px] text-slate-500">
-                      agent {task.agentId} · {formatTime(task.createdAt)}
+                      agent {task.agentId} · attempt {task.attemptCount || 1}/{task.maxAttempts || 1} · {formatTime(task.createdAt)}
                     </div>
                   </div>
                 ))}

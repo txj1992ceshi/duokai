@@ -376,6 +376,11 @@ export interface AdminAgentTaskSummary {
   idempotencyKey: string;
   payload: Record<string, unknown>;
   createdAt?: string;
+  attemptCount?: number;
+  maxAttempts?: number;
+  retryOfTaskId?: string;
+  supersededByTaskId?: string;
+  terminalReasonCode?: string;
   pulledAt?: string | null;
   startedAt?: string | null;
   endedAt?: string | null;

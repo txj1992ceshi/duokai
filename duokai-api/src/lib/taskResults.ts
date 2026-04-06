@@ -11,11 +11,16 @@ function getNestedCode(container: MaybeRecord, key: string): string {
 export function resolveControlTaskReasonCode(task: {
   status?: string;
   errorCode?: string;
+  terminalReasonCode?: string;
   payload?: MaybeRecord;
 }) {
   const directErrorCode = String(task.errorCode || '').trim();
   if (directErrorCode) {
     return directErrorCode;
+  }
+  const terminalReasonCode = String(task.terminalReasonCode || '').trim();
+  if (terminalReasonCode) {
+    return terminalReasonCode;
   }
   const payload =
     task.payload && typeof task.payload === 'object' && !Array.isArray(task.payload)

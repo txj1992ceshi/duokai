@@ -349,6 +349,11 @@ router.post(
               },
       },
       idempotencyKey,
+      attemptCount: 1,
+      maxAttempts: 1,
+      retryOfTaskId: '',
+      supersededByTaskId: '',
+      terminalReasonCode: '',
       createdByUserId: req.authUser?.userId || '',
       createdByEmail: req.authUser?.email || '',
     });

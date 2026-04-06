@@ -7,6 +7,7 @@ test('resolveControlTaskReasonCode prefers explicit errorCode', () => {
     resolveControlTaskReasonCode({
       status: 'FAILED',
       errorCode: 'RUNTIME_TIMEOUT',
+      terminalReasonCode: 'WORKSPACE_NOT_READY',
       payload: { preLaunchDecision: { code: 'APPROVED' } },
     }),
     'RUNTIME_TIMEOUT'

@@ -36,6 +36,31 @@ const ControlTaskSchema = new Schema(
       default: '',
       index: true,
     },
+    attemptCount: {
+      type: Number,
+      default: 1,
+      min: 1,
+    },
+    maxAttempts: {
+      type: Number,
+      default: 1,
+      min: 1,
+    },
+    retryOfTaskId: {
+      type: String,
+      default: '',
+      index: true,
+    },
+    supersededByTaskId: {
+      type: String,
+      default: '',
+      index: true,
+    },
+    terminalReasonCode: {
+      type: String,
+      default: '',
+      index: true,
+    },
     createdByUserId: {
       type: String,
       default: '',
