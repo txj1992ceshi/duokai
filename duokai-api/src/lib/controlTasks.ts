@@ -76,5 +76,8 @@ export function getControlActionDefinition(action: ControlPlaneAction): ControlA
 
 export function buildTaskIdempotencyKey(action: ControlPlaneAction, profileId: string, snapshotId = ''): string {
   const base = [action, profileId.trim(), snapshotId.trim()].filter(Boolean).join(':');
+  if (action === 'start' || action === 'stop') {
+    return base;
+  }
   return `${base}:${Date.now()}`;
 }

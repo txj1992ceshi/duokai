@@ -5,8 +5,14 @@ import {
   getControlActionDefinition,
   normalizeControlPlaneAction,
 } from '../lib/controlTasks.js';
+import {
+  ACTIVE_CONTROL_TASK_STATUSES,
+  evaluateProfilePreLaunch,
+  resolveDuplicateTaskBlock,
+  selectAgentForAction,
+  validateStartWithLease,
+} from '../lib/controlPlaneDecision.js';
 import { asyncHandler } from '../lib/http.js';
-import { validateProfileLeaseForStart } from '../lib/ipLease.js';
 import { connectMongo } from '../lib/mongodb.js';
 import { getDefaultPlatformPolicy } from '../lib/platformPolicies.js';
 import { requireUser } from '../middlewares/auth.js';
@@ -19,49 +25,6 @@ import { ProxyAssetModel } from '../models/ProxyAsset.js';
 import { TaskEventModel } from '../models/TaskEvent.js';
 
 const router = Router();
-const AGENT_ACTIVE_WINDOW_MS = 2 * 60 * 1000;
-
-function isAgentOnline(agent: { status?: string; lastSeenAt?: Date | null }) {
-  if (agent.status === 'DISABLED') {
-    return false;
-  }
-  if (!agent.lastSeenAt) {
-    return false;
-  }
-  return agent.lastSeenAt.getTime() >= Date.now() - AGENT_ACTIVE_WINDOW_MS;
-}
-
-function hasCapability(agent: { capabilities?: unknown[] }, capability: string) {
-  return Array.isArray(agent.capabilities) && agent.capabilities.includes(capability);
-}
-
-function getRunningProfileIds(agent: { runtimeStatus?: Record<string, unknown> | null }) {
-  const raw = agent.runtimeStatus?.runningProfileIds;
-  return Array.isArray(raw) ? raw.map((item) => String(item || '').trim()).filter(Boolean) : [];
-}
-
-function getStringArrayField(
-  container: { runtimeStatus?: Record<string, unknown> | null } | null | undefined,
-  key: string
-) {
-  const raw = container?.runtimeStatus?.[key];
-  return Array.isArray(raw) ? raw.map((item) => String(item || '').trim()).filter(Boolean) : [];
-}
-
-function getAgentSelectionState(agent: { agentId: string; runtimeStatus?: Record<string, unknown> | null; lastSeenAt?: Date | null }) {
-  const runningProfileIds = getRunningProfileIds(agent);
-  const lockedProfileIds = getStringArrayField(agent, 'lockedProfileIds');
-  const staleLockProfileIds = getStringArrayField(agent, 'staleLockProfileIds');
-  return {
-    runningProfileIds,
-    lockedProfileIds,
-    staleLockProfileIds,
-    runningCount: runningProfileIds.length,
-    lockedCount: lockedProfileIds.length,
-    staleLockCount: staleLockProfileIds.length,
-    lastSeenAtMs: agent.lastSeenAt?.getTime() || 0,
-  };
-}
 
 async function persistLastLaunchBlock(
   userId: string,
@@ -92,22 +55,6 @@ async function clearLastLaunchBlock(userId: string, profileId: string) {
       },
     }
   );
-}
-
-function compareAgentPriority(
-  left: ReturnType<typeof getAgentSelectionState>,
-  right: ReturnType<typeof getAgentSelectionState>
-) {
-  if (left.staleLockCount !== right.staleLockCount) {
-    return left.staleLockCount - right.staleLockCount;
-  }
-  if (left.runningCount !== right.runningCount) {
-    return left.runningCount - right.runningCount;
-  }
-  if (left.lockedCount !== right.lockedCount) {
-    return left.lockedCount - right.lockedCount;
-  }
-  return right.lastSeenAtMs - left.lastSeenAtMs;
 }
 
 router.post(
@@ -146,28 +93,69 @@ router.post(
       return;
     }
 
+    const preLaunchDecision = action === 'start' ? evaluateProfilePreLaunch(profile) : null;
+    if (preLaunchDecision && !preLaunchDecision.ok) {
+      await persistLastLaunchBlock(req.authUser?.userId || '', profileId, {
+        code: preLaunchDecision.code,
+        message: preLaunchDecision.message,
+        detail: preLaunchDecision.detail || null,
+      });
+      res.status(409).json({
+        success: false,
+        code: preLaunchDecision.code,
+        error: preLaunchDecision.message,
+        detail: preLaunchDecision.detail || null,
+      });
+      return;
+    }
+
+    const taskType = actionDefinition.taskType;
+    const duplicateTask = await ControlTaskModel.findOne({
+      createdByUserId: req.authUser?.userId || '',
+      type: taskType,
+      status: { $in: [...ACTIVE_CONTROL_TASK_STATUSES] },
+      'payload.profileId': profileId,
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const duplicateTaskBlock =
+      action === 'start' || action === 'stop'
+        ? resolveDuplicateTaskBlock({
+            action,
+            profileId,
+            duplicateTask: duplicateTask as Record<string, unknown> | null,
+          })
+        : null;
+    if (duplicateTaskBlock) {
+      if (action === 'start') {
+        await persistLastLaunchBlock(req.authUser?.userId || '', profileId, {
+          code: duplicateTaskBlock.code,
+          message: duplicateTaskBlock.message,
+          detail: duplicateTaskBlock.detail || null,
+        });
+      }
+      res.status(409).json({
+        success: false,
+        code: duplicateTaskBlock.code,
+        error: duplicateTaskBlock.message,
+        detail: duplicateTaskBlock.detail || null,
+      });
+      return;
+    }
+
     const agents = await AgentModel.find({
       ownerUserId: req.authUser?.userId || '',
       status: { $ne: 'DISABLED' },
     })
       .sort({ lastSeenAt: -1, updatedAt: -1 })
       .lean();
-
-    const onlineAgents = agents.filter((agent) => isAgentOnline(agent));
     const requiredCapability = actionDefinition.requiredCapability;
-    const capableAgents = onlineAgents.filter((agent) => hasCapability(agent, requiredCapability));
-
-    let selectedAgent = capableAgents.find((agent) => getRunningProfileIds(agent).includes(profileId));
-    if (!selectedAgent) {
-      const rankedAgents = capableAgents
-        .map((agent) => ({
-          agent,
-          state: getAgentSelectionState(agent),
-        }))
-        .filter(({ state }) => !state.lockedProfileIds.includes(profileId))
-        .sort((left, right) => compareAgentPriority(left.state, right.state));
-      selectedAgent = rankedAgents[0]?.agent;
-    }
+    const { selectedAgent, onlineAgents, capableAgents, selectedState } = selectAgentForAction({
+      agents,
+      profileId,
+      requiredCapability,
+    });
 
     if (!selectedAgent) {
       if (action === 'start') {
@@ -199,8 +187,7 @@ router.post(
       return;
     }
 
-    const selectedState = getAgentSelectionState(selectedAgent);
-    const runningProfileIds = selectedState.runningProfileIds;
+    const runningProfileIds = selectedState?.runningProfileIds || [];
     if (action === 'start' && runningProfileIds.includes(profileId)) {
       await clearLastLaunchBlock(req.authUser?.userId || '', profileId);
       res.json({
@@ -210,23 +197,23 @@ router.post(
         agentId: selectedAgent.agentId,
         detail: {
           selectedAgent: {
-            staleLockCount: selectedState.staleLockCount,
-            lockedCount: selectedState.lockedCount,
-            runningCount: selectedState.runningCount,
+            staleLockCount: selectedState?.staleLockCount || 0,
+            lockedCount: selectedState?.lockedCount || 0,
+            runningCount: selectedState?.runningCount || 0,
           },
         },
       });
       return;
     }
 
-    if (action === 'start' && selectedState.lockedProfileIds.includes(profileId)) {
+    if (action === 'start' && (selectedState?.lockedProfileIds || []).includes(profileId)) {
       await persistLastLaunchBlock(req.authUser?.userId || '', profileId, {
         code: 'RUNTIME_LOCK_EXISTS',
         message: '目标 Profile 当前存在本机运行锁，暂时不能重复启动',
         detail: {
           agentId: selectedAgent.agentId,
-          lockedProfileIds: selectedState.lockedProfileIds,
-          staleLockProfileIds: selectedState.staleLockProfileIds,
+          lockedProfileIds: selectedState?.lockedProfileIds || [],
+          staleLockProfileIds: selectedState?.staleLockProfileIds || [],
         },
       });
       res.status(409).json({
@@ -235,16 +222,14 @@ router.post(
         error: '目标 Profile 当前存在本机运行锁，暂时不能重复启动',
         detail: {
           agentId: selectedAgent.agentId,
-          lockedProfileIds: selectedState.lockedProfileIds,
-          staleLockProfileIds: selectedState.staleLockProfileIds,
+          lockedProfileIds: selectedState?.lockedProfileIds || [],
+          staleLockProfileIds: selectedState?.staleLockProfileIds || [],
         },
       });
       return;
     }
 
-    let leaseValidation:
-      | ReturnType<typeof validateProfileLeaseForStart>
-      | null = null;
+    let leaseValidation = null;
     let activeLease: Record<string, unknown> | null = null;
     let proxyAsset: Record<string, unknown> | null = null;
     let platformPolicy: Record<string, unknown> | null = null;
@@ -291,16 +276,16 @@ router.post(
         );
       }
 
-      const runningProfileIds = Array.from(
-        new Set(capableAgents.flatMap((agent) => getRunningProfileIds(agent)))
-      );
+      const runningProfileIds = Array.from(new Set(capableAgents.flatMap((agent) => agent.runtimeStatus?.runningProfileIds || [])))
+        .map((item) => String(item || '').trim())
+        .filter(Boolean);
 
-      leaseValidation = validateProfileLeaseForStart(profile, activeLease, conflictingLeases, {
-        proxyAsset,
-        proxyPolicy:
-          platformPolicy && typeof platformPolicy === 'object'
-            ? ((platformPolicy as { proxyPolicy?: Record<string, unknown> }).proxyPolicy ?? null)
-            : null,
+      leaseValidation = validateStartWithLease({
+        profile,
+        activeLease,
+        conflictingLeases: conflictingLeases as Record<string, unknown>[],
+        proxyAsset: proxyAsset as Record<string, unknown> | null,
+        platformPolicy: platformPolicy as Record<string, unknown> | null,
         runningProfileIds,
       });
       if (!leaseValidation.ok) {
@@ -319,7 +304,6 @@ router.post(
       }
     }
 
-    const taskType = actionDefinition.taskType;
     const taskId = randomUUID();
     const idempotencyKey = buildTaskIdempotencyKey(action, profileId, snapshotId);
 
@@ -349,6 +333,20 @@ router.post(
           action === 'start'
             ? String((proxyAsset as { sharingMode?: unknown } | null)?.sharingMode || '').trim()
             : '',
+        preLaunchDecision:
+          action === 'start'
+            ? {
+                approved: true,
+                code: preLaunchDecision?.code || 'APPROVED',
+                message: preLaunchDecision?.message || 'Approved by control-plane pre-launch checks.',
+                detail: preLaunchDecision?.detail || null,
+              }
+            : {
+                approved: true,
+                code: 'APPROVED',
+                message: 'Approved by control-plane stop checks.',
+                detail: null,
+              },
       },
       idempotencyKey,
       createdByUserId: req.authUser?.userId || '',
@@ -369,6 +367,7 @@ router.post(
         activeLeaseId: String((activeLease as { leaseId?: unknown } | null)?.leaseId || '').trim(),
         ipUsageMode: String((profile as { ipUsageMode?: unknown }).ipUsageMode || '').trim(),
         leaseValidationCode: leaseValidation?.code || '',
+        preLaunchDecisionCode: action === 'start' ? preLaunchDecision?.code || 'APPROVED' : 'APPROVED',
       },
       createdAt: new Date(),
     });
@@ -387,10 +386,11 @@ router.post(
       action,
       detail: {
         selectedAgent: {
-          staleLockCount: selectedState.staleLockCount,
-          lockedCount: selectedState.lockedCount,
-          runningCount: selectedState.runningCount,
+          staleLockCount: selectedState?.staleLockCount || 0,
+          lockedCount: selectedState?.lockedCount || 0,
+          runningCount: selectedState?.runningCount || 0,
         },
+        preLaunchDecisionCode: action === 'start' ? preLaunchDecision?.code || 'APPROVED' : 'APPROVED',
       },
     });
   }),

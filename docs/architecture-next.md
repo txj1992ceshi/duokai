@@ -79,8 +79,8 @@ Vultr file storage owns:
 2. Control plane stores compact metadata and policies.
 3. Desktop agent syncs the latest config and policies.
 4. User requests a runtime action.
-5. Control plane resolves profile policy, lease, proxy asset sharing capability, cooldown state, and current IP usage counts.
-6. Control plane either blocks launch with an explicit reason code or creates a control task.
+5. Control plane resolves profile policy, lifecycle state, runtime mode support, workspace readiness summary, lease, proxy asset sharing capability, cooldown state, and current IP usage counts.
+6. Control plane blocks invalid or duplicate start/stop requests with explicit reason codes before task creation.
 7. The target desktop agent claims the task.
 8. Local desktop runtime validates lease, policy, and workspace isolation.
 9. Local desktop runtime executes the action.

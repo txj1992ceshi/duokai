@@ -24,3 +24,8 @@ test('buildTaskIdempotencyKey includes action and identifiers', () => {
   const key = buildTaskIdempotencyKey('restore', 'profile-1', 'snapshot-1');
   assert.match(key, /^restore:profile-1:snapshot-1:/);
 });
+
+test('buildTaskIdempotencyKey stays stable for start and stop dedupe', () => {
+  assert.equal(buildTaskIdempotencyKey('start', 'profile-1'), 'start:profile-1');
+  assert.equal(buildTaskIdempotencyKey('stop', 'profile-1'), 'stop:profile-1');
+});
