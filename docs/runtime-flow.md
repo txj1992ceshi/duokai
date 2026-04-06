@@ -52,8 +52,15 @@ Restore:
    - current local state fallback
    - local trusted snapshot
    - cloud backup
-4. Runtime runs post-restore verification.
-5. Runtime records success or invalidation reason.
+4. Runtime clears prior trusted launch reuse state and quick isolation cache.
+5. Runtime runs post-restore verification.
+6. Runtime records success or invalidation reason.
+
+Post-restore trust rules:
+
+- restore or rollback never silently keeps the previous trusted launch baseline active
+- restored environments must pass a fresh isolation preflight before trusted launch reuse resumes
+- last quick isolation metadata is reset after recovery so stale trust cannot survive a workspace rewind
 
 ## Failure Principles
 

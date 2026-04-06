@@ -455,6 +455,43 @@ function persistTrustedLaunchSummary(
   })
 }
 
+function resetTrustAfterWorkspaceRecovery(
+  profile: ProfileRecord,
+  options: {
+    reason: string
+  },
+): ProfileRecord {
+  const withMetadataReset = updateRuntimeMetadata(profile, {
+    lastQuickCheckAt: '',
+    lastQuickCheckSuccess: null,
+    lastQuickCheckMessage: '',
+    lastQuickIsolationCheck: null,
+    trustedSnapshotStatus: 'stale',
+    trustedLaunchSnapshot: null,
+    launchValidationStage: 'idle',
+    lastValidationMessages: Array.from(
+      new Set([
+        ...profile.fingerprintConfig.runtimeMetadata.lastValidationMessages,
+        options.reason,
+      ].filter(Boolean)),
+    ),
+  })
+  const withTrustSummary = updateWorkspaceTrustSummary(withMetadataReset, {
+    lastQuickIsolationCheckAt: '',
+    lastQuickIsolationCheckSuccess: null,
+    lastQuickIsolationCheckMessage: options.reason,
+    trustedSnapshotStatus: 'stale',
+    trustedLaunchVerifiedAt: '',
+    activeRuntimeLock: {
+      state: 'unlocked',
+      ownerDeviceId: '',
+      ownerPid: null,
+      updatedAt: new Date().toISOString(),
+    },
+  })
+  return withTrustSummary
+}
+
 function isProfileLaunchInFlight(profileId: string): boolean {
   return scheduler.getQueuedIds().includes(profileId) || scheduler.getStartingIds().includes(profileId)
 }
@@ -808,14 +845,18 @@ async function restoreWorkspaceSnapshotForProfile(
       },
     },
   })
+  const recoveryResetReason = `Workspace recovery requires a fresh isolation preflight before trusted launch can resume.`
+  const recoveredProfile = resetTrustAfterWorkspaceRecovery(persisted, {
+    reason: recoveryResetReason,
+  })
   const gateResult = validateWorkspaceGate(
-    persisted,
+    recoveredProfile,
     requireDatabase()
       .listProfiles()
-      .map((item) => (item.id === persisted.id ? persisted : item)),
+      .map((item) => (item.id === recoveredProfile.id ? recoveredProfile : item)),
   )
   let gatedProfile = persistProfile({
-    ...persisted,
+    ...recoveredProfile,
     workspace: gateResult.workspace,
   })
   gatedProfile = await refreshLastKnownGoodSnapshotStatus(gatedProfile)
@@ -882,14 +923,18 @@ async function rollbackWorkspaceSnapshotForProfile(profileId: string): Promise<P
       },
     },
   })
+  const recoveryResetReason = `Workspace rollback requires a fresh isolation preflight before trusted launch can resume.`
+  const recoveredProfile = resetTrustAfterWorkspaceRecovery(persisted, {
+    reason: recoveryResetReason,
+  })
   const gateResult = validateWorkspaceGate(
-    persisted,
+    recoveredProfile,
     requireDatabase()
       .listProfiles()
-      .map((item) => (item.id === persisted.id ? persisted : item)),
+      .map((item) => (item.id === recoveredProfile.id ? recoveredProfile : item)),
   )
   let gatedProfile = persistProfile({
-    ...persisted,
+    ...recoveredProfile,
     workspace: gateResult.workspace,
   })
   gatedProfile = await refreshLastKnownGoodSnapshotStatus(gatedProfile)
