@@ -37,6 +37,11 @@ function formatTime(value?: string | null) {
   return Number.isFinite(date.getTime()) ? date.toLocaleString() : 'unknown time';
 }
 
+function formatMaybe(value?: string | null) {
+  const normalized = String(value || '').trim();
+  return normalized || '—';
+}
+
 export default function AdminRuntimeDiagnostics({
   loading,
   error,
@@ -122,6 +127,25 @@ export default function AdminRuntimeDiagnostics({
                     <div className="mt-2 text-[11px] text-slate-500">
                       agent {task.agentId} · attempt {task.attemptCount || 1}/{task.maxAttempts || 1} · {formatTime(task.createdAt)}
                     </div>
+                    {(task.terminalReasonCode || task.errorCode || task.errorMessage || task.retryOfTaskId || task.supersededByTaskId) ? (
+                      <div className="mt-2 space-y-1 rounded-lg border border-slate-800/60 bg-slate-900/60 px-3 py-2 text-[11px] text-slate-400">
+                        <div>
+                          reason {formatMaybe(task.terminalReasonCode || task.errorCode || task.summary?.blockedReasonCode)}
+                        </div>
+                        {task.errorMessage ? (
+                          <div className="break-words text-slate-500">{task.errorMessage}</div>
+                        ) : null}
+                        {task.retryOfTaskId ? (
+                          <div>retry of {task.retryOfTaskId}</div>
+                        ) : null}
+                        {task.supersededByTaskId ? (
+                          <div>superseded by {task.supersededByTaskId}</div>
+                        ) : null}
+                        <div>
+                          started {formatTime(task.startedAt || null)} · ended {formatTime(task.endedAt || null)}
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 ))}
               </div>
@@ -149,6 +173,14 @@ export default function AdminRuntimeDiagnostics({
                       <div className="mt-1 text-[11px] text-slate-500">
                         {event.summary?.preLaunchDecisionCode || '—'} / {event.summary?.leaseValidationCode || '—'}
                       </div>
+                      {event.summary?.ipUsageMode ? (
+                        <div className="mt-1 text-[11px] text-slate-500">ip mode {event.summary.ipUsageMode}</div>
+                      ) : null}
+                      {event.detail?.blockedReasonCode ? (
+                        <div className="mt-1 text-[11px] text-amber-300">
+                          blocked {String(event.detail.blockedReasonCode)}
+                        </div>
+                      ) : null}
                     </div>
                     <div className="text-[11px] text-slate-500">{formatTime(event.createdAt)}</div>
                   </div>
