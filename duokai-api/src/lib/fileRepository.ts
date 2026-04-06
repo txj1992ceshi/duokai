@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
 
@@ -68,4 +68,46 @@ export async function writeJsonArtifact(
 
 export async function readArtifactBuffer(fileRef: string): Promise<Buffer> {
   return await readFile(fileRef);
+}
+
+async function collectArtifactFiles(directory: string): Promise<string[]> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files = await Promise.all(
+    entries.map(async (entry) => {
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        return await collectArtifactFiles(fullPath);
+      }
+      return [fullPath];
+    })
+  );
+  return files.flat();
+}
+
+export async function listArtifactFiles(kind: FileArtifactKind): Promise<string[]> {
+  const root = path.join(getFileRepositoryRoot(), kind);
+  try {
+    return await collectArtifactFiles(root);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
+      return [];
+    }
+    throw error;
+  }
+}
+
+export async function deleteArtifactFile(fileRef: string): Promise<boolean> {
+  const normalized = String(fileRef || '').trim();
+  if (!normalized) {
+    return false;
+  }
+  try {
+    await rm(normalized, { force: true });
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
+      return false;
+    }
+    throw error;
+  }
 }

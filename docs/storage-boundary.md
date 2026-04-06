@@ -92,6 +92,13 @@ Storage-state and workspace-snapshot read APIs should return metadata-first payl
 - storage state backups: latest by default
 - snapshots: recent N per profile
 
+Current cleanup implementation:
+
+- storage-state artifact cleanup removes file-backed backups that are no longer referenced by the current profile storage-state metadata
+- workspace-snapshot cleanup keeps the most recent `N` manifests per profile and removes older manifests plus their file-backed snapshot bodies
+- orphaned file-backed artifacts under `storage-state-backup` and `workspace-snapshot` are removed during the same cleanup pass
+- `duokai-api` exposes this through `npm run cleanup:storage`, with `--dry-run` support for safe verification
+
 ## Source of Truth Order
 
 1. Current local runtime state
