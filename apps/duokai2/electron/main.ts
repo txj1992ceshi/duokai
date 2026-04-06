@@ -1012,6 +1012,71 @@ async function saveAllElectronSessions(): Promise<void> {
   audit('save_all_end', { count: runtimeContexts.size })
 }
 
+async function finalizeRuntimeShutdown(profileId: string, reason: string): Promise<void> {
+  const context = runtimeContexts.get(profileId)
+  clearProfileStorageSyncTimer(profileId)
+
+  if (context) {
+    try {
+      await saveProfileStorageStateToDisk(profileId, context)
+    } catch (error) {
+      audit('shutdown_storage_save_failed', {
+        profileId,
+        reason,
+        err: error instanceof Error ? error.message : String(error),
+      })
+    }
+    try {
+      await uploadProfileStorageStateToControlPlane(profileId, {
+        context,
+        reason,
+      })
+    } catch (error) {
+      audit('shutdown_storage_upload_failed', {
+        profileId,
+        reason,
+        err: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  runtimeContexts.delete(profileId)
+  try {
+    if (context) {
+      await context.close()
+    }
+  } catch (error) {
+    audit('shutdown_context_close_failed', {
+      profileId,
+      reason,
+      err: error instanceof Error ? error.message : String(error),
+    })
+  }
+
+  try {
+    await runtimeHostManager.stopEnvironment(profileId)
+  } catch (error) {
+    audit('shutdown_runtime_host_stop_failed', {
+      profileId,
+      reason,
+      err: error instanceof Error ? error.message : String(error),
+    })
+  }
+
+  try {
+    await releaseProfileRuntimeLock(profileId)
+  } catch (error) {
+    audit('shutdown_runtime_lock_release_failed', {
+      profileId,
+      reason,
+      err: error instanceof Error ? error.message : String(error),
+    })
+  }
+
+  scheduler.markStopped(profileId)
+  await updateProfileStatus(profileId, 'stopped')
+}
+
 async function gracefulShutdownHandler(signalOrErr?: unknown) {
   if (gracefulShutdownInFlight) {
     return
@@ -1022,7 +1087,7 @@ async function gracefulShutdownHandler(signalOrErr?: unknown) {
     console.log('Graceful shutdown: saving sessions...')
     await saveAllElectronSessions()
     for (const profileId of [...runtimeContexts.keys()]) {
-      await releaseProfileRuntimeLock(profileId)
+      await finalizeRuntimeShutdown(profileId, 'graceful-shutdown')
     }
   } catch (error) {
     console.error('graceful shutdown save failed', error)
@@ -1043,6 +1108,10 @@ process.on('SIGTERM', () => {
 process.on('uncaughtException', (error) => {
   console.error('uncaughtException', error)
   void gracefulShutdownHandler(error)
+})
+process.on('unhandledRejection', (reason) => {
+  console.error('unhandledRejection', reason)
+  void gracefulShutdownHandler(reason)
 })
 
 console.log('Runtime audit log:', AUDIT_LOG_PATH)
@@ -2892,17 +2961,7 @@ async function stopRuntime(profileId: string): Promise<void> {
     await updateProfileStatus(profileId, 'stopped')
     return
   }
-
-  clearProfileStorageSyncTimer(profileId)
-  await uploadProfileStorageStateToControlPlane(profileId, {
-    context,
-    reason: 'stop',
-  })
-  runtimeContexts.delete(profileId)
-  await context.close()
-  await runtimeHostManager.stopEnvironment(profileId)
-  await releaseProfileRuntimeLock(profileId)
-  scheduler.markStopped(profileId)
+  await finalizeRuntimeShutdown(profileId, 'stop')
 }
 
 async function launchMany(profileIds: string[]): Promise<void> {
@@ -3590,6 +3649,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     })
     profile = persistQuickIsolationTrust(profile, isolationPreflight.quickCheck)
     void syncProfileLaunchTrustToControlPlane(profile)
+    void syncWorkspaceSummaryToControlPlane(profile).catch(() => {})
     if (isolationPreflight.status === 'block') {
       profile = updateRuntimeMetadata(profile, {
         lastValidationLevel: 'block',
@@ -3658,6 +3718,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       trustedLaunchVerifiedAt: comparison.ok ? existingSnapshot?.verifiedAt || '' : '',
     })
     void syncProfileLaunchTrustToControlPlane(profile)
+    void syncWorkspaceSummaryToControlPlane(profile).catch(() => {})
     if (!comparison.ok) {
       audit('quick_check_failed', { profileId, reason: comparison.message })
       throw new Error(comparison.message)
@@ -3685,6 +3746,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     profile = persistTrustedLaunchSummary(profile, {
       trustedSnapshotStatus: 'stale',
     })
+    void syncWorkspaceSummaryToControlPlane(profile).catch(() => {})
     }
 
     const registrationCooldown = getRegistrationCooldownContext(profile, check)
@@ -3829,6 +3891,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       trustedLaunchVerifiedAt:
         profile.fingerprintConfig.runtimeMetadata.trustedLaunchSnapshot?.verifiedAt || '',
     })
+    void syncWorkspaceSummaryToControlPlane(profile).catch(() => {})
     logEvent(
     'info',
     'runtime',
@@ -3870,12 +3933,14 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     context.on('close', () => {
     clearProfileStorageSyncTimer(profileId)
     runtimeContexts.delete(profileId)
-    void uploadProfileStorageStateToControlPlane(profileId, {
-      reason: 'context-close',
-    })
-    void releaseProfileRuntimeLock(profileId)
-    scheduler.markStopped(profileId)
-    void syncProfileStatusToControlPlane(profileId, 'stopped')
+    if (!gracefulShutdownInFlight) {
+      void uploadProfileStorageStateToControlPlane(profileId, {
+        reason: 'context-close',
+      })
+      void releaseProfileRuntimeLock(profileId)
+      scheduler.markStopped(profileId)
+      void syncProfileStatusToControlPlane(profileId, 'stopped')
+    }
     logEvent('info', 'runtime', `Closed profile "${profile.name}"`, profileId)
     })
 
@@ -5228,15 +5293,10 @@ async function bootstrap(): Promise<void> {
     }
     beforeQuitHandled = true
     event.preventDefault()
-    void (async () => {
-      try {
-        audit('app_before_quit_begin')
-        await saveAllElectronSessions()
-      } finally {
-        audit('app_before_quit_end')
-        setTimeout(() => app.exit(0), 300)
-      }
-    })()
+    audit('app_before_quit_begin')
+    void gracefulShutdownHandler('before-quit').finally(() => {
+      audit('app_before_quit_end')
+    })
   })
 }
 
