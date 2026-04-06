@@ -780,6 +780,11 @@ async function restoreWorkspaceSnapshotForProfile(
   recoveryReason = `restore:${snapshotId}`,
 ): Promise<ProfileRecord> {
   if (isProfileLaunchInFlight(profileId)) {
+    audit('workspace_restore_blocked', {
+      profileId,
+      snapshotId,
+      reason: 'profile-launch-in-flight',
+    })
     throw new Error(`Cannot restore workspace snapshot while profile ${profileId} is queued or starting`)
   }
   await stopRuntime(profileId)
@@ -831,15 +836,29 @@ async function restoreWorkspaceSnapshotForProfile(
     })
   })
   if (gateResult.status === 'block') {
+    audit('workspace_restore_validation_failed', {
+      profileId,
+      snapshotId,
+      messages: gateResult.messages,
+    })
     throw new Error(
       `Workspace snapshot ${snapshotId} was restored, but post-restore validation failed: ${gateResult.messages.join(' ')}`,
     )
   }
+  audit('workspace_restore_succeeded', {
+    profileId,
+    snapshotId,
+    gateStatus: gateResult.status,
+  })
   return gatedProfile
 }
 
 async function rollbackWorkspaceSnapshotForProfile(profileId: string): Promise<ProfileRecord> {
   if (isProfileLaunchInFlight(profileId)) {
+    audit('workspace_rollback_blocked', {
+      profileId,
+      reason: 'profile-launch-in-flight',
+    })
     throw new Error(`Cannot roll back workspace snapshot while profile ${profileId} is queued or starting`)
   }
   await stopRuntime(profileId)
@@ -891,10 +910,20 @@ async function rollbackWorkspaceSnapshotForProfile(profileId: string): Promise<P
     })
   })
   if (gateResult.status === 'block') {
+    audit('workspace_rollback_validation_failed', {
+      profileId,
+      snapshotId,
+      messages: gateResult.messages,
+    })
     throw new Error(
       `Workspace snapshot ${snapshotId} was rolled back, but post-restore validation failed: ${gateResult.messages.join(' ')}`,
     )
   }
+  audit('workspace_rollback_succeeded', {
+    profileId,
+    snapshotId,
+    gateStatus: gateResult.status,
+  })
   return gatedProfile
 }
 
@@ -3639,6 +3668,18 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       workspace: isolationPreflight.workspace,
     })
     profile = persistQuickIsolationTrust(profile, isolationPreflight.quickCheck)
+    audit(
+      isolationPreflight.status === 'block' ? 'isolation_preflight_failed' : 'isolation_preflight_passed',
+      {
+        profileId,
+        status: isolationPreflight.status,
+        workspaceHealthStatus: isolationPreflight.quickCheck.workspaceHealthStatus,
+        workspaceConsistencyStatus: isolationPreflight.quickCheck.workspaceConsistencyStatus,
+        runtimeLockStatus: isolationPreflight.quickCheck.runtimeLockStatus,
+        canonicalRoot: isolationPreflight.quickCheck.canonicalRoot,
+        message: isolationPreflight.quickCheck.message,
+      },
+    )
     void syncProfileLaunchTrustToControlPlane(profile)
     void syncWorkspaceSummaryToControlPlane(profile).catch(() => {})
     if (isolationPreflight.status === 'block') {
@@ -3753,6 +3794,12 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       audit('quick_check_failed', { profileId, reason: comparison.message })
       throw new Error(comparison.message)
     }
+    audit('trusted_launch_quick_check_passed', {
+      profileId,
+      verifiedAt: existingSnapshot?.verifiedAt || '',
+      effectiveProxyTransport,
+      egressIp: check.ip,
+    })
     } else {
     audit('full_check_start', { profileId })
     profile = updateRuntimeMetadata(profile, {
@@ -3837,6 +3884,14 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       trustedSnapshotStatus: 'trusted',
       trustedLaunchSnapshot: refreshedSnapshot,
       lastEffectiveProxyTransport: effectiveProxyTransport,
+    })
+    audit('trusted_launch_snapshot_created', {
+      profileId,
+      verifiedAt: refreshedSnapshot.verifiedAt,
+      effectiveProxyTransport,
+      egressIp: refreshedSnapshot.verifiedEgressIp,
+      country: refreshedSnapshot.verifiedCountry,
+      region: refreshedSnapshot.verifiedRegion,
     })
     void syncProfileLaunchTrustToControlPlane(profile)
     }
@@ -4023,6 +4078,13 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       launchValidationStage: 'idle',
       trustedSnapshotStatus: nextSnapshot?.status || latestProfile.fingerprintConfig.runtimeMetadata.trustedSnapshotStatus,
       trustedLaunchSnapshot: nextSnapshot,
+    })
+    audit(startupNavigationPassed ? 'trusted_launch_confirmed' : 'trusted_launch_navigation_failed', {
+      profileId,
+      startupNavigationPassed,
+      verifiedAt: nextSnapshot?.verifiedAt || '',
+      trustedSnapshotStatus: nextSnapshot?.status || latestProfile.fingerprintConfig.runtimeMetadata.trustedSnapshotStatus,
+      startupUrl,
     })
     if (startupNavigationPassed && latestWorkspaceSnapshot) {
       await markWorkspaceSnapshotAsLastKnownGood(
