@@ -10,6 +10,7 @@ import {
   computeWorkspaceHealthSummary,
   validateWorkspaceGate,
 } from './profileValidator.ts'
+import { runLocalIsolationPreflight } from './localIsolation.ts'
 import { resolveWorkspaceLaunchConfig } from './workspaceRuntime.ts'
 import type { ProfileRecord, WorkspaceMigrationCheckpoint } from '../../src/shared/types.ts'
 
@@ -146,11 +147,57 @@ test('resolveWorkspaceLaunchConfig uses workspace runtime source of truth', () =
   const resolved = resolveWorkspaceLaunchConfig(profile, false)
 
   assert.equal(resolved.userDataDir, profile.workspace!.paths.profileDir)
+  assert.equal(resolved.cacheDir, profile.workspace!.paths.cacheDir)
   assert.equal(resolved.downloadsDir, profile.workspace!.paths.downloadsDir)
+  assert.equal(resolved.extensionsDir, profile.workspace!.paths.extensionsDir)
+  assert.equal(resolved.metaDir, profile.workspace!.paths.metaDir)
+  assert.equal(resolved.canonicalRoot, path.dirname(profile.workspace!.paths.profileDir))
   assert.equal(resolved.locale, 'fr-FR')
   assert.equal(resolved.timezoneId, 'Europe/Paris')
   assert.deepEqual(resolved.viewport, { width: 1600, height: 900 })
   assert.deepEqual(resolved.launchArgs, ['--workspace-arg', '--disable-webrtc'])
+})
+
+test('runLocalIsolationPreflight passes with canonical workspace launch paths and runtime lock', () => {
+  const profile = buildProfile('profile-preflight-pass')
+  const result = runLocalIsolationPreflight(profile, [profile], {
+    getRuntimeLockState: () => 'locked',
+  })
+
+  assert.equal(result.status, 'pass')
+  assert.equal(result.launch.userDataDir, profile.workspace!.paths.profileDir)
+  assert.equal(result.launch.cacheDir, profile.workspace!.paths.cacheDir)
+  assert.equal(result.quickCheck.mode, 'preflight')
+  assert.equal(result.quickCheck.success, true)
+  assert.equal(result.quickCheck.runtimeLockStatus, 'locked')
+  assert.equal(result.quickCheck.workspaceConsistencyStatus, 'pass')
+})
+
+test('runLocalIsolationPreflight blocks when runtime lock is missing', () => {
+  const profile = buildProfile('profile-preflight-lock')
+  const result = runLocalIsolationPreflight(profile, [profile], {
+    getRuntimeLockState: () => 'unlocked',
+  })
+
+  assert.equal(result.status, 'block')
+  assert.equal(result.quickCheck.success, false)
+  assert.match(result.quickCheck.message, /runtime lock/i)
+})
+
+test('runLocalIsolationPreflight blocks when workspace paths are reused inside one profile', () => {
+  const paths = createWorkspaceDirectories('profile-preflight-shared')
+  const profile = buildProfile('profile-preflight-shared', {
+    paths: {
+      ...paths,
+      cacheDir: paths.downloadsDir,
+    },
+  })
+  const result = runLocalIsolationPreflight(profile, [profile], {
+    getRuntimeLockState: () => 'locked',
+  })
+
+  assert.equal(result.status, 'block')
+  assert.match(result.quickCheck.message, /reused local paths/i)
 })
 
 test('computeWorkspaceHealthSummary returns healthy for completed workspace layout', () => {

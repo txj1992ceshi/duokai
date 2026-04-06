@@ -138,6 +138,22 @@ function createDefaultWorkspaceConsistency(
   }
 }
 
+function createDefaultWorkspaceTrustSummary(): WorkspaceDescriptor['trustSummary'] {
+  return {
+    lastQuickIsolationCheckAt: '',
+    lastQuickIsolationCheckSuccess: null,
+    lastQuickIsolationCheckMessage: '',
+    trustedSnapshotStatus: 'unknown',
+    trustedLaunchVerifiedAt: '',
+    activeRuntimeLock: {
+      state: 'unlocked',
+      ownerDeviceId: '',
+      ownerPid: null,
+      updatedAt: '',
+    },
+  }
+}
+
 function createResolvedWorkspaceEnvironment(
   fingerprintConfig: FingerprintConfig,
   paths: WorkspacePaths,
@@ -239,6 +255,14 @@ export function createDefaultWorkspaceDescriptor(
         {}),
       templateFingerprintHash,
       templateRevision,
+    },
+    trustSummary: {
+      ...createDefaultWorkspaceTrustSummary(),
+      ...(existing?.trustSummary ?? {}),
+      activeRuntimeLock: {
+        ...createDefaultWorkspaceTrustSummary().activeRuntimeLock,
+        ...(existing?.trustSummary?.activeRuntimeLock ?? {}),
+      },
     },
     snapshotSummary: {
       lastSnapshotId: String(existing?.snapshotSummary?.lastSnapshotId || '').trim(),

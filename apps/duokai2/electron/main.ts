@@ -51,6 +51,7 @@ import {
   resolveChromiumExecutable,
 } from './services/runtime'
 import { resolveWorkspaceLaunchConfig } from './services/workspaceRuntime'
+import { runLocalIsolationPreflight } from './services/localIsolation'
 import {
   applyLastKnownGoodAssessment,
   createWorkspaceSnapshot,
@@ -376,6 +377,63 @@ function writeRuntimeLockRecord(profile: ProfileRecord, status: RuntimeLockRecor
   return next
 }
 
+function updateWorkspaceTrustSummary(
+  profile: ProfileRecord,
+  patch: Partial<NonNullable<ProfileRecord['workspace']>['trustSummary']>,
+): ProfileRecord {
+  if (!profile.workspace) {
+    return profile
+  }
+  return persistProfile({
+    ...profile,
+    workspace: {
+      ...profile.workspace,
+      trustSummary: {
+        ...profile.workspace.trustSummary,
+        ...patch,
+        activeRuntimeLock: {
+          ...profile.workspace.trustSummary.activeRuntimeLock,
+          ...(patch.activeRuntimeLock ?? {}),
+        },
+      },
+    },
+  })
+}
+
+function persistQuickIsolationTrust(
+  profile: ProfileRecord,
+  quickCheck: TrustedIsolationCheck,
+): ProfileRecord {
+  const withMetadata = updateRuntimeMetadata(profile, {
+    lastQuickIsolationCheck: quickCheck,
+  })
+  return updateWorkspaceTrustSummary(withMetadata, {
+    lastQuickIsolationCheckAt: quickCheck.checkedAt,
+    lastQuickIsolationCheckSuccess: quickCheck.success,
+    lastQuickIsolationCheckMessage: quickCheck.message,
+    activeRuntimeLock: {
+      state: quickCheck.runtimeLockStatus,
+      ownerDeviceId:
+        quickCheck.runtimeLockStatus === 'unlocked' ? '' : getControlPlaneDeviceId(),
+      ownerPid: quickCheck.runtimeLockStatus === 'unlocked' ? null : process.pid,
+      updatedAt: quickCheck.checkedAt,
+    },
+  })
+}
+
+function persistTrustedLaunchSummary(
+  profile: ProfileRecord,
+  options: {
+    trustedSnapshotStatus: NonNullable<ProfileRecord['workspace']>['trustSummary']['trustedSnapshotStatus']
+    trustedLaunchVerifiedAt?: string
+  },
+): ProfileRecord {
+  return updateWorkspaceTrustSummary(profile, {
+    trustedSnapshotStatus: options.trustedSnapshotStatus,
+    trustedLaunchVerifiedAt: options.trustedLaunchVerifiedAt ?? '',
+  })
+}
+
 async function releaseProfileRuntimeLock(profileId: string): Promise<void> {
   const timer = runtimeLockHeartbeatTimers.get(profileId)
   if (timer) {
@@ -392,6 +450,14 @@ async function releaseProfileRuntimeLock(profileId: string): Promise<void> {
   }
   try {
     unlinkSync(lockPath)
+    updateWorkspaceTrustSummary(profile, {
+      activeRuntimeLock: {
+        state: 'unlocked',
+        ownerDeviceId: '',
+        ownerPid: null,
+        updatedAt: new Date().toISOString(),
+      },
+    })
   } catch (error) {
     audit('runtime_lock_release_failed', {
       profileId,
@@ -442,6 +508,14 @@ function acquireProfileRuntimeLock(profile: ProfileRecord): { record: RuntimeLoc
     }
   }
   const record = writeRuntimeLockRecord(profile, 'starting')
+  updateWorkspaceTrustSummary(profile, {
+    activeRuntimeLock: {
+      state: 'locked',
+      ownerDeviceId: getControlPlaneDeviceId(),
+      ownerPid: process.pid,
+      updatedAt: record.updatedAt,
+    },
+  })
   startRuntimeLockHeartbeat(profile.id)
   audit(staleReclaimed ? 'runtime_lock_reclaimed' : 'runtime_lock_acquired', {
     profileId: profile.id,
@@ -457,6 +531,14 @@ function markProfileRuntimeLockRunning(profileId: string): void {
     return
   }
   writeRuntimeLockRecord(profile, 'running')
+  updateWorkspaceTrustSummary(profile, {
+    activeRuntimeLock: {
+      state: 'locked',
+      ownerDeviceId: getControlPlaneDeviceId(),
+      ownerPid: process.pid,
+      updatedAt: new Date().toISOString(),
+    },
+  })
 }
 
 function summarizeRuntimeLockStates(): {
@@ -487,6 +569,14 @@ function cleanupRuntimeLocksOnStartup(): void {
     }
     try {
       unlinkSync(getProfileRuntimeLockPath(profile))
+      updateWorkspaceTrustSummary(profile, {
+        activeRuntimeLock: {
+          state: 'unlocked',
+          ownerDeviceId: '',
+          ownerPid: null,
+          updatedAt: new Date().toISOString(),
+        },
+      })
       audit('runtime_lock_cleanup_startup', { profileId: profile.id })
     } catch (error) {
       audit('runtime_lock_cleanup_startup_failed', {
@@ -2094,12 +2184,15 @@ function buildTrustedLaunchSnapshot(
 }
 
 function buildQuickIsolationCheck(
+  profile: ProfileRecord,
   check: NetworkHealthResult,
   effectiveProxyTransport: string,
   success: boolean,
   message: string,
 ): TrustedIsolationCheck {
+  const workspace = profile.workspace
   return {
+    mode: 'quick-network',
     checkedAt: new Date().toISOString(),
     success,
     message,
@@ -2110,6 +2203,10 @@ function buildQuickIsolationCheck(
     language: check.languageHint,
     geolocation: check.geolocation,
     effectiveProxyTransport,
+    workspaceConsistencyStatus: workspace?.consistencySummary.status || 'unknown',
+    workspaceHealthStatus: workspace?.healthSummary.status || 'unknown',
+    runtimeLockStatus: getRuntimeLockStateForProfile(profile),
+    canonicalRoot: workspace ? path.dirname(workspace.paths.profileDir) : '',
   }
 }
 
@@ -3437,6 +3534,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
   }
   let profile = storedProfile
   let runtimeLockHeld = false
+  let workspaceLaunch: ReturnType<typeof resolveWorkspaceLaunchConfig> | null = null
 
   if (runtimeContexts.has(profileId)) {
     return
@@ -3467,6 +3565,25 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
         launchValidationStage: 'idle',
       })
     }
+    const isolationPreflight = runLocalIsolationPreflight(profile, database.listProfiles(), {
+      disableGpu: !profile.fingerprintConfig.commonSettings.hardwareAcceleration,
+      getRuntimeLockState: getRuntimeLockStateForProfile,
+    })
+    workspaceLaunch = isolationPreflight.launch
+    profile = persistProfile({
+      ...profile,
+      workspace: isolationPreflight.workspace,
+    })
+    profile = persistQuickIsolationTrust(profile, isolationPreflight.quickCheck)
+    void syncProfileLaunchTrustToControlPlane(profile)
+    if (isolationPreflight.status === 'block') {
+      profile = updateRuntimeMetadata(profile, {
+        lastValidationLevel: 'block',
+        lastValidationMessages: isolationPreflight.messages,
+        launchValidationStage: 'idle',
+      })
+      throw new Error(isolationPreflight.messages.join(' '))
+    }
     const proxy = resolveProfileProxy(profile, database)
     const validation = validateProfileReadiness(profile, proxy, undefined, undefined, getLifecyclePolicyContext())
     const configFingerprintHash = buildConfigFingerprintHash(profile)
@@ -3496,10 +3613,15 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       launchValidationStage: 'quick-check',
       trustedSnapshotStatus: 'trusted',
     })
+    profile = persistTrustedLaunchSummary(profile, {
+      trustedSnapshotStatus: 'trusted',
+      trustedLaunchVerifiedAt: existingSnapshot?.verifiedAt || '',
+    })
     check = await checkNetworkHealth(profile, proxy)
     effectiveProxyTransport = toEntryTransport(proxy)
     const comparison = compareSnapshotWithCheck(existingSnapshot!, check, effectiveProxyTransport)
     const quickCheck = buildQuickIsolationCheck(
+      profile,
       check,
       effectiveProxyTransport,
       comparison.ok,
@@ -3509,7 +3631,6 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       lastQuickCheckAt: quickCheck.checkedAt,
       lastQuickCheckSuccess: quickCheck.success,
       lastQuickCheckMessage: quickCheck.message,
-      lastQuickIsolationCheck: quickCheck,
       lastEffectiveProxyTransport: effectiveProxyTransport,
       trustedSnapshotStatus: comparison.ok ? 'trusted' : 'invalid',
       trustedLaunchSnapshot: comparison.ok
@@ -3517,6 +3638,10 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
         : existingSnapshot
           ? { ...existingSnapshot, status: 'invalid', verificationLevel: 'quick' }
           : null,
+    })
+    profile = persistTrustedLaunchSummary(profile, {
+      trustedSnapshotStatus: comparison.ok ? 'trusted' : 'invalid',
+      trustedLaunchVerifiedAt: comparison.ok ? existingSnapshot?.verifiedAt || '' : '',
     })
     void syncProfileLaunchTrustToControlPlane(profile)
     if (!comparison.ok) {
@@ -3540,8 +3665,10 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       lastQuickCheckAt: '',
       lastQuickCheckSuccess: null,
       lastQuickCheckMessage: '',
-      lastQuickIsolationCheck: null,
       lastEffectiveProxyTransport: effectiveProxyTransport,
+      trustedSnapshotStatus: 'stale',
+    })
+    profile = persistTrustedLaunchSummary(profile, {
       trustedSnapshotStatus: 'stale',
     })
     }
@@ -3613,10 +3740,12 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     profile = ensureWorkspaceLayoutForProfileId(profileId)
     const settings = database.getSettings()
     const fingerprint = profile.fingerprintConfig
-    const workspaceLaunch = resolveWorkspaceLaunchConfig(
-      profile,
-      !fingerprint.commonSettings.hardwareAcceleration,
-    )
+    workspaceLaunch =
+      workspaceLaunch ||
+      resolveWorkspaceLaunchConfig(
+        profile,
+        !fingerprint.commonSettings.hardwareAcceleration,
+      )
     const userDataDir = workspaceLaunch.userDataDir
     mkdirSync(userDataDir, { recursive: true })
     await downloadProfileStorageStateFromControlPlane(profileId)
@@ -3680,6 +3809,11 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     profile = updateRuntimeMetadata(profile, {
     launchRetryCount: scheduler.getRetryCounts()[profileId] ?? 0,
     injectedFeatures,
+    })
+    profile = persistTrustedLaunchSummary(profile, {
+      trustedSnapshotStatus: profile.fingerprintConfig.runtimeMetadata.trustedSnapshotStatus,
+      trustedLaunchVerifiedAt:
+        profile.fingerprintConfig.runtimeMetadata.trustedLaunchSnapshot?.verifiedAt || '',
     })
     logEvent(
     'info',

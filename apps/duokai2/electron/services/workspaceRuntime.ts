@@ -1,3 +1,4 @@
+import path from 'node:path'
 import type { ProfileRecord, ResolvedWorkspaceLaunchConfig } from '../../src/shared/types'
 
 function parseLocale(language: string): string {
@@ -32,6 +33,19 @@ function buildRuntimeArgs(
   return Array.from(new Set(args))
 }
 
+export function normalizeWorkspacePath(input: string): string {
+  const normalized = path.normalize(path.resolve(input))
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+}
+
+export function buildCanonicalWorkspaceRoot(profile: ProfileRecord): string {
+  const workspace = profile.workspace
+  if (!workspace) {
+    throw new Error(`Workspace is missing for profile ${profile.id}`)
+  }
+  return path.dirname(normalizeWorkspacePath(workspace.paths.profileDir))
+}
+
 export function resolveWorkspaceLaunchConfig(
   profile: ProfileRecord,
   disableGpu = false,
@@ -45,7 +59,11 @@ export function resolveWorkspaceLaunchConfig(
   // Legacy fingerprintConfig fields remain compatibility mirrors only.
   return {
     userDataDir: paths.profileDir,
+    cacheDir: paths.cacheDir,
     downloadsDir: paths.downloadsDir,
+    extensionsDir: paths.extensionsDir,
+    metaDir: paths.metaDir,
+    canonicalRoot: buildCanonicalWorkspaceRoot(profile),
     locale: parseLocale(resolvedEnvironment.browserLanguage),
     timezoneId: resolvedEnvironment.timezone || 'America/Los_Angeles',
     viewport: normalizeResolution(resolvedEnvironment.resolution),

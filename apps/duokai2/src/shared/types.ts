@@ -127,6 +127,19 @@ export interface WorkspaceDescriptor {
   paths: WorkspacePaths
   healthSummary: WorkspaceHealthReport
   consistencySummary: WorkspaceConsistencyReport
+  trustSummary: {
+    lastQuickIsolationCheckAt: string
+    lastQuickIsolationCheckSuccess: boolean | null
+    lastQuickIsolationCheckMessage: string
+    trustedSnapshotStatus: 'unknown' | 'trusted' | 'stale' | 'invalid'
+    trustedLaunchVerifiedAt: string
+    activeRuntimeLock: {
+      state: 'unlocked' | 'locked' | 'stale-lock'
+      ownerDeviceId: string
+      ownerPid: number | null
+      updatedAt: string
+    }
+  }
   snapshotSummary: WorkspaceSnapshotSummary
   recovery: {
     lastRecoveryAt: string
@@ -192,7 +205,11 @@ export interface WorkspaceSnapshotRecord {
 export interface ResolvedWorkspaceLaunchConfig {
   // profileDir is the only persistent browser user data root.
   userDataDir: string
+  cacheDir: string
   downloadsDir: string
+  extensionsDir: string
+  metaDir: string
+  canonicalRoot: string
   locale: string
   timezoneId: string
   viewport: {
@@ -384,6 +401,7 @@ export interface DeviceProfile {
 }
 
 export interface TrustedIsolationCheck {
+  mode: 'preflight' | 'quick-network'
   checkedAt: string
   success: boolean
   message: string
@@ -394,6 +412,10 @@ export interface TrustedIsolationCheck {
   language: string
   geolocation: string
   effectiveProxyTransport: string
+  workspaceConsistencyStatus: WorkspaceConsistencyReport['status']
+  workspaceHealthStatus: WorkspaceHealthReport['status']
+  runtimeLockStatus: 'unlocked' | 'locked' | 'stale-lock'
+  canonicalRoot: string
 }
 
 export interface TrustedLaunchSnapshot {
