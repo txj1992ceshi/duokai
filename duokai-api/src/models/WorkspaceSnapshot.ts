@@ -35,6 +35,16 @@ const WorkspaceSnapshotSchema = new Schema(
       type: Schema.Types.Mixed,
       default: {},
     },
+    workspaceManifestRef: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    storageStateRef: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     workspaceMetadata: {
       type: Schema.Types.Mixed,
       required: true,
@@ -58,6 +68,30 @@ const WorkspaceSnapshotSchema = new Schema(
     validatedStartAt: {
       type: String,
       default: '',
+      trim: true,
+    },
+    fileRef: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    checksum: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    size: {
+      type: Number,
+      default: 0,
+    },
+    contentType: {
+      type: String,
+      default: 'application/json',
+      trim: true,
+    },
+    retentionPolicy: {
+      type: String,
+      default: 'recent-n',
       trim: true,
     },
   },

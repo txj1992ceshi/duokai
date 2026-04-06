@@ -368,7 +368,7 @@ router.post(
       res.status(400).json({ success: false, error: validated.error });
       return;
     }
-    const { status, idempotencyKey, errorCode, errorMessage, outputRef, startedAt, endedAt } =
+    const { status, idempotencyKey, errorCode, errorMessage, outputRef, diagnostics, startedAt, endedAt } =
       validated.value;
 
     const task = await ControlTaskModel.findOne({ taskId, agentId });
@@ -413,6 +413,7 @@ router.post(
     task.errorCode = errorCode;
     task.errorMessage = errorMessage;
     task.outputRef = outputRef;
+    task.diagnostics = diagnostics;
     await task.save();
 
     await TaskEventModel.create({
@@ -426,6 +427,7 @@ router.post(
         errorCode,
         errorMessage,
         outputRef,
+        diagnostics,
       },
       createdAt: new Date(),
     });

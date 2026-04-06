@@ -2,6 +2,10 @@ import { Router } from 'express';
 import { connectMongo } from '../lib/mongodb.js';
 import { asyncHandler } from '../lib/http.js';
 import { requireUser } from '../middlewares/auth.js';
+import {
+  resolveWorkspaceSnapshotArtifact,
+  writeWorkspaceSnapshotArtifact,
+} from '../lib/storageArtifacts.js';
 import { ProfileModel } from '../models/Profile.js';
 import { WorkspaceSnapshotModel } from '../models/WorkspaceSnapshot.js';
 
@@ -20,6 +24,8 @@ export function normalizeWorkspaceSnapshotPayload(
     templateRevision: String(body.templateRevision || '').trim(),
     templateFingerprintHash: String(body.templateFingerprintHash || '').trim(),
     manifest: body.manifest && typeof body.manifest === 'object' ? body.manifest : {},
+    workspaceManifestRef: String(body.workspaceManifestRef || '').trim(),
+    storageStateRef: String(body.storageStateRef || '').trim(),
     workspaceMetadata:
       body.workspaceMetadata && typeof body.workspaceMetadata === 'object'
         ? body.workspaceMetadata
@@ -32,8 +38,76 @@ export function normalizeWorkspaceSnapshotPayload(
         ? body.consistencySummary
         : {},
     validatedStartAt: String(body.validatedStartAt || '').trim(),
+    fileRef: String(body.fileRef || '').trim(),
+    checksum: String(body.checksum || '').trim(),
+    size: Number(body.size || 0) || 0,
+    contentType: String(body.contentType || 'application/json').trim() || 'application/json',
+    retentionPolicy: String(body.retentionPolicy || 'recent-n').trim() || 'recent-n',
     createdAt: String(body.createdAt || '').trim(),
     updatedAt: String(body.updatedAt || '').trim(),
+  };
+}
+
+function buildCompactStorageState(value: Record<string, unknown>) {
+  const next = { ...value };
+  if ('stateJson' in next) {
+    next.stateJson = null;
+  }
+  return next;
+}
+
+function normalizeSnapshotStorageState(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {} as Record<string, unknown>;
+  }
+  return value as Record<string, unknown>;
+}
+
+async function serializeWorkspaceSnapshot(snapshot: Record<string, unknown> | null) {
+  if (!snapshot) {
+    return null;
+  }
+  const artifactPayload = await resolveWorkspaceSnapshotArtifact(String(snapshot.fileRef || ''));
+  return {
+    snapshotId: String(snapshot.snapshotId || ''),
+    profileId: String(snapshot.profileId || ''),
+    templateRevision: String(snapshot.templateRevision || ''),
+    templateFingerprintHash: String(snapshot.templateFingerprintHash || ''),
+    manifest:
+      (artifactPayload?.manifest && typeof artifactPayload.manifest === 'object'
+        ? artifactPayload.manifest
+        : snapshot.manifest) || {},
+    workspaceManifestRef: String(snapshot.workspaceManifestRef || ''),
+    storageStateRef: String(snapshot.storageStateRef || ''),
+    workspaceMetadata:
+      (artifactPayload?.workspaceMetadata && typeof artifactPayload.workspaceMetadata === 'object'
+        ? artifactPayload.workspaceMetadata
+        : snapshot.workspaceMetadata) || {},
+    storageState:
+      (artifactPayload?.storageState && typeof artifactPayload.storageState === 'object'
+        ? artifactPayload.storageState
+        : snapshot.storageState) || {},
+    directoryManifest: Array.isArray(artifactPayload?.directoryManifest)
+      ? artifactPayload!.directoryManifest
+      : Array.isArray(snapshot.directoryManifest)
+        ? snapshot.directoryManifest
+        : [],
+    healthSummary:
+      (artifactPayload?.healthSummary && typeof artifactPayload.healthSummary === 'object'
+        ? artifactPayload.healthSummary
+        : snapshot.healthSummary) || {},
+    consistencySummary:
+      (artifactPayload?.consistencySummary && typeof artifactPayload.consistencySummary === 'object'
+        ? artifactPayload.consistencySummary
+        : snapshot.consistencySummary) || {},
+    validatedStartAt: String(snapshot.validatedStartAt || ''),
+    fileRef: String(snapshot.fileRef || ''),
+    checksum: String(snapshot.checksum || ''),
+    size: Number(snapshot.size || 0),
+    contentType: String(snapshot.contentType || 'application/json'),
+    retentionPolicy: String(snapshot.retentionPolicy || 'recent-n'),
+    createdAt: snapshot.createdAt,
+    updatedAt: snapshot.updatedAt,
   };
 }
 
@@ -63,21 +137,9 @@ router.get(
 
     res.json({
       success: true,
-      snapshots: snapshots.map((snapshot) => ({
-        snapshotId: snapshot.snapshotId,
-        profileId: String(snapshot.profileId),
-        templateRevision: snapshot.templateRevision || '',
-        templateFingerprintHash: snapshot.templateFingerprintHash || '',
-        manifest: snapshot.manifest || {},
-        workspaceMetadata: snapshot.workspaceMetadata || {},
-        storageState: snapshot.storageState || {},
-        directoryManifest: Array.isArray(snapshot.directoryManifest) ? snapshot.directoryManifest : [],
-        healthSummary: snapshot.healthSummary || {},
-        consistencySummary: snapshot.consistencySummary || {},
-        validatedStartAt: snapshot.validatedStartAt || '',
-        createdAt: snapshot.createdAt,
-        updatedAt: snapshot.updatedAt,
-      })),
+      snapshots: await Promise.all(
+        snapshots.map((snapshot) => serializeWorkspaceSnapshot(snapshot as Record<string, unknown>))
+      ),
     });
   })
 );
@@ -113,21 +175,7 @@ router.get(
 
     res.json({
       success: true,
-      snapshot: {
-        snapshotId: snapshot.snapshotId,
-        profileId: String(snapshot.profileId),
-        templateRevision: snapshot.templateRevision || '',
-        templateFingerprintHash: snapshot.templateFingerprintHash || '',
-        manifest: snapshot.manifest || {},
-        workspaceMetadata: snapshot.workspaceMetadata || {},
-        storageState: snapshot.storageState || {},
-        directoryManifest: Array.isArray(snapshot.directoryManifest) ? snapshot.directoryManifest : [],
-        healthSummary: snapshot.healthSummary || {},
-        consistencySummary: snapshot.consistencySummary || {},
-        validatedStartAt: snapshot.validatedStartAt || '',
-        createdAt: snapshot.createdAt,
-        updatedAt: snapshot.updatedAt,
-      },
+      snapshot: await serializeWorkspaceSnapshot(snapshot as Record<string, unknown>),
     });
   })
 );
@@ -153,6 +201,27 @@ router.put(
 
     const payload = normalizeWorkspaceSnapshotPayload(profileId, snapshotId, body);
 
+    const artifact = await writeWorkspaceSnapshotArtifact({
+      userId: String(authUser.userId),
+      profileId,
+      snapshotId: payload.snapshotId,
+      payload: {
+        snapshotId: payload.snapshotId,
+        profileId,
+        templateRevision: payload.templateRevision,
+        templateFingerprintHash: payload.templateFingerprintHash,
+        manifest: payload.manifest,
+        workspaceMetadata: payload.workspaceMetadata,
+        storageState: payload.storageState,
+        directoryManifest: payload.directoryManifest,
+        healthSummary: payload.healthSummary,
+        consistencySummary: payload.consistencySummary,
+        validatedStartAt: payload.validatedStartAt,
+        createdAt: payload.createdAt,
+        updatedAt: payload.updatedAt,
+      },
+    });
+
     const snapshot = await WorkspaceSnapshotModel.findOneAndUpdate(
       {
         userId: authUser.userId,
@@ -166,12 +235,19 @@ router.put(
         templateRevision: payload.templateRevision,
         templateFingerprintHash: payload.templateFingerprintHash,
         manifest: payload.manifest,
+        workspaceManifestRef: payload.workspaceManifestRef,
+        storageStateRef: payload.storageStateRef,
         workspaceMetadata: payload.workspaceMetadata,
-        storageState: payload.storageState,
-        directoryManifest: payload.directoryManifest,
+        storageState: buildCompactStorageState(normalizeSnapshotStorageState(payload.storageState)),
+        directoryManifest: [],
         healthSummary: payload.healthSummary,
         consistencySummary: payload.consistencySummary,
         validatedStartAt: payload.validatedStartAt,
+        fileRef: artifact.fileRef || payload.fileRef,
+        checksum: artifact.checksum || payload.checksum,
+        size: artifact.size || payload.size,
+        contentType: artifact.contentType || payload.contentType,
+        retentionPolicy: artifact.retentionPolicy || payload.retentionPolicy,
         createdAt: payload.createdAt || undefined,
         updatedAt: payload.updatedAt || undefined,
       },
@@ -184,21 +260,7 @@ router.put(
 
     res.json({
       success: true,
-      snapshot: {
-        snapshotId: snapshot!.snapshotId,
-        profileId: String(snapshot!.profileId),
-        templateRevision: snapshot!.templateRevision || '',
-        templateFingerprintHash: snapshot!.templateFingerprintHash || '',
-        manifest: snapshot!.manifest || {},
-        workspaceMetadata: snapshot!.workspaceMetadata || {},
-        storageState: snapshot!.storageState || {},
-        directoryManifest: Array.isArray(snapshot!.directoryManifest) ? snapshot!.directoryManifest : [],
-        healthSummary: snapshot!.healthSummary || {},
-        consistencySummary: snapshot!.consistencySummary || {},
-        validatedStartAt: snapshot!.validatedStartAt || '',
-        createdAt: snapshot!.createdAt,
-        updatedAt: snapshot!.updatedAt,
-      },
+      snapshot: await serializeWorkspaceSnapshot(snapshot as Record<string, unknown>),
     });
   })
 );

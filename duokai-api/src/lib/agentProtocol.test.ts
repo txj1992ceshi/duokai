@@ -36,6 +36,7 @@ test('ack payload validation: success path', () => {
     startedAt: '2026-03-21T12:00:00.000Z',
     errorCode: '',
     errorMessage: '',
+    diagnostics: { step: 'launch', profileId: 'p-1' },
   });
 
   assert.equal(result.ok, true);
@@ -43,6 +44,7 @@ test('ack payload validation: success path', () => {
   assert.equal(result.value.status, 'RUNNING');
   assert.equal(result.value.idempotencyKey, 'abc');
   assert.equal(result.value.startedAt?.toISOString(), '2026-03-21T12:00:00.000Z');
+  assert.deepEqual(result.value.diagnostics, { step: 'launch', profileId: 'p-1' });
 });
 
 test('ack payload validation: invalid status rejected', () => {
@@ -62,12 +64,25 @@ test('ack payload validation: invalid timestamp rejected', () => {
 test('heartbeat payload validation sanitizes capabilities', () => {
   const result = validateHeartbeatPayload({
     agentVersion: '1.2.3',
-    capabilities: ['PROFILE_START', 1, null, 'LOG_FLUSH'],
+    capabilities: ['PROFILE_START', 1, null, 'PROFILE_VERIFY'],
     hostInfo: { os: 'darwin' },
     runtimeStatus: { running: true },
   });
 
-  assert.deepEqual(result.capabilities, ['PROFILE_START', 'LOG_FLUSH']);
+  assert.deepEqual(result.capabilities, ['PROFILE_START', 'PROFILE_VERIFY']);
   assert.equal(result.agentVersion, '1.2.3');
   assert.deepEqual(result.hostInfo, { os: 'darwin' });
+  assert.deepEqual(result.runtimeStatus, { running: true });
+});
+
+test('heartbeat payload validation drops invalid hostInfo/runtimeStatus shapes', () => {
+  const result = validateHeartbeatPayload({
+    agentVersion: '1.2.3',
+    capabilities: [],
+    hostInfo: ['not-an-object'],
+    runtimeStatus: 'invalid',
+  });
+
+  assert.equal(result.hostInfo, null);
+  assert.equal(result.runtimeStatus, null);
 });

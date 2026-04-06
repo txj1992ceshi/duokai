@@ -2,7 +2,7 @@ import mongoose, { type InferSchemaType } from 'mongoose';
 
 const { Schema } = mongoose;
 
-const ProfileStorageStateSchema = new Schema(
+const SnapshotManifestSchema = new Schema(
   {
     userId: {
       type: Schema.Types.ObjectId,
@@ -16,30 +16,17 @@ const ProfileStorageStateSchema = new Schema(
       required: true,
       index: true,
     },
-    version: {
-      type: Number,
-      default: 1,
+    snapshotId: {
+      type: String,
+      required: true,
+      trim: true,
     },
-    encrypted: {
-      type: Boolean,
-      default: false,
-    },
-    deviceId: {
+    workspaceManifestRef: {
       type: String,
       default: '',
       trim: true,
     },
-    updatedBy: {
-      type: String,
-      default: '',
-      trim: true,
-    },
-    source: {
-      type: String,
-      default: 'desktop',
-      trim: true,
-    },
-    stateHash: {
+    storageStateRef: {
       type: String,
       default: '',
       trim: true,
@@ -49,14 +36,14 @@ const ProfileStorageStateSchema = new Schema(
       default: '',
       trim: true,
     },
-    size: {
-      type: Number,
-      default: 0,
-    },
     checksum: {
       type: String,
       default: '',
       trim: true,
+    },
+    size: {
+      type: Number,
+      default: 0,
     },
     contentType: {
       type: String,
@@ -65,16 +52,16 @@ const ProfileStorageStateSchema = new Schema(
     },
     retentionPolicy: {
       type: String,
-      default: 'latest-only',
+      default: 'recent-n',
       trim: true,
     },
-    inlineStateJson: {
+    healthSummary: {
       type: Schema.Types.Mixed,
-      default: null,
+      default: {},
     },
-    stateJson: {
+    consistencySummary: {
       type: Schema.Types.Mixed,
-      default: null,
+      default: {},
     },
   },
   {
@@ -82,15 +69,8 @@ const ProfileStorageStateSchema = new Schema(
   }
 );
 
-ProfileStorageStateSchema.index(
-  { userId: 1, profileId: 1 },
-  { unique: true }
-);
+SnapshotManifestSchema.index({ userId: 1, profileId: 1, snapshotId: 1 }, { unique: true });
 
-export type ProfileStorageStateDocument = InferSchemaType<
-  typeof ProfileStorageStateSchema
->;
-
-export const ProfileStorageStateModel =
-  mongoose.models.ProfileStorageState ||
-  mongoose.model('ProfileStorageState', ProfileStorageStateSchema);
+export type SnapshotManifestDocument = InferSchemaType<typeof SnapshotManifestSchema>;
+export const SnapshotManifestModel =
+  mongoose.models.SnapshotManifest || mongoose.model('SnapshotManifest', SnapshotManifestSchema);

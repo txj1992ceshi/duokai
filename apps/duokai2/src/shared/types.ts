@@ -22,6 +22,9 @@ export type CpuMode = 'system' | 'custom'
 export type ResolutionMode = 'system' | 'custom' | 'random'
 export type FontMode = 'system' | 'random'
 export type EnvironmentPurpose = 'register' | 'nurture' | 'operation'
+export type PlatformKind = 'tiktok' | 'linkedin' | 'facebook' | ''
+export type RuntimeMode = 'local' | 'strong-local' | 'vm' | 'container'
+export type ProxyBindingMode = 'dedicated' | 'reusable'
 export type FingerprintSupportStatus = 'active' | 'partial' | 'placeholder'
 export type IpUsageKind = 'launch' | 'register-launch'
 export type WorkspaceAllowedOverrideKey =
@@ -137,6 +140,10 @@ export interface WorkspaceSnapshotStorageStateMetadata {
   updatedAt: string
   deviceId: string
   source: string
+  fileRef?: string
+  checksum?: string
+  size?: number
+  contentType?: string
   stateJson?: BrowserStorageState | null
 }
 
@@ -165,12 +172,19 @@ export interface WorkspaceSnapshotRecord {
   templateRevision: string
   templateFingerprintHash: string
   manifest: Record<string, unknown>
+  workspaceManifestRef?: string
+  storageStateRef?: string
   workspaceMetadata: WorkspaceDescriptor
   storageState: WorkspaceSnapshotStorageStateMetadata
   directoryManifest: WorkspaceSnapshotDirectoryEntry[]
   healthSummary: WorkspaceHealthReport
   consistencySummary: WorkspaceConsistencyReport
   validatedStartAt?: string
+  fileRef?: string
+  checksum?: string
+  size?: number
+  contentType?: string
+  retentionPolicy?: string
   createdAt: string
   updatedAt: string
 }
@@ -420,6 +434,20 @@ export interface FingerprintConfig {
 export interface ProfileRecord {
   id: string
   name: string
+  platform?: PlatformKind
+  purpose?: EnvironmentPurpose
+  runtimeMode?: RuntimeMode
+  proxyBindingMode?: ProxyBindingMode
+  lifecycleState?: string
+  riskFlags?: string[]
+  cooldownSummary?: {
+    active: boolean
+    reason: string
+    until: string
+  }
+  fingerprintPresetRef?: string
+  workspaceManifestRef?: string
+  ownerLabel?: string
   proxyId: string | null
   groupName: string
   tags: string[]
@@ -432,6 +460,9 @@ export interface ProfileRecord {
   workspace?: WorkspaceDescriptor | null
   status: ProfileStatus
   lastStartedAt: string | null
+  lastLaunchAt?: string
+  lastSuccessAt?: string
+  lastRestoreAt?: string
   createdAt: string
   updatedAt: string
 }
@@ -522,6 +553,11 @@ export interface RuntimeHostInfo {
   available: boolean
   reason: string
   activeHosts: number
+  effectiveRuntimeMode?: RuntimeMode
+  supportedRuntimeModes?: RuntimeMode[]
+  degraded?: boolean
+  degradeReason?: string
+  lockState?: 'unlocked' | 'locked' | 'stale-lock'
 }
 
 export interface ProxyTestResult {
@@ -653,6 +689,20 @@ export interface DetectedLocalEmulator {
 
 export interface CreateProfileInput {
   name: string
+  platform?: PlatformKind
+  purpose?: EnvironmentPurpose
+  runtimeMode?: RuntimeMode
+  proxyBindingMode?: ProxyBindingMode
+  lifecycleState?: string
+  riskFlags?: string[]
+  cooldownSummary?: {
+    active: boolean
+    reason: string
+    until: string
+  }
+  fingerprintPresetRef?: string
+  workspaceManifestRef?: string
+  ownerLabel?: string
   proxyId: string | null
   groupName: string
   tags: string[]

@@ -10,12 +10,32 @@ const ProfileSchema = new Schema(
     },
 
     name: { type: String, required: true, trim: true },
+    platform: { type: String, default: '', index: true },
+    purpose: { type: String, default: 'operation', index: true },
+    runtimeMode: { type: String, default: 'local' },
+    proxyBindingMode: { type: String, default: 'dedicated' },
+    lifecycleState: { type: String, default: 'draft', index: true },
+    riskFlags: { type: [String], default: [] },
+    cooldownSummary: {
+      type: Schema.Types.Mixed,
+      default: {
+        active: false,
+        reason: '',
+        until: '',
+      },
+    },
+    fingerprintPresetRef: { type: String, default: '' },
+    workspaceManifestRef: { type: String, default: '' },
+    ownerLabel: { type: String, default: '' },
     status: {
       type: String,
       enum: ['Ready', 'Running', 'Error'],
       default: 'Ready',
     },
     lastActive: { type: String, default: '' },
+    lastLaunchAt: { type: String, default: '' },
+    lastSuccessAt: { type: String, default: '' },
+    lastRestoreAt: { type: String, default: '' },
     tags: { type: [String], default: [] },
 
     proxy: { type: String, default: '' },

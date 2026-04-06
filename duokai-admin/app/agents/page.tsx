@@ -17,10 +17,10 @@ type TaskStatus = 'PENDING' | 'RECEIVED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 
 type TaskType =
   | 'PROFILE_START'
   | 'PROFILE_STOP'
-  | 'PROXY_TEST'
-  | 'TEMPLATE_APPLY'
-  | 'SETTINGS_SYNC'
-  | 'LOG_FLUSH';
+  | 'WORKSPACE_SNAPSHOT'
+  | 'WORKSPACE_RESTORE'
+  | 'PROFILE_VERIFY'
+  | 'OPEN_PLATFORM';
 
 type AgentItem = {
   agentId: string;
@@ -30,6 +30,18 @@ type AgentItem = {
   pendingTasks: number;
   syncVersion?: number;
   lastConfigSyncedAt?: string | null;
+  hostInfo?: Record<string, unknown> | null;
+  runtimeStatus?: Record<string, unknown> | null;
+  runtimeSummary?: {
+    runningProfileCount: number;
+    queuedProfileCount: number;
+    startingProfileCount: number;
+    effectiveRuntimeMode?: string;
+    supportedRuntimeModes?: string[];
+    degraded: boolean;
+    degradeReason?: string;
+    lockState?: string;
+  } | null;
 };
 
 type TaskItem = {
@@ -38,7 +50,10 @@ type TaskItem = {
   type: TaskType;
   status: TaskStatus;
   createdAt?: string;
+  errorCode?: string;
   errorMessage?: string;
+  payload?: Record<string, unknown> | null;
+  diagnostics?: Record<string, unknown> | null;
 };
 
 type TaskEventItem = {
@@ -134,10 +149,10 @@ function parseBatchActionTimeRange(value: string | null): BatchActionTimeRange {
 const taskTypes: TaskType[] = [
   'PROFILE_START',
   'PROFILE_STOP',
-  'PROXY_TEST',
-  'TEMPLATE_APPLY',
-  'SETTINGS_SYNC',
-  'LOG_FLUSH',
+  'WORKSPACE_SNAPSHOT',
+  'WORKSPACE_RESTORE',
+  'PROFILE_VERIFY',
+  'OPEN_PLATFORM',
 ];
 
 function AgentsPageContent() {
@@ -159,6 +174,7 @@ function AgentsPageContent() {
   const [taskType, setTaskType] = useState<TaskType>('PROFILE_START');
   const [taskPayload, setTaskPayload] = useState('{\n  "profileId": ""\n}');
   const [taskEvents, setTaskEvents] = useState<TaskEventItem[]>([]);
+  const [taskEventFilterTaskId, setTaskEventFilterTaskId] = useState('');
   const [failureSummary, setFailureSummary] = useState<FailureSummaryItem[]>([]);
   const [metrics, setMetrics] = useState<MetricsData | null>(null);
   const [healthSummary, setHealthSummary] = useState<AgentHealthSummaryItem[]>([]);
@@ -179,6 +195,206 @@ function AgentsPageContent() {
       return '[unserializable]';
     }
   }
+
+  function renderTaskDiagnostics(task: TaskItem): string {
+    const chunks: string[] = [];
+    if (task.errorCode) {
+      chunks.push(task.errorCode);
+    }
+    if (task.diagnostics && typeof task.diagnostics === 'object') {
+      const action = String(task.diagnostics.action || '').trim();
+      const level = String(task.diagnostics.level || '').trim();
+      const reason = String(task.diagnostics.reason || '').trim();
+      const snapshotId = String(task.diagnostics.snapshotId || '').trim();
+      const targetUrl = String(task.diagnostics.targetUrl || '').trim();
+      if (action) chunks.push(`action=${action}`);
+      if (level) chunks.push(`level=${level}`);
+      if (reason) chunks.push(`reason=${reason}`);
+      if (snapshotId) chunks.push(`snapshot=${snapshotId}`);
+      if (targetUrl) chunks.push(`url=${targetUrl}`);
+    }
+    if (!chunks.length) {
+      return '-';
+    }
+    const text = chunks.join(' | ');
+    return text.length > 160 ? `${text.slice(0, 160)}...` : text;
+  }
+
+  function prefillTaskComposer(
+    agentId: string,
+    type: TaskType,
+    payload: Record<string, unknown>,
+    successMessage: string,
+  ): void {
+    setTaskAgentId(agentId);
+    setTaskType(type);
+    setTaskPayload(JSON.stringify(payload, null, 2));
+    setSuccess(successMessage);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function buildTaskSuggestedPreset(task: TaskItem):
+    | { label: string; type: TaskType; payload: Record<string, unknown> }
+    | null {
+    const profileId = String(task.payload?.profileId || task.diagnostics?.profileId || '').trim();
+    const snapshotId = String(task.payload?.snapshotId || task.diagnostics?.snapshotId || '').trim();
+    const targetUrl = String(task.payload?.targetUrl || task.diagnostics?.targetUrl || '').trim();
+    const errorCode = String(task.errorCode || '').trim().toUpperCase();
+
+    if (!profileId) {
+      return null;
+    }
+    if (errorCode === 'POLICY_BLOCK') {
+      return {
+        label: '填充 Verify',
+        type: 'PROFILE_VERIFY',
+        payload: { profileId },
+      };
+    }
+    if (errorCode === 'RUNTIME_LOCK_EXISTS') {
+      return {
+        label: '填充 Stop',
+        type: 'PROFILE_STOP',
+        payload: { profileId },
+      };
+    }
+    if (
+      (errorCode === 'SNAPSHOT_MISMATCH' ||
+        errorCode === 'SNAPSHOT_RESTORE_FAILED' ||
+        errorCode === 'WORKSPACE_RESTORE_BLOCKED') &&
+      snapshotId
+    ) {
+      return {
+        label: '填充 Restore',
+        type: 'WORKSPACE_RESTORE',
+        payload: { profileId, snapshotId },
+      };
+    }
+    if (errorCode === 'TASK_TIMEOUT' || errorCode === 'EXECUTION_ERROR') {
+      return {
+        label: '填充重试',
+        type: task.type,
+        payload: {
+          ...(profileId ? { profileId } : {}),
+          ...(snapshotId ? { snapshotId } : {}),
+          ...(targetUrl ? { targetUrl } : {}),
+        },
+      };
+    }
+    return null;
+  }
+
+  function getSuggestedAction(errorCode: string, diagnostics?: Record<string, unknown> | null): string {
+    const code = String(errorCode || '').trim().toUpperCase();
+    const reason = String(diagnostics?.reason || '').trim().toLowerCase();
+    if (!code) return '-';
+
+    if (code === 'RUNTIME_LOCK_EXISTS') {
+      return '检查目标设备是否仍在运行；若已异常退出，先清理 stale lock 后再重试启动。';
+    }
+    if (code === 'LEASE_COOLDOWN') {
+      return '等待 IP 冷却结束，或为该 Profile 重新分配 dedicated IP。';
+    }
+    if (code === 'POLICY_BLOCK') {
+      if (reason.includes('validation')) {
+        return '先执行 Verify，修复环境一致性或策略冲突后再启动。';
+      }
+      return '检查 profile 策略、workspace 状态和代理一致性，修复后再重试。';
+    }
+    if (code === 'SNAPSHOT_MISMATCH') {
+      return '优先恢复 last-known-good snapshot，再重新验证并启动。';
+    }
+    if (code === 'SNAPSHOT_RESTORE_FAILED' || code === 'WORKSPACE_RESTORE_BLOCKED') {
+      return '检查 snapshot 是否损坏或与当前 workspace 不兼容，必要时回滚到更早恢复点。';
+    }
+    if (code === 'PROFILE_NOT_FOUND') {
+      return '确认控制面与本机配置已同步，必要时重新拉取 profile 清单。';
+    }
+    if (code === 'TASK_TIMEOUT') {
+      return '检查本机桌面端是否卡住、代理是否超时，必要时停止残留 runtime 后重试。';
+    }
+    if (code === 'TASK_CANCELLED') {
+      return '确认是否为人工取消；若不是，请检查重复任务或调度冲突。';
+    }
+    if (code === 'EXECUTION_ERROR') {
+      return '查看任务事件 Detail 和本机 runtime 日志，定位具体执行异常。';
+    }
+    return '查看任务事件 Detail 与设备状态，再决定是重试、恢复 snapshot 还是更换代理/IP。';
+  }
+
+  function renderSuggestedAction(task: TaskItem): string {
+    return getSuggestedAction(task.errorCode || '', task.diagnostics || null);
+  }
+
+  function renderFailureSuggestedAction(item: FailureSummaryItem): string {
+    return getSuggestedAction(item.errorCode);
+  }
+
+  function buildTaskDebugContext(task: TaskItem): string {
+    const relatedEvents = taskEvents.filter((item) => item.taskId === task.taskId).slice(0, 8);
+    const lines = [
+      `Task ID: ${task.taskId}`,
+      `Agent ID: ${task.agentId}`,
+      `Type: ${task.type}`,
+      `Status: ${task.status}`,
+      `Error Code: ${task.errorCode || '-'}`,
+      `Error Message: ${task.errorMessage || '-'}`,
+      `Suggested Action: ${renderSuggestedAction(task)}`,
+      `Payload: ${JSON.stringify(task.payload || {}, null, 2)}`,
+      `Diagnostics: ${JSON.stringify(task.diagnostics || {}, null, 2)}`,
+      'Recent Events:',
+      ...(relatedEvents.length
+        ? relatedEvents.map(
+            (item) =>
+              `- ${item.createdAt || '-'} | ${item.status} | ${JSON.stringify(item.detail || {}, null, 0)}`,
+          )
+        : ['- No related task events loaded in current view']),
+    ];
+    return lines.join('\n');
+  }
+
+  async function handleCopyTaskDebugContext(task: TaskItem): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(buildTaskDebugContext(task));
+      setSuccess(`已复制任务排障上下文：${task.taskId}`);
+    } catch {
+      setError('复制任务排障上下文失败');
+    }
+  }
+
+  async function handleFocusTaskEvents(taskId: string): Promise<void> {
+    setError('');
+    try {
+      const res = await adminFetch(`/api/admin/agents/tasks/events?taskId=${encodeURIComponent(taskId)}&limit=80`);
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || '加载任务事件失败');
+      }
+      setTaskEvents(Array.isArray(data.events) ? data.events : []);
+      setTaskEventFilterTaskId(taskId);
+      setSuccess(`已聚焦任务事件：${taskId}`);
+      window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '加载任务事件失败');
+    }
+  }
+
+  async function handleClearTaskEventFocus(): Promise<void> {
+    setError('');
+    try {
+      const res = await adminFetch('/api/admin/agents/tasks/events?limit=80');
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || '加载任务事件失败');
+      }
+      setTaskEvents(Array.isArray(data.events) ? data.events : []);
+      setTaskEventFilterTaskId('');
+      setSuccess('已恢复显示最近任务事件');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '加载任务事件失败');
+    }
+  }
+
   function renderBatchActionDetail(detail: unknown): string {
     if (!detail || typeof detail !== 'object') return '-';
     try {
@@ -452,38 +668,6 @@ function AgentsPageContent() {
       await loadAll();
     } catch (e) {
       setError(e instanceof Error ? e.message : '下发任务失败');
-    }
-  }
-
-  async function handleTriggerConfigSync(
-    agentId: string,
-    action: 'pull_snapshot' | 'push_snapshot_replace' | 'push_snapshot_merge'
-  ) {
-    setError('');
-    try {
-      const res = await adminFetch('/api/admin/agents/tasks', {
-        method: 'POST',
-        body: JSON.stringify({
-          agentId,
-          type: 'SETTINGS_SYNC',
-          payload: { action },
-          idempotencyKey: `${agentId}-SETTINGS_SYNC-${action}-${Date.now()}`,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || '触发同步失败');
-      }
-      setSuccess(
-        action === 'pull_snapshot'
-          ? `已下发拉取配置任务：${agentId}`
-          : action === 'push_snapshot_merge'
-            ? `已下发合并推送任务：${agentId}`
-            : `已下发覆盖推送任务：${agentId}`
-      );
-      await loadAll();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : '触发同步失败');
     }
   }
 
@@ -847,6 +1031,7 @@ function AgentsPageContent() {
               <tr>
                 <th className="px-4 py-3 text-left">Agent</th>
                 <th className="px-4 py-3 text-left">状态</th>
+                <th className="px-4 py-3 text-left">运行模式/锁</th>
                 <th className="px-4 py-3 text-left">最近心跳</th>
                 <th className="px-4 py-3 text-left">最近1h成功率</th>
                 <th className="px-4 py-3 text-left">卡住RUNNING</th>
@@ -867,6 +1052,11 @@ function AgentsPageContent() {
                 const lastTaskText = health?.lastTask?.taskId
                   ? `${health.lastTask.taskId} (${health.lastTask.status || '-'})`
                   : '-';
+                const runtimeModeText = item.runtimeSummary?.effectiveRuntimeMode || '-';
+                const lockStateText = item.runtimeSummary?.lockState || '-';
+                const degradedText = item.runtimeSummary?.degraded
+                  ? item.runtimeSummary?.degradeReason || '已降级'
+                  : '';
                 return (
                   <tr key={item.agentId} className="border-t border-neutral-800">
                     <td className="px-4 py-3">
@@ -874,6 +1064,13 @@ function AgentsPageContent() {
                       <div className="text-xs text-neutral-400">{item.agentId}</div>
                     </td>
                     <td className="px-4 py-3">{item.status}</td>
+                    <td className="px-4 py-3 text-xs text-neutral-300">
+                      <div>{runtimeModeText}</div>
+                      <div className={lockStateText === 'stale-lock' ? 'text-amber-300' : 'text-neutral-500'}>
+                        lock: {lockStateText}
+                      </div>
+                      {degradedText ? <div className="text-amber-300">{degradedText}</div> : null}
+                    </td>
                     <td className="px-4 py-3">{item.lastSeenAt || '-'}</td>
                     <td
                       className={`px-4 py-3 ${
@@ -893,33 +1090,6 @@ function AgentsPageContent() {
                     <td className="px-4 py-3">{item.pendingTasks}</td>
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap gap-2">
-                        <AppButton
-                          variant="secondary"
-                          onClick={() => {
-                            void handleTriggerConfigSync(item.agentId, 'pull_snapshot');
-                          }}
-                          disabled={item.status === 'DISABLED'}
-                        >
-                          拉取配置
-                        </AppButton>
-                        <AppButton
-                          variant="secondary"
-                          onClick={() => {
-                            void handleTriggerConfigSync(item.agentId, 'push_snapshot_replace');
-                          }}
-                          disabled={item.status === 'DISABLED'}
-                        >
-                          覆盖推送
-                        </AppButton>
-                        <AppButton
-                          variant="secondary"
-                          onClick={() => {
-                            void handleTriggerConfigSync(item.agentId, 'push_snapshot_merge');
-                          }}
-                          disabled={item.status === 'DISABLED'}
-                        >
-                          合并推送
-                        </AppButton>
                         <AppButton
                           variant="secondary"
                           onClick={() => {
@@ -957,34 +1127,74 @@ function AgentsPageContent() {
               <th className="px-4 py-3 text-left">类型</th>
               <th className="px-4 py-3 text-left">状态</th>
               <th className="px-4 py-3 text-left">错误</th>
+              <th className="px-4 py-3 text-left">诊断</th>
+              <th className="px-4 py-3 text-left">建议动作</th>
               <th className="px-4 py-3 text-left">操作</th>
             </tr>
           </thead>
           <tbody>
             {tasks.length ? (
-              tasks.map((item) => (
-                <tr key={item.taskId} className="border-t border-neutral-800">
-                  <td className="px-4 py-3">{item.taskId}</td>
-                  <td className="px-4 py-3">{item.agentId}</td>
-                  <td className="px-4 py-3">{item.type}</td>
-                  <td className="px-4 py-3">{item.status}</td>
-                  <td className="px-4 py-3">{item.errorMessage || '-'}</td>
-                  <td className="px-4 py-3">
-                    <AppButton
-                      variant="secondary"
-                      disabled={item.status === 'SUCCEEDED' || item.status === 'FAILED' || item.status === 'CANCELLED'}
-                      onClick={() => {
-                        void handleCancel(item.taskId);
-                      }}
-                    >
-                      取消
-                    </AppButton>
-                  </td>
-                </tr>
-              ))
+              tasks.map((item) => {
+                const preset = buildTaskSuggestedPreset(item);
+                return (
+                  <tr key={item.taskId} className="border-t border-neutral-800">
+                    <td className="px-4 py-3">{item.taskId}</td>
+                    <td className="px-4 py-3">{item.agentId}</td>
+                    <td className="px-4 py-3">{item.type}</td>
+                    <td className="px-4 py-3">{item.status}</td>
+                    <td className="px-4 py-3">{item.errorMessage || '-'}</td>
+                    <td className="px-4 py-3 text-xs text-neutral-400">{renderTaskDiagnostics(item)}</td>
+                    <td className="px-4 py-3 text-xs text-neutral-300">{renderSuggestedAction(item)}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex flex-wrap gap-2">
+                        {preset ? (
+                          <AppButton
+                            variant="secondary"
+                            onClick={() => {
+                              prefillTaskComposer(
+                                item.agentId,
+                                preset.type,
+                                preset.payload,
+                                `已预填任务：${preset.label} (${item.taskId})`,
+                              );
+                            }}
+                          >
+                            {preset.label}
+                          </AppButton>
+                        ) : null}
+                        <AppButton
+                          variant="secondary"
+                          onClick={() => {
+                            void handleFocusTaskEvents(item.taskId);
+                          }}
+                        >
+                          查看事件
+                        </AppButton>
+                        <AppButton
+                          variant="secondary"
+                          onClick={() => {
+                            void handleCopyTaskDebugContext(item);
+                          }}
+                        >
+                          复制排障上下文
+                        </AppButton>
+                        <AppButton
+                          variant="secondary"
+                          disabled={item.status === 'SUCCEEDED' || item.status === 'FAILED' || item.status === 'CANCELLED'}
+                          onClick={() => {
+                            void handleCancel(item.taskId);
+                          }}
+                        >
+                          取消
+                        </AppButton>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })
             ) : (
               <tr>
-                <td className="px-4 py-4" colSpan={6}>
+                <td className="px-4 py-4" colSpan={8}>
                   <EmptyState title="暂无任务" description="下发任务后会在这里显示执行状态。" />
                 </td>
               </tr>
@@ -995,6 +1205,18 @@ function AgentsPageContent() {
 
       <div className="grid gap-4 md:grid-cols-2">
         <DataTable>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-neutral-800 px-4 py-3 text-xs text-neutral-400">
+            <div>
+              {taskEventFilterTaskId
+                ? `当前仅显示任务 ${taskEventFilterTaskId} 的事件`
+                : '当前显示最近任务事件'}
+            </div>
+            {taskEventFilterTaskId ? (
+              <AppButton variant="secondary" onClick={() => { void handleClearTaskEventFocus(); }}>
+                清除事件聚焦
+              </AppButton>
+            ) : null}
+          </div>
           <table className="w-full text-sm">
             <thead className="bg-neutral-800/60 text-neutral-300">
               <tr>
@@ -1002,21 +1224,32 @@ function AgentsPageContent() {
                 <th className="px-4 py-3 text-left">错误码</th>
                 <th className="px-4 py-3 text-left">次数</th>
                 <th className="px-4 py-3 text-left">最后出现</th>
+                <th className="px-4 py-3 text-left">建议动作</th>
               </tr>
             </thead>
             <tbody>
               {failureSummary.length ? (
                 failureSummary.map((item, index) => (
-                  <tr key={`${item.type}-${item.errorCode}-${index}`} className="border-t border-neutral-800">
+                  <tr
+                    key={`${item.type}-${item.errorCode}-${index}`}
+                    className={`border-t border-neutral-800 ${
+                      item.errorCode === 'RUNTIME_LOCK_EXISTS' || item.errorCode === 'SNAPSHOT_MISMATCH'
+                        ? 'text-amber-300'
+                        : item.errorCode === 'POLICY_BLOCK' || item.errorCode === 'LEASE_COOLDOWN'
+                          ? 'text-rose-300'
+                          : ''
+                    }`}
+                  >
                     <td className="px-4 py-3">{item.type}</td>
-                    <td className="px-4 py-3">{item.errorCode}</td>
+                    <td className="px-4 py-3 font-medium">{item.errorCode}</td>
                     <td className="px-4 py-3">{item.count}</td>
                     <td className="px-4 py-3">{item.lastAt || '-'}</td>
+                    <td className="px-4 py-3 text-xs text-neutral-300">{renderFailureSuggestedAction(item)}</td>
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td className="px-4 py-4" colSpan={4}>
+                  <td className="px-4 py-4" colSpan={5}>
                     <EmptyState title="暂无失败聚合" description="当前没有失败任务。" />
                   </td>
                 </tr>

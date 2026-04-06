@@ -4,6 +4,10 @@ import type {
   ProxyVerificationRecord,
 } from '@/lib/proxyTypes';
 
+export type PlatformKind = 'tiktok' | 'linkedin' | 'facebook' | '';
+export type RuntimeMode = 'local' | 'strong-local' | 'vm' | 'container';
+export type ProxyBindingMode = 'dedicated' | 'reusable';
+
 export type WorkspaceAllowedOverrideKey =
   | 'timezone'
   | 'browserLanguage'
@@ -116,6 +120,10 @@ export interface WorkspaceSnapshotStorageStateMetadata {
   updatedAt: string;
   deviceId: string;
   source: string;
+  fileRef?: string;
+  checksum?: string;
+  size?: number;
+  contentType?: string;
   stateJson?: BrowserStorageState | null;
 }
 
@@ -144,12 +152,19 @@ export interface WorkspaceSnapshotRecord {
   templateRevision: string;
   templateFingerprintHash: string;
   manifest: Record<string, unknown>;
+  workspaceManifestRef?: string;
+  storageStateRef?: string;
   workspaceMetadata: WorkspaceDescriptor;
   storageState: WorkspaceSnapshotStorageStateMetadata;
   directoryManifest: WorkspaceSnapshotDirectoryEntry[];
   healthSummary: WorkspaceHealthReport;
   consistencySummary: WorkspaceConsistencyReport;
   validatedStartAt?: string;
+  fileRef?: string;
+  checksum?: string;
+  size?: number;
+  contentType?: string;
+  retentionPolicy?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -157,8 +172,25 @@ export interface WorkspaceSnapshotRecord {
 export interface Profile {
   id: string;
   name: string;
+  platform?: PlatformKind;
+  purpose?: 'register' | 'nurture' | 'operation';
+  runtimeMode?: RuntimeMode;
+  proxyBindingMode?: ProxyBindingMode;
+  lifecycleState?: string;
+  riskFlags?: string[];
+  cooldownSummary?: {
+    active: boolean;
+    reason: string;
+    until: string;
+  };
+  fingerprintPresetRef?: string;
+  workspaceManifestRef?: string;
+  ownerLabel?: string;
   status: string;
   lastActive: string;
+  lastLaunchAt?: string;
+  lastSuccessAt?: string;
+  lastRestoreAt?: string;
   tags: string[];
   proxy?: string;
   proxyType?: ProxyProtocol;

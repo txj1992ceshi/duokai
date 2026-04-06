@@ -59,13 +59,13 @@ export async function ensureMongoIndexes() {
     parseTtlDays(process.env.ADMIN_ACTION_LOG_TTL_DAYS, 30)
   );
   const taskEventTtlSeconds = daysToSeconds(
-    parseTtlDays(process.env.TASK_EVENT_TTL_DAYS, 30)
+    parseTtlDays(process.env.TASK_EVENT_TTL_DAYS, 7)
   );
   const agentSessionTtlSeconds = daysToSeconds(
-    parseTtlDays(process.env.AGENT_SESSION_TTL_DAYS, 30)
+    parseTtlDays(process.env.AGENT_SESSION_TTL_DAYS, 3)
   );
   const controlTaskTtlSeconds = daysToSeconds(
-    parseTtlDays(process.env.CONTROL_TASK_TTL_DAYS, 0)
+    parseTtlDays(process.env.CONTROL_TASK_TTL_DAYS, 7)
   );
 
   await Promise.all([

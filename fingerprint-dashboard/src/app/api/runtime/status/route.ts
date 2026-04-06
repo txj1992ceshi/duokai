@@ -39,6 +39,11 @@ function getRunningProfileIds(runtimeStatus: Record<string, unknown> | null | un
   return Array.isArray(raw) ? raw.map((item) => String(item || '').trim()).filter(Boolean) : [];
 }
 
+function getStringArrayField(runtimeStatus: Record<string, unknown> | null | undefined, key: string) {
+  const raw = runtimeStatus?.[key];
+  return Array.isArray(raw) ? raw.map((item) => String(item || '').trim()).filter(Boolean) : [];
+}
+
 /**
  * GET /api/runtime/status
  * Returns the list of active sessions from the runtime server,
@@ -102,6 +107,36 @@ export async function GET(req: NextRequest) {
           name: agent.name || '',
           lastSeenAt: agent.lastSeenAt || null,
           capabilities: Array.isArray(agent.capabilities) ? agent.capabilities : [],
+          runtimeStatus:
+            agent.runtimeStatus && typeof agent.runtimeStatus === 'object' && !Array.isArray(agent.runtimeStatus)
+              ? agent.runtimeStatus
+              : null,
+          hostInfo:
+            agent.hostInfo && typeof agent.hostInfo === 'object' && !Array.isArray(agent.hostInfo)
+              ? agent.hostInfo
+              : null,
+          runtimeSummary: {
+            runningProfileCount: getRunningProfileIds((agent.runtimeStatus || null) as Record<string, unknown> | null)
+              .length,
+            lockedProfileCount: getStringArrayField(
+              (agent.runtimeStatus || null) as Record<string, unknown> | null,
+              'lockedProfileIds'
+            ).length,
+            staleLockProfileCount: getStringArrayField(
+              (agent.runtimeStatus || null) as Record<string, unknown> | null,
+              'staleLockProfileIds'
+            ).length,
+            effectiveRuntimeMode: String(
+              ((agent.runtimeStatus || null) as Record<string, unknown> | null)?.effectiveRuntimeMode ||
+                ((agent.hostInfo || null) as Record<string, unknown> | null)?.effectiveRuntimeMode ||
+                ''
+            ),
+            degradeReason: String(
+              ((agent.runtimeStatus || null) as Record<string, unknown> | null)?.degradeReason ||
+                ((agent.hostInfo || null) as Record<string, unknown> | null)?.degradeReason ||
+                ''
+            ),
+          },
         })),
         degraded: dbDegraded,
       });

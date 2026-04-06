@@ -17,7 +17,7 @@ const ControlTaskSchema = new Schema(
     },
     type: {
       type: String,
-      enum: ['PROFILE_START', 'PROFILE_STOP', 'PROXY_TEST', 'TEMPLATE_APPLY', 'SETTINGS_SYNC', 'LOG_FLUSH'],
+      enum: ['PROFILE_START', 'PROFILE_STOP', 'WORKSPACE_SNAPSHOT', 'WORKSPACE_RESTORE', 'PROFILE_VERIFY', 'OPEN_PLATFORM'],
       required: true,
       index: true,
     },
@@ -68,6 +68,10 @@ const ControlTaskSchema = new Schema(
     outputRef: {
       type: String,
       default: '',
+    },
+    diagnostics: {
+      type: Schema.Types.Mixed,
+      default: null,
     },
     cancelledByUserId: {
       type: String,

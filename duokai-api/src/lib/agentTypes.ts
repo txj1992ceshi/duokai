@@ -10,10 +10,10 @@ export const TASK_STATUSES = [
 export const TASK_TYPES = [
   'PROFILE_START',
   'PROFILE_STOP',
-  'PROXY_TEST',
-  'TEMPLATE_APPLY',
-  'SETTINGS_SYNC',
-  'LOG_FLUSH',
+  'WORKSPACE_SNAPSHOT',
+  'WORKSPACE_RESTORE',
+  'PROFILE_VERIFY',
+  'OPEN_PLATFORM',
 ] as const;
 
 export type AgentStatus = (typeof AGENT_STATUSES)[number];

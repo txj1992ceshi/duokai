@@ -10,6 +10,18 @@ const router = Router();
 
 router.use(requireUser);
 
+function normalizeCooldownSummary(input: unknown) {
+  if (!input || typeof input !== 'object') {
+    return { active: false, reason: '', until: '' };
+  }
+  const source = input as Record<string, unknown>;
+  return {
+    active: !!source.active,
+    reason: String(source.reason || '').trim(),
+    until: String(source.until || '').trim(),
+  };
+}
+
 router.get(
   '/',
   asyncHandler(async (req, res) => {
@@ -44,8 +56,23 @@ router.post(
     const profile = await ProfileModel.create({
       userId: authUser.userId,
       name: String(body.name || 'New Profile').trim(),
+      platform: String(body.platform || body.startupPlatform || '').trim(),
+      purpose: String(body.purpose || body.environmentPurpose || 'operation').trim() || 'operation',
+      runtimeMode: String(body.runtimeMode || 'local').trim() || 'local',
+      proxyBindingMode: String(body.proxyBindingMode || 'dedicated').trim() || 'dedicated',
+      lifecycleState: String(body.lifecycleState || 'draft').trim() || 'draft',
+      riskFlags: Array.isArray(body.riskFlags) ? body.riskFlags : [],
+      cooldownSummary: normalizeCooldownSummary(body.cooldownSummary),
+      fingerprintPresetRef: String(body.fingerprintPresetRef || '').trim(),
+      workspaceManifestRef: String(body.workspaceManifestRef || '').trim(),
+      proxyAssetId: String(body.proxyAssetId || '').trim(),
+      activeLeaseId: String(body.activeLeaseId || '').trim(),
+      ownerLabel: String(body.ownerLabel || '').trim(),
       status: body.status || 'Ready',
       lastActive: body.lastActive || '',
+      lastLaunchAt: String(body.lastLaunchAt || '').trim(),
+      lastSuccessAt: String(body.lastSuccessAt || '').trim(),
+      lastRestoreAt: String(body.lastRestoreAt || '').trim(),
       tags: Array.isArray(body.tags) ? body.tags : [],
       proxy: body.proxy || '',
       proxyType: body.proxyType || 'direct',
@@ -130,9 +157,24 @@ router.patch(
     const updateData: Record<string, unknown> = {};
 
     if (typeof body.name === 'string') updateData.name = body.name.trim();
+    if (typeof body.platform === 'string') updateData.platform = body.platform.trim();
+    if (typeof body.purpose === 'string') updateData.purpose = body.purpose.trim();
+    if (typeof body.runtimeMode === 'string') updateData.runtimeMode = body.runtimeMode.trim();
+    if (typeof body.proxyBindingMode === 'string') updateData.proxyBindingMode = body.proxyBindingMode.trim();
+    if (typeof body.lifecycleState === 'string') updateData.lifecycleState = body.lifecycleState.trim();
+    if (Array.isArray(body.riskFlags)) updateData.riskFlags = body.riskFlags;
+    if (body.cooldownSummary !== undefined) updateData.cooldownSummary = normalizeCooldownSummary(body.cooldownSummary);
+    if (typeof body.fingerprintPresetRef === 'string') updateData.fingerprintPresetRef = body.fingerprintPresetRef.trim();
+    if (typeof body.workspaceManifestRef === 'string') updateData.workspaceManifestRef = body.workspaceManifestRef.trim();
+    if (typeof body.proxyAssetId === 'string') updateData.proxyAssetId = body.proxyAssetId.trim();
+    if (typeof body.activeLeaseId === 'string') updateData.activeLeaseId = body.activeLeaseId.trim();
+    if (typeof body.ownerLabel === 'string') updateData.ownerLabel = body.ownerLabel.trim();
     if (typeof body.status === 'string') updateData.status = body.status;
     if (Array.isArray(body.tags)) updateData.tags = body.tags;
     if (typeof body.lastActive === 'string') updateData.lastActive = body.lastActive;
+    if (typeof body.lastLaunchAt === 'string') updateData.lastLaunchAt = body.lastLaunchAt;
+    if (typeof body.lastSuccessAt === 'string') updateData.lastSuccessAt = body.lastSuccessAt;
+    if (typeof body.lastRestoreAt === 'string') updateData.lastRestoreAt = body.lastRestoreAt;
     if (typeof body.proxy === 'string') updateData.proxy = body.proxy;
     if (typeof body.proxyType === 'string') updateData.proxyType = body.proxyType;
     if (typeof body.proxyHost === 'string') updateData.proxyHost = body.proxyHost;

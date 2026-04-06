@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { connectMongo } from '@/lib/mongodb';
 import { requireUser } from '@/lib/requireUser';
+import { resolveStorageStateJson } from '@/lib/storageArtifacts';
 import { ProfileModel } from '@/models/Profile';
 import { SettingModel } from '@/models/Setting';
 import { ProfileStorageStateModel } from '@/models/ProfileStorageState';
@@ -99,7 +100,11 @@ export async function POST(
         userId: authUser.userId,
         profileId: ownedProfile._id,
       }).lean();
-      payload.storageState = syncedStorageState?.stateJson || null;
+      payload.storageState = await resolveStorageStateJson({
+        inlineStateJson: syncedStorageState?.inlineStateJson,
+        stateJson: syncedStorageState?.stateJson,
+        fileRef: syncedStorageState?.fileRef || '',
+      });
     }
 
     const target = runtimeUrl.replace(/\/$/, '') + endpoint;

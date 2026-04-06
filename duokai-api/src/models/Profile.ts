@@ -12,12 +12,82 @@ const ProfileSchema = new Schema(
     },
 
     name: { type: String, required: true, trim: true },
+    platform: {
+      type: String,
+      enum: ['tiktok', 'linkedin', 'facebook', ''],
+      default: '',
+      index: true,
+    },
+    purpose: {
+      type: String,
+      enum: ['register', 'nurture', 'operation'],
+      default: 'operation',
+      index: true,
+    },
+    runtimeMode: {
+      type: String,
+      enum: ['local', 'strong-local', 'vm', 'container'],
+      default: 'local',
+    },
+    proxyBindingMode: {
+      type: String,
+      enum: ['dedicated', 'reusable'],
+      default: 'dedicated',
+    },
+    lifecycleState: {
+      type: String,
+      default: 'draft',
+      trim: true,
+      index: true,
+    },
+    riskFlags: {
+      type: [String],
+      default: [],
+    },
+    cooldownSummary: {
+      type: Schema.Types.Mixed,
+      default: {
+        active: false,
+        reason: '',
+        until: '',
+      },
+    },
+    fingerprintPresetRef: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    workspaceManifestRef: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    proxyAssetId: {
+      type: String,
+      default: '',
+      trim: true,
+      index: true,
+    },
+    activeLeaseId: {
+      type: String,
+      default: '',
+      trim: true,
+      index: true,
+    },
+    ownerLabel: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     status: {
       type: String,
       enum: ['Ready', 'Running', 'Error'],
       default: 'Ready',
     },
     lastActive: { type: String, default: '' },
+    lastLaunchAt: { type: String, default: '' },
+    lastSuccessAt: { type: String, default: '' },
+    lastRestoreAt: { type: String, default: '' },
     tags: { type: [String], default: [] },
 
     proxy: { type: String, default: '' },

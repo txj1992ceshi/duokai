@@ -33,6 +33,10 @@ export function validateAckPayload(payload: Record<string, unknown>) {
   const errorCode = String(payload.errorCode || '').trim();
   const errorMessage = String(payload.errorMessage || '').trim();
   const outputRef = String(payload.outputRef || '').trim();
+  const diagnostics =
+    payload.diagnostics && typeof payload.diagnostics === 'object' && !Array.isArray(payload.diagnostics)
+      ? (payload.diagnostics as Record<string, unknown>)
+      : null;
 
   if (!status) {
     return { ok: false as const, error: 'status is required' };
@@ -58,6 +62,7 @@ export function validateAckPayload(payload: Record<string, unknown>) {
       errorCode,
       errorMessage,
       outputRef,
+      diagnostics,
       startedAt,
       endedAt,
     },
@@ -73,7 +78,13 @@ export function validateHeartbeatPayload(payload: Record<string, unknown>) {
   return {
     agentVersion,
     capabilities,
-    hostInfo: (payload.hostInfo || null) as Record<string, unknown> | null,
-    runtimeStatus: (payload.runtimeStatus || null) as Record<string, unknown> | null,
+    hostInfo:
+      payload.hostInfo && typeof payload.hostInfo === 'object' && !Array.isArray(payload.hostInfo)
+        ? (payload.hostInfo as Record<string, unknown>)
+        : null,
+    runtimeStatus:
+      payload.runtimeStatus && typeof payload.runtimeStatus === 'object' && !Array.isArray(payload.runtimeStatus)
+        ? (payload.runtimeStatus as Record<string, unknown>)
+        : null,
   };
 }

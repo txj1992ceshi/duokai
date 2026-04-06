@@ -1,10 +1,8 @@
 import { Router } from 'express';
-import { spawn } from 'node:child_process';
-import fs from 'node:fs';
-import path from 'node:path';
 import { connectMongo } from '../lib/mongodb.js';
 import { asyncHandler } from '../lib/http.js';
 import { getForwardAuthHeaders, getRuntimeApiKey, getRuntimeUrl } from '../lib/runtime.js';
+import { resolveStorageStateJson } from '../lib/storageArtifacts.js';
 import { requireUser } from '../middlewares/auth.js';
 import { ProfileModel } from '../models/Profile.js';
 import { ProfileStorageStateModel } from '../models/ProfileStorageState.js';
@@ -136,7 +134,21 @@ router.post(
         profileId: ownedProfile._id,
       }).lean();
 
-      payload.storageState = syncedStorageState?.stateJson || null;
+      payload.storageState = await resolveStorageStateJson({
+        inlineStateJson: syncedStorageState?.inlineStateJson,
+        stateJson: syncedStorageState?.stateJson,
+        fileRef: syncedStorageState?.fileRef || '',
+      });
+      payload.storageStateMetadata = syncedStorageState
+        ? {
+            version: syncedStorageState.version || 0,
+            stateHash: syncedStorageState.stateHash || '',
+            fileRef: syncedStorageState.fileRef || '',
+            checksum: syncedStorageState.checksum || '',
+            size: syncedStorageState.size || 0,
+            contentType: syncedStorageState.contentType || 'application/json',
+          }
+        : null;
     }
 
     const runtimeResponse = await fetch(`${getRuntimeUrl()}${endpoint}`, {
@@ -162,34 +174,10 @@ router.post(
 router.post(
   '/launch',
   asyncHandler(async (req, res) => {
-    const profileId = String(req.body?.profileId || '');
-    if (!profileId) {
-      res.status(400).json({ error: 'Profile ID is required' });
-      return;
-    }
-
-    const cwd = process.cwd();
-    const engineLocation = path.resolve(cwd, '..', 'fingerprint-dashboard', 'stealth-engine');
-    const launchScript = path.resolve(engineLocation, 'launch.js');
-
-    if (!fs.existsSync(launchScript)) {
-      res.status(500).json({
-        error: `launch.js not found. Looking at: ${launchScript}`,
-      });
-      return;
-    }
-
-    const child = spawn(process.execPath, [launchScript, '--profileId', profileId], {
-      cwd: engineLocation,
-      detached: true,
-      stdio: 'ignore',
-      env: { ...process.env },
-    });
-    child.unref();
-
-    res.json({
-      success: true,
-      message: `Profile ${profileId} launched`,
+    res.status(410).json({
+      success: false,
+      error: 'Direct server-side launch is deprecated. Use control plane task dispatch to a local desktop runtime.',
+      deprecated: true,
     });
   })
 );

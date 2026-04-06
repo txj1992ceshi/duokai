@@ -67,6 +67,34 @@ router.get(
         updatedAt: item.updatedAt || null,
         pendingTasks: countMap.get(item.agentId) || 0,
         capabilities: Array.isArray(item.capabilities) ? item.capabilities : [],
+        hostInfo:
+          item.hostInfo && typeof item.hostInfo === 'object' && !Array.isArray(item.hostInfo)
+            ? item.hostInfo
+            : null,
+        runtimeStatus:
+          item.runtimeStatus && typeof item.runtimeStatus === 'object' && !Array.isArray(item.runtimeStatus)
+            ? item.runtimeStatus
+            : null,
+        runtimeSummary: {
+          runningProfileCount: Array.isArray(item.runtimeStatus?.runningProfileIds)
+            ? item.runtimeStatus.runningProfileIds.length
+            : 0,
+          queuedProfileCount: Array.isArray(item.runtimeStatus?.queuedProfileIds)
+            ? item.runtimeStatus.queuedProfileIds.length
+            : 0,
+          startingProfileCount: Array.isArray(item.runtimeStatus?.startingProfileIds)
+            ? item.runtimeStatus.startingProfileIds.length
+            : 0,
+          effectiveRuntimeMode: String(item.hostInfo?.effectiveRuntimeMode || item.runtimeStatus?.effectiveRuntimeMode || ''),
+          supportedRuntimeModes: Array.isArray(item.hostInfo?.supportedRuntimeModes)
+            ? item.hostInfo.supportedRuntimeModes
+            : Array.isArray(item.runtimeStatus?.supportedRuntimeModes)
+              ? item.runtimeStatus.supportedRuntimeModes
+              : [],
+          degraded: Boolean(item.hostInfo?.degraded || item.runtimeStatus?.degraded),
+          degradeReason: String(item.hostInfo?.degradeReason || item.runtimeStatus?.degradeReason || ''),
+          lockState: String(item.hostInfo?.lockState || ''),
+        },
         syncVersion: Number(configMap.get(item.agentId)?.syncVersion || 0),
         lastConfigSyncedAt: configMap.get(item.agentId)?.updatedAt || null,
       })),
@@ -561,6 +589,7 @@ router.get(
         type: item.type,
         status: item.status,
         idempotencyKey: item.idempotencyKey,
+        payload: item.payload ?? {},
         createdAt: item.createdAt,
         pulledAt: item.pulledAt,
         startedAt: item.startedAt,
@@ -568,6 +597,9 @@ router.get(
         errorCode: item.errorCode,
         errorMessage: item.errorMessage,
         outputRef: item.outputRef,
+        diagnostics: item.diagnostics ?? null,
+        createdByUserId: item.createdByUserId || '',
+        createdByEmail: item.createdByEmail || '',
       })),
     });
   })

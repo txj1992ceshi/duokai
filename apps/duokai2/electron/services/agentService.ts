@@ -4,10 +4,10 @@ type AgentTaskStatus = 'RECEIVED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCEL
 type AgentTaskType =
   | 'PROFILE_START'
   | 'PROFILE_STOP'
-  | 'PROXY_TEST'
-  | 'TEMPLATE_APPLY'
-  | 'SETTINGS_SYNC'
-  | 'LOG_FLUSH';
+  | 'WORKSPACE_SNAPSHOT'
+  | 'WORKSPACE_RESTORE'
+  | 'PROFILE_VERIFY'
+  | 'OPEN_PLATFORM';
 
 type AgentTask = {
   taskId: string;
@@ -46,6 +46,7 @@ type TaskExecutionResult = {
   errorCode?: string;
   errorMessage?: string;
   outputRef?: string;
+  diagnostics?: Record<string, unknown>;
 };
 
 type AgentServiceOptions = {
@@ -62,6 +63,52 @@ type AgentServiceOptions = {
 
 function readErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function sanitizeDiagnostics(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
+}
+
+function classifyExecutionFailure(error: unknown): Pick<TaskExecutionResult, 'errorCode' | 'errorMessage' | 'diagnostics'> {
+  const message = readErrorMessage(error).trim() || 'Task execution failed';
+  const normalized = message.toLowerCase();
+
+  if (normalized.includes('profile not found')) {
+    return { errorCode: 'PROFILE_NOT_FOUND', errorMessage: message, diagnostics: { reason: 'profile-missing' } };
+  }
+  if (normalized.includes('workspace') && normalized.includes('validation failed')) {
+    return { errorCode: 'WORKSPACE_RESTORE_BLOCKED', errorMessage: message, diagnostics: { reason: 'workspace-restore-blocked' } };
+  }
+  if (normalized.includes('snapshot') && normalized.includes('restore')) {
+    return { errorCode: 'SNAPSHOT_RESTORE_FAILED', errorMessage: message, diagnostics: { reason: 'snapshot-restore-failed' } };
+  }
+  if (normalized.includes('trusted') && normalized.includes('snapshot')) {
+    return { errorCode: 'SNAPSHOT_MISMATCH', errorMessage: message, diagnostics: { reason: 'trusted-snapshot-mismatch' } };
+  }
+  if (normalized.includes('lock')) {
+    return { errorCode: 'RUNTIME_LOCK_EXISTS', errorMessage: message, diagnostics: { reason: 'runtime-lock' } };
+  }
+  if (normalized.includes('cancelled')) {
+    return { errorCode: 'TASK_CANCELLED', errorMessage: message, diagnostics: { reason: 'cancelled' } };
+  }
+  if (normalized.includes('timeout')) {
+    return { errorCode: 'TASK_TIMEOUT', errorMessage: message, diagnostics: { reason: 'timeout' } };
+  }
+  if (normalized.includes('proxy') && normalized.includes('cooldown')) {
+    return { errorCode: 'LEASE_COOLDOWN', errorMessage: message, diagnostics: { reason: 'lease-cooldown' } };
+  }
+  if (normalized.includes('validation')) {
+    return { errorCode: 'POLICY_BLOCK', errorMessage: message, diagnostics: { reason: 'validation-block' } };
+  }
+
+  return {
+    errorCode: 'EXECUTION_ERROR',
+    errorMessage: message,
+    diagnostics: { reason: 'unknown' },
+  };
 }
 
 const DEFAULT_TASK_TIMEOUT_MS = Math.max(5_000, Number(process.env.AGENT_TASK_TIMEOUT_MS || 120_000));
@@ -228,6 +275,7 @@ export class AgentService {
             errorCode: detail.errorCode || '',
             errorMessage: detail.errorMessage || '',
             outputRef: detail.outputRef || '',
+            diagnostics: sanitizeDiagnostics(detail.diagnostics) || undefined,
             startedAt: status === 'RUNNING' ? new Date().toISOString() : undefined,
             endedAt:
               status === 'SUCCEEDED' || status === 'FAILED' || status === 'CANCELLED'
@@ -290,9 +338,11 @@ export class AgentService {
         lastTaskFinishedAt: new Date().toISOString(),
       });
     } catch (error) {
+      const failure = classifyExecutionFailure(error);
       await this.ack(task, 'FAILED', {
-        errorCode: 'EXECUTION_ERROR',
-        errorMessage: readErrorMessage(error),
+        errorCode: failure.errorCode,
+        errorMessage: failure.errorMessage,
+        diagnostics: failure.diagnostics,
       });
       this.setState({
         lastTaskId: task.taskId,

@@ -31,6 +31,37 @@ function getRunningProfileIds(agent: { runtimeStatus?: Record<string, unknown> |
   return Array.isArray(raw) ? raw.map((item) => String(item || '').trim()).filter(Boolean) : [];
 }
 
+function getStringArrayField(agent: { runtimeStatus?: Record<string, unknown> | null }, key: string) {
+  const raw = agent.runtimeStatus?.[key];
+  return Array.isArray(raw) ? raw.map((item) => String(item || '').trim()).filter(Boolean) : [];
+}
+
+function getAgentSelectionState(agent: { runtimeStatus?: Record<string, unknown> | null; lastSeenAt?: Date | string | null }) {
+  const runningProfileIds = getRunningProfileIds(agent);
+  const lockedProfileIds = getStringArrayField(agent, 'lockedProfileIds');
+  const staleLockProfileIds = getStringArrayField(agent, 'staleLockProfileIds');
+  const lastSeenAt = agent.lastSeenAt ? new Date(agent.lastSeenAt) : null;
+  return {
+    runningProfileIds,
+    lockedProfileIds,
+    staleLockProfileIds,
+    runningCount: runningProfileIds.length,
+    lockedCount: lockedProfileIds.length,
+    staleLockCount: staleLockProfileIds.length,
+    lastSeenAtMs: Number.isFinite(lastSeenAt?.getTime()) ? lastSeenAt!.getTime() : 0,
+  };
+}
+
+function compareAgentPriority(
+  left: ReturnType<typeof getAgentSelectionState>,
+  right: ReturnType<typeof getAgentSelectionState>
+) {
+  if (left.staleLockCount !== right.staleLockCount) return left.staleLockCount - right.staleLockCount;
+  if (left.runningCount !== right.runningCount) return left.runningCount - right.runningCount;
+  if (left.lockedCount !== right.lockedCount) return left.lockedCount - right.lockedCount;
+  return right.lastSeenAtMs - left.lastSeenAtMs;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const authUser = requireUser(req) as { userId: string; email?: string };
@@ -73,7 +104,14 @@ export async function POST(req: NextRequest) {
         : capableAgents.find((agent) => getRunningProfileIds(agent).includes(profileId));
 
     if (!selectedAgent) {
-      selectedAgent = capableAgents[0];
+      const rankedAgents = capableAgents
+        .map((agent) => ({
+          agent,
+          state: getAgentSelectionState(agent),
+        }))
+        .filter(({ state }) => !state.lockedProfileIds.includes(profileId))
+        .sort((left, right) => compareAgentPriority(left.state, right.state));
+      selectedAgent = rankedAgents[0]?.agent;
     }
 
     if (!selectedAgent) {
@@ -96,14 +134,38 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const runningProfileIds = getRunningProfileIds(selectedAgent);
+    const selectedState = getAgentSelectionState(selectedAgent);
+    const runningProfileIds = selectedState.runningProfileIds;
     if (action === 'start' && runningProfileIds.includes(profileId)) {
       return NextResponse.json({
         success: true,
         duplicate: true,
         alreadyRunning: true,
         agentId: selectedAgent.agentId,
+        detail: {
+          selectedAgent: {
+            staleLockCount: selectedState.staleLockCount,
+            lockedCount: selectedState.lockedCount,
+            runningCount: selectedState.runningCount,
+          },
+        },
       });
+    }
+
+    if (action === 'start' && selectedState.lockedProfileIds.includes(profileId)) {
+      return NextResponse.json(
+        {
+          success: false,
+          code: 'RUNTIME_LOCK_EXISTS',
+          error: '目标 Profile 当前存在本机运行锁，暂时不能重复启动',
+          detail: {
+            agentId: selectedAgent.agentId,
+            lockedProfileIds: selectedState.lockedProfileIds,
+            staleLockProfileIds: selectedState.staleLockProfileIds,
+          },
+        },
+        { status: 409 }
+      );
     }
 
     const taskType = action === 'start' ? 'PROFILE_START' : 'PROFILE_STOP';
@@ -137,6 +199,13 @@ export async function POST(req: NextRequest) {
       agentId: selectedAgent.agentId,
       profileId,
       action,
+      detail: {
+        selectedAgent: {
+          staleLockCount: selectedState.staleLockCount,
+          lockedCount: selectedState.lockedCount,
+          runningCount: selectedState.runningCount,
+        },
+      },
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Request failed';

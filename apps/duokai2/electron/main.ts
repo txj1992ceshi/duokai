@@ -1,4 +1,4 @@
-import { appendFileSync, createWriteStream, existsSync, mkdirSync } from 'node:fs'
+import { appendFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import dns from 'node:dns'
@@ -100,6 +100,7 @@ import type {
   ProfileRecord,
   ProxyRecord,
   RemoteConfigSnapshot,
+  RuntimeHostInfo,
   SettingsPayload,
   DesktopUpdateState,
   TrustedIsolationCheck,
@@ -137,6 +138,8 @@ const DEFAULT_CONTROL_PLANE_API_BASE = (
 ).replace(/\/$/, '')
 const TRUSTED_SNAPSHOT_VERSION = 1
 const PROFILE_STORAGE_SYNC_INTERVAL_MS = 5 * 60 * 1000
+const PROFILE_RUNTIME_LOCK_HEARTBEAT_MS = 30 * 1000
+const PROFILE_RUNTIME_LOCK_STALE_MS = 2 * 60 * 1000
 const CONTROL_PLANE_API_BASE_KEY = 'controlPlaneApiBase'
 const CONTROL_PLANE_DEVICE_ID_KEY = 'controlPlaneDeviceId'
 const CONTROL_PLANE_AUTH_TOKEN_KEY = 'controlPlaneAuthToken'
@@ -151,6 +154,7 @@ let agentService: AgentService | null = null
 
 const runtimeContexts = new Map<string, BrowserContext>()
 const runtimeStorageSyncTimers = new Map<string, NodeJS.Timeout>()
+const runtimeLockHeartbeatTimers = new Map<string, NodeJS.Timeout>()
 const MAX_QUEUE = Number(process.env.MAX_QUEUE_LENGTH || 200)
 const CONTROL_PLANE_FETCH_RETRY_MS = 1200
 const DESKTOP_RELEASES_API = 'https://api.github.com/repos/txj1992ceshi/duokai/releases/latest'
@@ -182,6 +186,15 @@ type BrowserStorageState = {
   }>
 }
 
+type RuntimeLockRecord = {
+  profileId: string
+  ownerPid: number
+  ownerDeviceId: string
+  status: 'starting' | 'running' | 'stopped'
+  createdAt: string
+  updatedAt: string
+}
+
 function resolveAuditLogPath(): string {
   try {
     return path.join(app.getPath('userData'), process.env.RUNTIME_AUDIT_FILE || 'runtime-audit.log')
@@ -203,17 +216,27 @@ function resolveSmokeOutputDir(): string {
 }
 
 function getAgentRuntimeState() {
+  const profiles = requireDatabase().listProfiles()
   const launchStages = Object.fromEntries(
-    requireDatabase()
-      .listProfiles()
-      .map((profile) => [profile.id, profile.fingerprintConfig.runtimeMetadata.launchValidationStage]),
+    profiles.map((profile) => [profile.id, profile.fingerprintConfig.runtimeMetadata.launchValidationStage]),
   )
+  const hostInfo = getRuntimeHostInfo()
+  const lockSummary = summarizeRuntimeLockStates()
   return {
     runningProfileIds: [...runtimeContexts.keys()],
     queuedProfileIds: scheduler.getQueuedIds(),
     startingProfileIds: scheduler.getStartingIds(),
     launchStages,
     retryCounts: scheduler.getRetryCounts(),
+    supportedRuntimeModes: hostInfo.supportedRuntimeModes || [],
+    effectiveRuntimeMode: hostInfo.effectiveRuntimeMode || 'local',
+    runtimeHostKind: hostInfo.kind,
+    degraded: Boolean(hostInfo.degraded),
+    degradeReason: hostInfo.degradeReason || '',
+    activeRuntimeHosts: runtimeHostManager.listEnvironments().length,
+    profileCount: profiles.length,
+    lockedProfileIds: lockSummary.lockedProfileIds,
+    staleLockProfileIds: lockSummary.staleLockProfileIds,
   }
 }
 
@@ -291,6 +314,187 @@ function audit(action: string, payload: Record<string, unknown> = {}) {
 
 function getProfileStorageStatePath(profileId: string): string {
   return path.join(getProfilePath(app, profileId), 'storageState.json')
+}
+
+function getProfileRuntimeLockPath(profile: ProfileRecord): string {
+  const ensured = profile.workspace ?? ensureWorkspaceLayoutForProfileId(profile.id).workspace
+  if (!ensured) {
+    throw new Error('Workspace not ready for runtime lock')
+  }
+  mkdirSync(ensured.paths.metaDir, { recursive: true })
+  return path.join(ensured.paths.metaDir, 'runtime.lock.json')
+}
+
+function readRuntimeLockRecord(profile: ProfileRecord): RuntimeLockRecord | null {
+  const lockPath = getProfileRuntimeLockPath(profile)
+  if (!existsSync(lockPath)) {
+    return null
+  }
+  try {
+    return JSON.parse(readFileSync(lockPath, 'utf8')) as RuntimeLockRecord
+  } catch {
+    return null
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) {
+    return false
+  }
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function getRuntimeLockStateForProfile(profile: ProfileRecord): 'unlocked' | 'locked' | 'stale-lock' {
+  const record = readRuntimeLockRecord(profile)
+  if (!record) {
+    return 'unlocked'
+  }
+  const updatedAtMs = Date.parse(record.updatedAt || record.createdAt || '')
+  const staleByTime = !Number.isFinite(updatedAtMs) || Date.now() - updatedAtMs > PROFILE_RUNTIME_LOCK_STALE_MS
+  const staleByPid = record.ownerPid !== process.pid && !isProcessAlive(record.ownerPid)
+  return staleByTime || staleByPid ? 'stale-lock' : 'locked'
+}
+
+function writeRuntimeLockRecord(profile: ProfileRecord, status: RuntimeLockRecord['status']): RuntimeLockRecord {
+  const now = new Date().toISOString()
+  const existing = readRuntimeLockRecord(profile)
+  const next: RuntimeLockRecord = {
+    profileId: profile.id,
+    ownerPid: process.pid,
+    ownerDeviceId: getControlPlaneDeviceId(),
+    status,
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
+  }
+  const lockPath = getProfileRuntimeLockPath(profile)
+  writeFileSync(lockPath, JSON.stringify(next, null, 2), 'utf8')
+  return next
+}
+
+async function releaseProfileRuntimeLock(profileId: string): Promise<void> {
+  const timer = runtimeLockHeartbeatTimers.get(profileId)
+  if (timer) {
+    clearInterval(timer)
+    runtimeLockHeartbeatTimers.delete(profileId)
+  }
+  const profile = requireDatabase().getProfileById(profileId)
+  if (!profile) {
+    return
+  }
+  const lockPath = getProfileRuntimeLockPath(profile)
+  if (!existsSync(lockPath)) {
+    return
+  }
+  try {
+    unlinkSync(lockPath)
+  } catch (error) {
+    audit('runtime_lock_release_failed', {
+      profileId,
+      err: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
+
+function startRuntimeLockHeartbeat(profileId: string): void {
+  const existing = runtimeLockHeartbeatTimers.get(profileId)
+  if (existing) {
+    clearInterval(existing)
+  }
+  const timer = setInterval(() => {
+    const profile = requireDatabase().getProfileById(profileId)
+    if (!profile) {
+      return
+    }
+    try {
+      writeRuntimeLockRecord(profile, runtimeContexts.has(profileId) ? 'running' : 'starting')
+    } catch (error) {
+      audit('runtime_lock_heartbeat_failed', {
+        profileId,
+        err: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }, PROFILE_RUNTIME_LOCK_HEARTBEAT_MS)
+  runtimeLockHeartbeatTimers.set(profileId, timer)
+}
+
+function acquireProfileRuntimeLock(profile: ProfileRecord): { record: RuntimeLockRecord; staleReclaimed: boolean } {
+  const existing = readRuntimeLockRecord(profile)
+  let staleReclaimed = false
+  if (existing) {
+    const lockState = getRuntimeLockStateForProfile(profile)
+    if (lockState === 'locked' && existing.ownerPid !== process.pid) {
+      throw new Error(
+        `Runtime lock exists for profile ${profile.id} (pid=${existing.ownerPid}, updatedAt=${existing.updatedAt})`,
+      )
+    }
+    if (lockState === 'stale-lock') {
+      staleReclaimed = true
+      try {
+        unlinkSync(getProfileRuntimeLockPath(profile))
+      } catch {
+        // Ignore best-effort cleanup and rewrite below.
+      }
+    }
+  }
+  const record = writeRuntimeLockRecord(profile, 'starting')
+  startRuntimeLockHeartbeat(profile.id)
+  audit(staleReclaimed ? 'runtime_lock_reclaimed' : 'runtime_lock_acquired', {
+    profileId: profile.id,
+    ownerPid: record.ownerPid,
+    staleReclaimed,
+  })
+  return { record, staleReclaimed }
+}
+
+function markProfileRuntimeLockRunning(profileId: string): void {
+  const profile = requireDatabase().getProfileById(profileId)
+  if (!profile) {
+    return
+  }
+  writeRuntimeLockRecord(profile, 'running')
+}
+
+function summarizeRuntimeLockStates(): {
+  lockedProfileIds: string[]
+  staleLockProfileIds: string[]
+} {
+  const lockedProfileIds: string[] = []
+  const staleLockProfileIds: string[] = []
+  for (const profile of requireDatabase().listProfiles()) {
+    const lockState = getRuntimeLockStateForProfile(profile)
+    if (lockState === 'locked') {
+      lockedProfileIds.push(profile.id)
+    }
+    if (lockState === 'stale-lock') {
+      staleLockProfileIds.push(profile.id)
+    }
+  }
+  return { lockedProfileIds, staleLockProfileIds }
+}
+
+function cleanupRuntimeLocksOnStartup(): void {
+  for (const profile of requireDatabase().listProfiles()) {
+    if (!profile.workspace) {
+      continue
+    }
+    if (getRuntimeLockStateForProfile(profile) !== 'stale-lock') {
+      continue
+    }
+    try {
+      unlinkSync(getProfileRuntimeLockPath(profile))
+      audit('runtime_lock_cleanup_startup', { profileId: profile.id })
+    } catch (error) {
+      audit('runtime_lock_cleanup_startup_failed', {
+        profileId: profile.id,
+        err: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
 }
 
 function ensureWorkspaceLayoutForProfileId(profileId: string): ProfileRecord {
@@ -713,6 +917,9 @@ async function gracefulShutdownHandler(signalOrErr?: unknown) {
     audit('process_shutdown_begin', { info: String(signalOrErr || '') })
     console.log('Graceful shutdown: saving sessions...')
     await saveAllElectronSessions()
+    for (const profileId of [...runtimeContexts.keys()]) {
+      await releaseProfileRuntimeLock(profileId)
+    }
   } catch (error) {
     console.error('graceful shutdown save failed', error)
   } finally {
@@ -789,7 +996,11 @@ const CAPABILITIES: DesktopRuntimeInfo['capabilities'] = [
   'proxies.test',
   'runtime.launch',
   'runtime.stop',
+  'runtime.open-platform',
   'runtime.getStatus',
+  'profile.verify',
+  'workspace.snapshot',
+  'workspace.restore',
   'logs.list',
   'logs.clear',
   'settings.get',
@@ -2566,6 +2777,7 @@ async function stopRuntime(profileId: string): Promise<void> {
   if (!context) {
     clearProfileStorageSyncTimer(profileId)
     await runtimeHostManager.stopEnvironment(profileId)
+    await releaseProfileRuntimeLock(profileId)
     await updateProfileStatus(profileId, 'stopped')
     return
   }
@@ -2578,6 +2790,7 @@ async function stopRuntime(profileId: string): Promise<void> {
   runtimeContexts.delete(profileId)
   await context.close()
   await runtimeHostManager.stopEnvironment(profileId)
+  await releaseProfileRuntimeLock(profileId)
   scheduler.markStopped(profileId)
 }
 
@@ -2983,6 +3196,19 @@ function getRuntimeHostInfo() {
   const settings = getSettings()
   const kind = resolveRequestedRuntimeKind(settings)
   const available = isRuntimeHostSupported(kind)
+  const lockSummary = summarizeRuntimeLockStates()
+  const effectiveRuntimeMode =
+    kind === 'container' ? 'container' : kind === 'vm' ? 'vm' : 'local'
+  const supportedRuntimeModes: RuntimeHostInfo['supportedRuntimeModes'] = ['local']
+  if (process.platform === 'linux') {
+    supportedRuntimeModes.push('strong-local')
+  }
+  if (isRuntimeHostSupported('vm')) {
+    supportedRuntimeModes.push('vm')
+  }
+  if (isRuntimeHostSupported('container')) {
+    supportedRuntimeModes.push('container')
+  }
   return {
     kind,
     label: available ? kind : `local fallback for ${kind}`,
@@ -2991,6 +3217,21 @@ function getRuntimeHostInfo() {
       ? 'runtime host ready'
       : `runtime host "${kind}" is unavailable on this platform; falling back to local`,
     activeHosts: runtimeHostManager.listEnvironments().length,
+    effectiveRuntimeMode: available ? effectiveRuntimeMode : 'local',
+    supportedRuntimeModes,
+    degraded: !available && kind !== 'local',
+    degradeReason:
+      !available && kind !== 'local'
+        ? `requested runtime host "${kind}" is unavailable on this platform`
+        : '',
+    lockState:
+      lockSummary.staleLockProfileIds.length > 0
+        ? 'stale-lock'
+        : lockSummary.lockedProfileIds.length > 0 ||
+            scheduler.getStartingIds().length > 0 ||
+            scheduler.getQueuedIds().length > 0
+          ? 'locked'
+          : 'unlocked',
   }
 }
 
@@ -3195,55 +3436,60 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     throw new Error('Profile not found')
   }
   let profile = storedProfile
+  let runtimeLockHeld = false
 
   if (runtimeContexts.has(profileId)) {
     return
   }
   profile = ensureWorkspaceLayoutForProfileId(profileId)
-  const workspaceGate = validateWorkspaceGate(profile, database.listProfiles())
-  profile = persistProfile({
-    ...profile,
-    workspace: workspaceGate.workspace,
-  })
-  profile = await refreshLastKnownGoodSnapshotStatus(profile)
-  if (workspaceGate.status === 'block') {
-    profile = updateRuntimeMetadata(profile, {
-      lastValidationLevel: 'block',
-      lastValidationMessages: workspaceGate.messages,
-      launchValidationStage: 'idle',
-    })
-    throw new Error(workspaceGate.messages.join(' '))
-  }
-  if (workspaceGate.status === 'warn') {
-    profile = updateRuntimeMetadata(profile, {
-      lastValidationLevel: 'warn',
-      lastValidationMessages: workspaceGate.messages,
-      launchValidationStage: 'idle',
-    })
-  }
-  const proxy = resolveProfileProxy(profile, database)
-  const validation = validateProfileReadiness(profile, proxy, undefined, undefined, getLifecyclePolicyContext())
-  const configFingerprintHash = buildConfigFingerprintHash(profile)
-  const proxyFingerprintHash = buildProxyFingerprintHash(profile, proxy)
-  const existingSnapshot = profile.fingerprintConfig.runtimeMetadata.trustedLaunchSnapshot
-  profile = updateRuntimeMetadata(profile, {
-    lastValidationLevel: validation.level,
-    lastValidationMessages: validation.messages,
-    configFingerprintHash,
-    proxyFingerprintHash,
-    launchValidationStage: 'idle',
-    launchRetryCount: scheduler.getRetryCounts()[profileId] ?? 0,
-  })
-  if (validation.level === 'block') {
-    throw new Error(validation.messages.join(' '))
-  }
+  try {
+    acquireProfileRuntimeLock(profile)
+    runtimeLockHeld = true
 
-  let resolvedProxy: ProxyRecord | null = proxy
-  let check: NetworkHealthResult
-  let effectiveProxyTransport = toEntryTransport(proxy)
-  let usedTrustedSnapshot = false
+    const workspaceGate = validateWorkspaceGate(profile, database.listProfiles())
+    profile = persistProfile({
+      ...profile,
+      workspace: workspaceGate.workspace,
+    })
+    profile = await refreshLastKnownGoodSnapshotStatus(profile)
+    if (workspaceGate.status === 'block') {
+      profile = updateRuntimeMetadata(profile, {
+        lastValidationLevel: 'block',
+        lastValidationMessages: workspaceGate.messages,
+        launchValidationStage: 'idle',
+      })
+      throw new Error(workspaceGate.messages.join(' '))
+    }
+    if (workspaceGate.status === 'warn') {
+      profile = updateRuntimeMetadata(profile, {
+        lastValidationLevel: 'warn',
+        lastValidationMessages: workspaceGate.messages,
+        launchValidationStage: 'idle',
+      })
+    }
+    const proxy = resolveProfileProxy(profile, database)
+    const validation = validateProfileReadiness(profile, proxy, undefined, undefined, getLifecyclePolicyContext())
+    const configFingerprintHash = buildConfigFingerprintHash(profile)
+    const proxyFingerprintHash = buildProxyFingerprintHash(profile, proxy)
+    const existingSnapshot = profile.fingerprintConfig.runtimeMetadata.trustedLaunchSnapshot
+    profile = updateRuntimeMetadata(profile, {
+      lastValidationLevel: validation.level,
+      lastValidationMessages: validation.messages,
+      configFingerprintHash,
+      proxyFingerprintHash,
+      launchValidationStage: 'idle',
+      launchRetryCount: scheduler.getRetryCounts()[profileId] ?? 0,
+    })
+    if (validation.level === 'block') {
+      throw new Error(validation.messages.join(' '))
+    }
 
-  if (shouldUseTrustedSnapshot(profile, existingSnapshot, configFingerprintHash, proxyFingerprintHash)) {
+    let resolvedProxy: ProxyRecord | null = proxy
+    let check: NetworkHealthResult
+    let effectiveProxyTransport = toEntryTransport(proxy)
+    let usedTrustedSnapshot = false
+
+    if (shouldUseTrustedSnapshot(profile, existingSnapshot, configFingerprintHash, proxyFingerprintHash)) {
     usedTrustedSnapshot = true
     audit('quick_check_start', { profileId })
     profile = updateRuntimeMetadata(profile, {
@@ -3277,7 +3523,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       audit('quick_check_failed', { profileId, reason: comparison.message })
       throw new Error(comparison.message)
     }
-  } else {
+    } else {
     audit('full_check_start', { profileId })
     profile = updateRuntimeMetadata(profile, {
       launchValidationStage: 'full-check',
@@ -3298,39 +3544,39 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       lastEffectiveProxyTransport: effectiveProxyTransport,
       trustedSnapshotStatus: 'stale',
     })
-  }
+    }
 
-  const registrationCooldown = getRegistrationCooldownContext(profile, check)
-  const readinessValidation = validateProfileReadiness(
-    profile,
-    resolvedProxy,
-    check,
-    registrationCooldown,
-    getLifecyclePolicyContext(),
-  )
-  const registrationRisk = assessRegistrationRisk(
-    profile,
-    readinessValidation,
-    check,
-    registrationCooldown,
-  )
-  profile = updateRuntimeMetadata(profile, {
-    lastValidationLevel: readinessValidation.level,
-    lastValidationMessages: readinessValidation.messages,
-    lastRegistrationRiskScore: registrationRisk.score,
-    lastRegistrationRiskLevel: registrationRisk.level,
-    lastRegistrationRiskFactors: registrationRisk.factors,
-  })
-  if (readinessValidation.level === 'block') {
-    throw new Error(readinessValidation.messages.join(' '))
-  }
+    const registrationCooldown = getRegistrationCooldownContext(profile, check)
+    const readinessValidation = validateProfileReadiness(
+      profile,
+      resolvedProxy,
+      check,
+      registrationCooldown,
+      getLifecyclePolicyContext(),
+    )
+    const registrationRisk = assessRegistrationRisk(
+      profile,
+      readinessValidation,
+      check,
+      registrationCooldown,
+    )
+    profile = updateRuntimeMetadata(profile, {
+      lastValidationLevel: readinessValidation.level,
+      lastValidationMessages: readinessValidation.messages,
+      lastRegistrationRiskScore: registrationRisk.score,
+      lastRegistrationRiskLevel: registrationRisk.level,
+      lastRegistrationRiskFactors: registrationRisk.factors,
+    })
+    if (readinessValidation.level === 'block') {
+      throw new Error(readinessValidation.messages.join(' '))
+    }
 
-  if (scheduler.isCancelled(profileId)) {
-    throw new Error('Launch cancelled')
-  }
-  profile = database.getProfileById(profileId) ?? profile
-  profile = persistProfile(applyNetworkDerivedFingerprint(profile, check))
-  profile = persistProfile({
+    if (scheduler.isCancelled(profileId)) {
+      throw new Error('Launch cancelled')
+    }
+    profile = database.getProfileById(profileId) ?? profile
+    profile = persistProfile(applyNetworkDerivedFingerprint(profile, check))
+    profile = persistProfile({
     ...profile,
     fingerprintConfig: {
       ...profile.fingerprintConfig,
@@ -3340,11 +3586,11 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
         launchValidationStage: 'browser-launch',
       },
     },
-  })
+    })
 
-  const finalConfigFingerprintHash = buildConfigFingerprintHash(profile)
-  const finalProxyFingerprintHash = buildProxyFingerprintHash(profile, resolvedProxy)
-  if (!usedTrustedSnapshot) {
+    const finalConfigFingerprintHash = buildConfigFingerprintHash(profile)
+    const finalProxyFingerprintHash = buildProxyFingerprintHash(profile, resolvedProxy)
+    if (!usedTrustedSnapshot) {
     const refreshedSnapshot = buildTrustedLaunchSnapshot(
       profile,
       check,
@@ -3360,29 +3606,29 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       lastEffectiveProxyTransport: effectiveProxyTransport,
     })
     void syncProfileLaunchTrustToControlPlane(profile)
-  }
+    }
 
-  const directoryInfo = getProfileDirectoryInfo(app)
-  ensureProfileDirectory(directoryInfo.profilesDir)
-  profile = ensureWorkspaceLayoutForProfileId(profileId)
-  const settings = database.getSettings()
-  const fingerprint = profile.fingerprintConfig
-  const workspaceLaunch = resolveWorkspaceLaunchConfig(
-    profile,
-    !fingerprint.commonSettings.hardwareAcceleration,
-  )
-  const userDataDir = workspaceLaunch.userDataDir
-  mkdirSync(userDataDir, { recursive: true })
-  await downloadProfileStorageStateFromControlPlane(profileId)
-  const runtimeHost = await runtimeHostManager.startEnvironment(profileId, userDataDir, getSettings())
-  audit('runtime_host_ready', {
+    const directoryInfo = getProfileDirectoryInfo(app)
+    ensureProfileDirectory(directoryInfo.profilesDir)
+    profile = ensureWorkspaceLayoutForProfileId(profileId)
+    const settings = database.getSettings()
+    const fingerprint = profile.fingerprintConfig
+    const workspaceLaunch = resolveWorkspaceLaunchConfig(
+      profile,
+      !fingerprint.commonSettings.hardwareAcceleration,
+    )
+    const userDataDir = workspaceLaunch.userDataDir
+    mkdirSync(userDataDir, { recursive: true })
+    await downloadProfileStorageStateFromControlPlane(profileId)
+    const runtimeHost = await runtimeHostManager.startEnvironment(profileId, userDataDir, getSettings())
+    audit('runtime_host_ready', {
     profileId,
     kind: runtimeHost.kind,
     available: runtimeHost.available,
     reason: runtimeHost.reason,
-  })
+    })
 
-  const executablePath = resolveChromiumExecutable()
+    const executablePath = resolveChromiumExecutable()
 
   const launchOptions: Parameters<typeof chromium.launchPersistentContext>[1] = {
     headless: false,
@@ -3413,36 +3659,37 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
   }
   launchOptions.env = buildChromiumLaunchEnv()
 
-  const diagnostics = buildNetworkDiagnosticsSummary(runtimeHost, check)
-  audit('runtime_network_diagnostics', {
+    const diagnostics = buildNetworkDiagnosticsSummary(runtimeHost, check)
+    audit('runtime_network_diagnostics', {
     profileId,
     level: diagnostics.level,
     messages: diagnostics.messages,
-  })
+    })
 
-  // Launch reads userDataDir and runtime config from workspace only. Legacy fingerprint fields are mirrors.
-  const context = await chromium.launchPersistentContext(userDataDir, launchOptions)
-  if (scheduler.isCancelled(profileId)) {
-    await context.close()
-    throw new Error('Launch cancelled')
-  }
-  runtimeContexts.set(profileId, context)
-  startProfileStorageSyncTimer(profileId, context)
-  database.touchProfileLastStarted(profileId)
-  const injectedFeatures = buildInjectedFeatures(profile)
-  profile = updateRuntimeMetadata(profile, {
+    // Launch reads userDataDir and runtime config from workspace only. Legacy fingerprint fields are mirrors.
+    const context = await chromium.launchPersistentContext(userDataDir, launchOptions)
+    if (scheduler.isCancelled(profileId)) {
+      await context.close()
+      throw new Error('Launch cancelled')
+    }
+    runtimeContexts.set(profileId, context)
+    markProfileRuntimeLockRunning(profileId)
+    startProfileStorageSyncTimer(profileId, context)
+    database.touchProfileLastStarted(profileId)
+    const injectedFeatures = buildInjectedFeatures(profile)
+    profile = updateRuntimeMetadata(profile, {
     launchRetryCount: scheduler.getRetryCounts()[profileId] ?? 0,
     injectedFeatures,
-  })
-  logEvent(
+    })
+    logEvent(
     'info',
     'runtime',
     `Launched profile "${profile.name}"${resolvedProxy ? ` via ${buildProxyServer(resolvedProxy)}` : ''}${launchProxy.bridgeActive ? ` ${launchProxy.detail}` : ''}`,
     profileId,
-  )
-  await context.addInitScript(buildFingerprintInitScript(profile.id, profile.fingerprintConfig))
-  let latestWorkspaceSnapshot: WorkspaceSnapshotRecord | null = null
-  try {
+    )
+    await context.addInitScript(buildFingerprintInitScript(profile.id, profile.fingerprintConfig))
+    let latestWorkspaceSnapshot: WorkspaceSnapshotRecord | null = null
+    try {
     const existingSnapshots = await listWorkspaceSnapshotsForProfile(profileId)
     const localStorageState = await readProfileStorageStateFromDisk(profileId)
     const currentStorageState = {
@@ -3456,12 +3703,12 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       doesWorkspaceSnapshotMatchProfile(snapshot, profile, currentStorageState),
     )
     latestWorkspaceSnapshot = matchedSnapshot ?? (await createWorkspaceSnapshotForProfile(profileId))
-  } catch (error) {
+    } catch (error) {
     audit('workspace_snapshot_create_failed', {
       profileId,
       err: error instanceof Error ? error.message : String(error),
     })
-  }
+    }
 
   const persistStateOnLastPageClose = (pageToWatch: import('playwright').Page) => {
     pageToWatch.on('close', () => {
@@ -3472,24 +3719,25 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     })
   }
 
-  context.on('close', () => {
+    context.on('close', () => {
     clearProfileStorageSyncTimer(profileId)
     runtimeContexts.delete(profileId)
     void uploadProfileStorageStateToControlPlane(profileId, {
       reason: 'context-close',
     })
+    void releaseProfileRuntimeLock(profileId)
     scheduler.markStopped(profileId)
     void syncProfileStatusToControlPlane(profileId, 'stopped')
     logEvent('info', 'runtime', `Closed profile "${profile.name}"`, profileId)
-  })
+    })
 
-  const pages = context.pages()
-  const page = pages[0] ?? (await context.newPage())
-  persistStateOnLastPageClose(page)
-  context.on('page', (newPage) => {
+    const pages = context.pages()
+    const page = pages[0] ?? (await context.newPage())
+    persistStateOnLastPageClose(page)
+    context.on('page', (newPage) => {
     persistStateOnLastPageClose(newPage)
-  })
-  if (fingerprint.commonSettings.blockImages) {
+    })
+    if (fingerprint.commonSettings.blockImages) {
     await page.route('**/*', async (route) => {
       const request = route.request()
       if (request.resourceType() === 'image') {
@@ -3498,11 +3746,11 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       }
       await route.continue()
     })
-  }
-  const startupUrl = resolveProfileStartupUrl(profile) || settings.defaultHomePage || 'https://example.com'
-  await applyStorageStateToContext(context, await readProfileStorageStateFromDisk(profileId))
-  let startupNavigationPassed = false
-  try {
+    }
+    const startupUrl = resolveProfileStartupUrl(profile) || settings.defaultHomePage || 'https://example.com'
+    await applyStorageStateToContext(context, await readProfileStorageStateFromDisk(profileId))
+    let startupNavigationPassed = false
+    try {
     await page.goto(startupUrl, {
       waitUntil: 'domcontentloaded',
     })
@@ -3513,7 +3761,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       })
     }
     recordProfileIpUsage(profile, check, startupNavigationPassed)
-  } finally {
+    } finally {
     if (!startupNavigationPassed) {
       recordProfileIpUsage(profile, check, startupNavigationPassed)
     }
@@ -3541,6 +3789,12 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       )
     }
     void syncProfileLaunchTrustToControlPlane(persisted)
+    }
+  } catch (error) {
+    if (runtimeLockHeld && !runtimeContexts.has(profileId)) {
+      await releaseProfileRuntimeLock(profileId)
+    }
+    throw error
   }
 }
 
@@ -3647,6 +3901,76 @@ async function performRuntimeLaunch(profileId: string): Promise<void> {
     )
     throw error
   }
+}
+
+async function verifyProfileForControlTask(profileId: string): Promise<{
+  level: 'pass' | 'warn' | 'block'
+  messages: string[]
+}> {
+  const database = requireDatabase()
+  const storedProfile = database.getProfileById(profileId)
+  if (!storedProfile) {
+    throw new Error('Profile not found')
+  }
+
+  let profile = ensureWorkspaceLayoutForProfileId(profileId)
+  const workspaceGate = validateWorkspaceGate(profile, database.listProfiles())
+  profile = persistProfile({
+    ...profile,
+    workspace: workspaceGate.workspace,
+  })
+  profile = await refreshLastKnownGoodSnapshotStatus(profile)
+
+  const proxy = resolveProfileProxy(profile, database)
+  const validation = validateProfileReadiness(profile, proxy, undefined, undefined, getLifecyclePolicyContext())
+  const level =
+    workspaceGate.status === 'block' || validation.level === 'block'
+      ? 'block'
+      : workspaceGate.status === 'warn' || validation.level === 'warn'
+        ? 'warn'
+        : 'pass'
+  const messages = Array.from(new Set([...workspaceGate.messages, ...validation.messages]))
+
+  updateRuntimeMetadata(profile, {
+    lastValidationLevel: level,
+    lastValidationMessages: messages,
+    launchValidationStage: 'idle',
+  })
+
+  return { level, messages }
+}
+
+async function updateProfileStartupTarget(
+  profileId: string,
+  targetUrl: string,
+  startupPlatform?: string,
+): Promise<ProfileRecord> {
+  const profile = requireDatabase().getProfileById(profileId)
+  if (!profile) {
+    throw new Error('Profile not found')
+  }
+
+  const nextPlatform = String(startupPlatform || '').trim()
+  const persisted = persistProfile({
+    ...profile,
+    fingerprintConfig: {
+      ...profile.fingerprintConfig,
+      basicSettings: {
+        ...profile.fingerprintConfig.basicSettings,
+        platform: nextPlatform || profile.fingerprintConfig.basicSettings.platform,
+        customPlatformUrl: targetUrl,
+      },
+    },
+  })
+  void syncProfileToControlPlane(persisted).catch((error) => {
+    audit('profile_startup_target_sync_failed', {
+      profileId,
+      targetUrl,
+      startupPlatform: nextPlatform,
+      err: error instanceof Error ? error.message : String(error),
+    })
+  })
+  return persisted
 }
 
 function getRuntimeStatusSnapshot() {
@@ -4587,7 +4911,7 @@ function initAgentService() {
           return { status: 'FAILED', errorCode: 'INVALID_PAYLOAD', errorMessage: 'profileId is required' }
         }
         await enqueueLaunch(profileId)
-        return { status: 'SUCCEEDED' }
+        return { status: 'SUCCEEDED', diagnostics: { action: 'start', profileId } }
       }
 
       if (task.type === 'PROFILE_STOP') {
@@ -4597,69 +4921,87 @@ function initAgentService() {
         }
         await stopRuntime(profileId)
         await updateProfileStatus(profileId, 'stopped')
-        return { status: 'SUCCEEDED' }
+        return { status: 'SUCCEEDED', diagnostics: { action: 'stop', profileId } }
       }
 
-      if (task.type === 'PROXY_TEST') {
-        const proxyId = String(payload.proxyId || '').trim()
-        if (!proxyId) {
-          return { status: 'FAILED', errorCode: 'INVALID_PAYLOAD', errorMessage: 'proxyId is required' }
-        }
-        const result = await testProxyById(proxyId)
-        return result.success
-          ? { status: 'SUCCEEDED', outputRef: result.checkedAt }
-          : { status: 'FAILED', errorCode: 'PROXY_TEST_FAILED', errorMessage: result.message }
-      }
-
-      if (task.type === 'SETTINGS_SYNC') {
-        const action = String(payload.action || '').trim().toLowerCase()
-        if (action === 'pull_snapshot') {
-          await syncConfigFromControlPlane()
-          return { status: 'SUCCEEDED' }
-        }
-        if (action === 'push_snapshot' || action === 'push_snapshot_replace') {
-          await syncConfigToControlPlaneOrThrow('replace')
-          return { status: 'SUCCEEDED' }
-        }
-        if (action === 'push_snapshot_merge') {
-          await syncConfigToControlPlaneOrThrow('merge')
-          return { status: 'SUCCEEDED' }
-        }
-        const settings = (payload.settings || {}) as SettingsPayload
-        requireDatabase().setSettings(settings)
-        await syncConfigToControlPlaneOrThrow('merge')
-        return { status: 'SUCCEEDED' }
-      }
-
-      if (task.type === 'TEMPLATE_APPLY') {
+      if (task.type === 'WORKSPACE_SNAPSHOT') {
         const profileId = String(payload.profileId || '').trim()
-        const templateId = String(payload.templateId || '').trim()
-        if (!profileId || !templateId) {
+        if (!profileId) {
+          return { status: 'FAILED', errorCode: 'INVALID_PAYLOAD', errorMessage: 'profileId is required' }
+        }
+        const snapshot = await createWorkspaceSnapshotForProfile(profileId)
+        return {
+          status: 'SUCCEEDED',
+          outputRef: snapshot.snapshotId,
+          diagnostics: {
+            action: 'snapshot',
+            profileId,
+            snapshotId: snapshot.snapshotId,
+            createdAt: snapshot.createdAt,
+          },
+        }
+      }
+
+      if (task.type === 'WORKSPACE_RESTORE') {
+        const profileId = String(payload.profileId || '').trim()
+        const snapshotId = String(payload.snapshotId || '').trim()
+        if (!profileId || !snapshotId) {
           return {
             status: 'FAILED',
             errorCode: 'INVALID_PAYLOAD',
-            errorMessage: 'profileId and templateId are required',
+            errorMessage: 'profileId and snapshotId are required',
           }
         }
-        const template = requireDatabase().listTemplates().find((item) => item.id === templateId)
-        const profile = requireDatabase().listProfiles().find((item) => item.id === profileId)
-        if (!template || !profile) {
-          return { status: 'FAILED', errorCode: 'NOT_FOUND', errorMessage: 'profile or template not found' }
+        await restoreWorkspaceSnapshotForProfile(profileId, snapshotId, 'control-task:restore')
+        return {
+          status: 'SUCCEEDED',
+          outputRef: snapshotId,
+          diagnostics: { action: 'restore', profileId, snapshotId },
         }
-        requireDatabase().updateProfile({
-          id: profile.id,
-          name: profile.name,
-          proxyId: template.proxyId,
-          groupName: template.groupName,
-          tags: template.tags,
-          notes: template.notes,
-          fingerprintConfig: template.fingerprintConfig,
-        })
-        return { status: 'SUCCEEDED' }
       }
 
-      if (task.type === 'LOG_FLUSH') {
-        return { status: 'SUCCEEDED' }
+      if (task.type === 'PROFILE_VERIFY') {
+        const profileId = String(payload.profileId || '').trim()
+        if (!profileId) {
+          return { status: 'FAILED', errorCode: 'INVALID_PAYLOAD', errorMessage: 'profileId is required' }
+        }
+        const result = await verifyProfileForControlTask(profileId)
+        if (result.level === 'block') {
+          return {
+            status: 'FAILED',
+            errorCode: 'POLICY_BLOCK',
+            errorMessage: result.messages.join(' ') || 'Profile verification failed',
+            diagnostics: { action: 'verify', profileId, level: result.level, messages: result.messages },
+          }
+        }
+        return {
+          status: 'SUCCEEDED',
+          outputRef: JSON.stringify({ level: result.level, messages: result.messages }),
+          diagnostics: { action: 'verify', profileId, level: result.level, messages: result.messages },
+        }
+      }
+
+      if (task.type === 'OPEN_PLATFORM') {
+        const profileId = String(payload.profileId || '').trim()
+        const targetUrl = String(payload.targetUrl || '').trim()
+        const startupPlatform = String(payload.startupPlatform || payload.platform || '').trim()
+        if (!profileId) {
+          return { status: 'FAILED', errorCode: 'INVALID_PAYLOAD', errorMessage: 'profileId is required' }
+        }
+        if (targetUrl) {
+          await updateProfileStartupTarget(profileId, targetUrl, startupPlatform)
+        }
+        await performRuntimeLaunch(profileId)
+        return {
+          status: 'SUCCEEDED',
+          outputRef: targetUrl || profileId,
+          diagnostics: {
+            action: 'open-platform',
+            profileId,
+            targetUrl,
+            startupPlatform,
+          },
+        }
       }
 
       return { status: 'FAILED', errorCode: 'UNSUPPORTED_TASK', errorMessage: `Unsupported task: ${task.type}` }
@@ -4674,6 +5016,7 @@ async function bootstrap(): Promise<void> {
   syncTheme()
   db = new DatabaseService(app)
   resetCachedProfileStatesOnStartup()
+  cleanupRuntimeLocksOnStartup()
   await registerIpcHandlers()
   if (SMOKE_TEST_ENABLED) {
     audit('smoke_test_bootstrap_begin', { outputDir: resolveSmokeOutputDir(), platform: process.platform })

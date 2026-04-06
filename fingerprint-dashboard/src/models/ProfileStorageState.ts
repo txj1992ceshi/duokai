@@ -16,7 +16,11 @@ const ProfileStorageStateSchema = new Schema(
     },
     stateJson: {
       type: Schema.Types.Mixed,
-      required: true,
+      default: null,
+    },
+    inlineStateJson: {
+      type: Schema.Types.Mixed,
+      default: null,
     },
     version: {
       type: Number,
@@ -25,6 +29,30 @@ const ProfileStorageStateSchema = new Schema(
     encrypted: {
       type: Boolean,
       default: false,
+    },
+    fileRef: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    size: {
+      type: Number,
+      default: 0,
+    },
+    checksum: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    contentType: {
+      type: String,
+      default: 'application/json',
+      trim: true,
+    },
+    retentionPolicy: {
+      type: String,
+      default: 'latest-only',
+      trim: true,
     },
   },
   {
