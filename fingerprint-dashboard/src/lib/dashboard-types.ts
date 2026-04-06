@@ -425,3 +425,29 @@ export interface AdminTaskFailureSummary {
   count: number;
   lastAt?: string | null;
 }
+
+export interface AdminAgentHealthSummary {
+  agentId: string;
+  status: string;
+  lastSeenAt?: string | null;
+  windowMinutes: number;
+  finished: {
+    total: number;
+    succeeded: number;
+    failed: number;
+    cancelled: number;
+    successRatePercent: number;
+  };
+  stuckRunning: number;
+  lastTask?: {
+    taskId: string;
+    status: string;
+    updatedAt?: string | null;
+    errorCode?: string;
+    errorMessage?: string;
+    reasonCode?: string;
+    attemptCount?: number;
+    maxAttempts?: number;
+    retryOfTaskId?: string;
+  } | null;
+}

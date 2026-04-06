@@ -964,6 +964,10 @@ router.get(
             updatedAt: { $first: '$updatedAt' },
             errorCode: { $first: '$errorCode' },
             errorMessage: { $first: '$errorMessage' },
+            terminalReasonCode: { $first: '$terminalReasonCode' },
+            attemptCount: { $first: '$attemptCount' },
+            maxAttempts: { $first: '$maxAttempts' },
+            retryOfTaskId: { $first: '$retryOfTaskId' },
           },
         },
       ]),
@@ -998,6 +1002,15 @@ router.get(
         updatedAt: row?.updatedAt || null,
         errorCode: String(row?.errorCode || ''),
         errorMessage: String(row?.errorMessage || ''),
+        reasonCode: resolveControlTaskReasonCode({
+          status: String(row?.status || ''),
+          errorCode: String(row?.errorCode || ''),
+          terminalReasonCode: String(row?.terminalReasonCode || ''),
+          payload: null,
+        }),
+        attemptCount: Number(row?.attemptCount || 1),
+        maxAttempts: Number(row?.maxAttempts || 1),
+        retryOfTaskId: String(row?.retryOfTaskId || ''),
       });
     }
 

@@ -1,6 +1,7 @@
 'use client';
 
 import type {
+  AdminAgentHealthSummary,
   AdminAgentTaskSummary,
   AdminTaskFailureSummary,
   AdminTaskEventSummary,
@@ -17,6 +18,7 @@ type Props = {
   tasks: AdminAgentTaskSummary[];
   events: AdminTaskEventSummary[];
   failures: AdminTaskFailureSummary[];
+  agents: AdminAgentHealthSummary[];
   proxyAssets: AdminProxyUsageAsset[];
 };
 
@@ -32,6 +34,7 @@ export default function AdminRuntimeDiagnostics({
   tasks,
   events,
   failures,
+  agents,
   proxyAssets,
 }: Props) {
   return (
@@ -190,6 +193,45 @@ export default function AdminRuntimeDiagnostics({
             </div>
           )}
         </div>
+      </div>
+
+      <div className="rounded-2xl border border-white/8 bg-slate-900/55 p-5 shadow-[0_16px_40px_rgba(0,0,0,0.18)] backdrop-blur-xl">
+        <div className="mb-1 text-sm font-semibold text-slate-100">Agent 健康摘要</div>
+        <div className="mb-4 text-xs text-slate-500">最近任务结果、归一化 reason code、attempt 计数与 stuck running 汇总。</div>
+        {loading ? (
+          <div className="text-sm text-slate-400">正在加载 agent 健康摘要…</div>
+        ) : agents.length === 0 ? (
+          <div className="text-sm text-slate-500">暂无 agent 健康数据。</div>
+        ) : (
+          <div className="grid gap-3 lg:grid-cols-2">
+            {agents.slice(0, 8).map((agent) => (
+              <div key={agent.agentId} className="rounded-xl border border-slate-800/70 bg-slate-950/40 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm font-medium text-slate-100">{agent.agentId}</div>
+                  <div className="text-[11px] text-slate-400">{agent.status}</div>
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-slate-300">
+                  <div>success {agent.finished.successRatePercent}%</div>
+                  <div>stuck {agent.stuckRunning}</div>
+                  <div>done {agent.finished.total}</div>
+                  <div>last seen {formatTime(agent.lastSeenAt || null)}</div>
+                </div>
+                {agent.lastTask ? (
+                  <div className="mt-3 rounded-lg border border-slate-800/60 bg-slate-900/60 px-3 py-2 text-[11px] text-slate-400">
+                    <div className="text-slate-200">
+                      {agent.lastTask.status} · {agent.lastTask.reasonCode || agent.lastTask.errorCode || '—'}
+                    </div>
+                    <div className="mt-1">
+                      attempt {agent.lastTask.attemptCount || 1}/{agent.lastTask.maxAttempts || 1}
+                      {agent.lastTask.retryOfTaskId ? ` · retry of ${agent.lastTask.retryOfTaskId}` : ''}
+                    </div>
+                    <div className="mt-1">{formatTime(agent.lastTask.updatedAt || null)}</div>
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </section>
   );

@@ -33,6 +33,7 @@ import { listWorkspaceSnapshots } from '@/lib/workspace-snapshot-client'
 import { useRouter } from 'next/navigation'
 import type { HostEnvironment, ProxyProtocol, ProxyVerificationRecord } from '@/lib/proxyTypes'
 import type {
+  AdminAgentHealthSummary,
   AdminAgentTaskSummary,
   AdminTaskFailureSummary,
   AdminTaskEventSummary,
@@ -291,6 +292,7 @@ export default function Home() {
   const [adminTaskRows, setAdminTaskRows] = useState<AdminAgentTaskSummary[]>([]);
   const [adminTaskEvents, setAdminTaskEvents] = useState<AdminTaskEventSummary[]>([]);
   const [adminTaskFailures, setAdminTaskFailures] = useState<AdminTaskFailureSummary[]>([]);
+  const [adminAgentHealth, setAdminAgentHealth] = useState<AdminAgentHealthSummary[]>([]);
   const [adminProxyUsage, setAdminProxyUsage] = useState<AdminProxyUsageAsset[]>([]);
   const [adminDiagnosticsLoading, setAdminDiagnosticsLoading] = useState(false);
   const [adminDiagnosticsError, setAdminDiagnosticsError] = useState('');
@@ -301,6 +303,7 @@ export default function Home() {
       setAdminTaskRows([]);
       setAdminTaskEvents([]);
       setAdminTaskFailures([]);
+      setAdminAgentHealth([]);
       setAdminProxyUsage([]);
       setAdminDiagnosticsError('');
       return;
@@ -308,16 +311,18 @@ export default function Home() {
     setAdminDiagnosticsLoading(true);
     setAdminDiagnosticsError('');
     try {
-      const [tasksRes, eventsRes, failuresRes, proxyUsageRes] = await Promise.all([
+      const [tasksRes, eventsRes, failuresRes, healthRes, proxyUsageRes] = await Promise.all([
         apiFetch('/api/admin/agents/tasks?limit=12'),
         apiFetch('/api/admin/agents/tasks/events?limit=20'),
         apiFetch('/api/admin/agents/tasks/failures-summary'),
+        apiFetch('/api/admin/agents/health-summary'),
         apiFetch('/api/admin/agents/proxy-usage'),
       ]);
-      const [tasksData, eventsData, failuresData, proxyUsageData] = await Promise.all([
+      const [tasksData, eventsData, failuresData, healthData, proxyUsageData] = await Promise.all([
         tasksRes.json().catch(() => null),
         eventsRes.json().catch(() => null),
         failuresRes.json().catch(() => null),
+        healthRes.json().catch(() => null),
         proxyUsageRes.json().catch(() => null),
       ]);
       if (!tasksRes.ok || !tasksData?.success) {
@@ -329,6 +334,9 @@ export default function Home() {
       if (!failuresRes.ok || !failuresData?.success) {
         throw new Error(failuresData?.error || 'Failed to fetch failure summary');
       }
+      if (!healthRes.ok || !healthData?.success) {
+        throw new Error(healthData?.error || 'Failed to fetch agent health summary');
+      }
       if (!proxyUsageRes.ok || !proxyUsageData?.success) {
         throw new Error(proxyUsageData?.error || 'Failed to fetch proxy usage');
       }
@@ -336,6 +344,9 @@ export default function Home() {
       setAdminTaskEvents(Array.isArray(eventsData.events) ? (eventsData.events as AdminTaskEventSummary[]) : []);
       setAdminTaskFailures(
         Array.isArray(failuresData.failures) ? (failuresData.failures as AdminTaskFailureSummary[]) : []
+      );
+      setAdminAgentHealth(
+        Array.isArray(healthData.agents) ? (healthData.agents as AdminAgentHealthSummary[]) : []
       );
       setAdminProxyUsage(
         Array.isArray(proxyUsageData.proxyAssets) ? (proxyUsageData.proxyAssets as AdminProxyUsageAsset[]) : []
@@ -1317,6 +1328,7 @@ export default function Home() {
                   tasks={adminTaskRows}
                   events={adminTaskEvents}
                   failures={adminTaskFailures}
+                  agents={adminAgentHealth}
                   proxyAssets={adminProxyUsage}
                 />
               ) : null}
