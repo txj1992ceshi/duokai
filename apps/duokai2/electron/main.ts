@@ -72,6 +72,7 @@ import { applyNetworkDerivedFingerprint } from './services/networkProfileResolve
 import { resolveLaunchProxy } from './services/proxyBridge'
 import { RuntimeScheduler } from './services/runtimeScheduler'
 import { AgentService } from './services/agentService'
+import { evaluateTrustedSnapshotReuse } from './services/trustedLaunch'
 import {
   assessRegistrationRisk,
   validateProfileReadiness,
@@ -2325,36 +2326,6 @@ function compareSnapshotWithCheck(
   return { ok: true, message: '快速隔离校验通过' }
 }
 
-function shouldUseTrustedSnapshot(
-  profile: ProfileRecord,
-  snapshot: TrustedLaunchSnapshot | null,
-  configFingerprintHash: string,
-  proxyFingerprintHash: string,
-): boolean {
-  if (!snapshot || snapshot.status !== 'trusted') {
-    return false
-  }
-  if (snapshot.snapshotVersion !== TRUSTED_SNAPSHOT_VERSION) {
-    return false
-  }
-  if (snapshot.configFingerprintHash !== configFingerprintHash) {
-    return false
-  }
-  if (snapshot.proxyFingerprintHash !== proxyFingerprintHash) {
-    return false
-  }
-  if (snapshot.verifiedDesktopAppVersion !== app.getVersion()) {
-    return false
-  }
-  if (snapshot.verifiedChromiumMajor !== resolveChromiumMajorForProfile(profile)) {
-    return false
-  }
-  if (snapshot.verifiedHostEnvironment !== detectDesktopHostEnvironment()) {
-    return false
-  }
-  return true
-}
-
 function buildFingerprintFromRemoteProfile(
   remoteProfile: ControlPlaneProfile,
   existing?: ProfileRecord | null,
@@ -3663,6 +3634,18 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     const configFingerprintHash = buildConfigFingerprintHash(profile)
     const proxyFingerprintHash = buildProxyFingerprintHash(profile, proxy)
     const existingSnapshot = profile.fingerprintConfig.runtimeMetadata.trustedLaunchSnapshot
+    const trustedSnapshotDecision = evaluateTrustedSnapshotReuse(existingSnapshot, {
+      configFingerprintHash,
+      proxyFingerprintHash,
+      currentDesktopAppVersion: app.getVersion(),
+      currentChromiumMajor: resolveChromiumMajorForProfile(profile),
+      currentHostEnvironment: detectDesktopHostEnvironment(),
+      currentCanonicalRoot: workspaceLaunch?.canonicalRoot || '',
+      runtimeLockStatus: getRuntimeLockStateForProfile(profile),
+      workspaceHealthStatus: profile.workspace?.healthSummary.status || 'unknown',
+      workspaceConsistencyStatus: profile.workspace?.consistencySummary.status || 'unknown',
+      lastQuickIsolationCheck: profile.fingerprintConfig.runtimeMetadata.lastQuickIsolationCheck,
+    })
     profile = updateRuntimeMetadata(profile, {
       lastValidationLevel: validation.level,
       lastValidationMessages: validation.messages,
@@ -3680,7 +3663,34 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     let effectiveProxyTransport = toEntryTransport(proxy)
     let usedTrustedSnapshot = false
 
-    if (shouldUseTrustedSnapshot(profile, existingSnapshot, configFingerprintHash, proxyFingerprintHash)) {
+    if (existingSnapshot && !trustedSnapshotDecision.usable) {
+    audit('trusted_snapshot_rejected', {
+      profileId,
+      status: trustedSnapshotDecision.status,
+      reason: trustedSnapshotDecision.reason,
+    })
+    profile = updateRuntimeMetadata(profile, {
+      trustedSnapshotStatus: trustedSnapshotDecision.status,
+      trustedLaunchSnapshot: {
+        ...existingSnapshot,
+        status: trustedSnapshotDecision.status,
+      },
+      lastValidationMessages: Array.from(
+        new Set([
+          ...profile.fingerprintConfig.runtimeMetadata.lastValidationMessages,
+          trustedSnapshotDecision.reason,
+        ].filter(Boolean)),
+      ),
+    })
+    profile = persistTrustedLaunchSummary(profile, {
+      trustedSnapshotStatus: trustedSnapshotDecision.status,
+      trustedLaunchVerifiedAt:
+        trustedSnapshotDecision.status === 'trusted' ? existingSnapshot.verifiedAt : '',
+    })
+    void syncWorkspaceSummaryToControlPlane(profile).catch(() => {})
+    }
+
+    if (trustedSnapshotDecision.usable) {
     usedTrustedSnapshot = true
     audit('quick_check_start', { profileId })
     profile = updateRuntimeMetadata(profile, {

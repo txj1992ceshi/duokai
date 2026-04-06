@@ -1361,6 +1361,47 @@ function App() {
     return parts.join(' · ')
   }
 
+  function getTrustSummaryLine(profile: ProfileRecord) {
+    const trustSummary = profile.workspace?.trustSummary
+    const metadata = profile.fingerprintConfig.runtimeMetadata
+    const parts: string[] = []
+
+    const trustedStatus = trustSummary?.trustedSnapshotStatus || metadata.trustedSnapshotStatus || 'unknown'
+    if (trustedStatus === 'trusted') {
+      parts.push(locale === 'zh-CN' ? '可信启动基线有效' : 'Trusted launch baseline active')
+    } else if (trustedStatus === 'stale') {
+      parts.push(locale === 'zh-CN' ? '可信启动基线已过期' : 'Trusted launch baseline stale')
+    } else if (trustedStatus === 'invalid') {
+      parts.push(locale === 'zh-CN' ? '可信启动基线失效' : 'Trusted launch baseline invalid')
+    } else {
+      parts.push(locale === 'zh-CN' ? '尚未建立可信启动基线' : 'Trusted launch baseline not created')
+    }
+
+    const quickCheckAt = trustSummary?.lastQuickIsolationCheckAt || metadata.lastQuickIsolationCheck?.checkedAt || ''
+    const quickCheckSuccess =
+      trustSummary?.lastQuickIsolationCheckSuccess ?? metadata.lastQuickIsolationCheck?.success ?? null
+    if (quickCheckAt) {
+      parts.push(
+        quickCheckSuccess === false
+          ? locale === 'zh-CN'
+            ? `快速隔离校验失败 ${formatDate(quickCheckAt)}`
+            : `Quick isolation failed ${formatDate(quickCheckAt)}`
+          : locale === 'zh-CN'
+            ? `快速隔离校验 ${formatDate(quickCheckAt)}`
+            : `Quick isolation ${formatDate(quickCheckAt)}`,
+      )
+    }
+
+    const runtimeLockState = trustSummary?.activeRuntimeLock.state || 'unlocked'
+    if (runtimeLockState === 'locked') {
+      parts.push(locale === 'zh-CN' ? '运行锁定中' : 'Runtime lock active')
+    } else if (runtimeLockState === 'stale-lock') {
+      parts.push(locale === 'zh-CN' ? '检测到陈旧锁' : 'Stale runtime lock detected')
+    }
+
+    return parts.join(' · ')
+  }
+
   function describeUpdateStatus(state: UpdateState | null) {
     if (!state) {
       return locale === 'zh-CN' ? '正在读取更新状态…' : 'Loading update status...'
@@ -3210,6 +3251,10 @@ function App() {
                         <p className="section-note">
                           {locale === 'zh-CN' ? 'Workspace 快照：' : 'Workspace snapshots: '}
                           {getSnapshotSummaryLine(profile)}
+                        </p>
+                        <p className="section-note">
+                          {locale === 'zh-CN' ? '隔离信任：' : 'Isolation trust: '}
+                          {getTrustSummaryLine(profile)}
                         </p>
                         {profile.environmentPurpose === 'register' ? (
                           <p className="section-note">
