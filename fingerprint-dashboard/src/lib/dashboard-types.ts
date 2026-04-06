@@ -413,3 +413,10 @@ export interface AdminTaskEventSummary {
     preLaunchDecisionCode?: string;
   };
 }
+
+export interface AdminTaskFailureSummary {
+  type: string;
+  errorCode: string;
+  count: number;
+  lastAt?: string | null;
+}

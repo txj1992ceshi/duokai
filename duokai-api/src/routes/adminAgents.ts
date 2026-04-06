@@ -6,6 +6,7 @@ import { logAdminAction } from '../lib/audit.js';
 import { asyncHandler } from '../lib/http.js';
 import { connectMongo } from '../lib/mongodb.js';
 import { buildProxyAssetUsageMap, serializeProxyAssetWithUsage } from '../lib/proxyAssetUsage.js';
+import { resolveControlTaskReasonCode } from '../lib/taskResults.js';
 import { requireAdmin } from '../middlewares/auth.js';
 import { AdminActionLogModel } from '../models/AdminActionLog.js';
 import { AgentModel } from '../models/Agent.js';
@@ -622,16 +623,14 @@ router.get(
             ((item.payload as Record<string, unknown> | null)?.preLaunchDecision as Record<string, unknown> | null)
               ?.approved
           ),
-          blockedReasonCode:
-            String(item.errorCode || '').trim() ||
-            String(
-              ((item.payload as Record<string, unknown> | null)?.preLaunchDecision as Record<string, unknown> | null)
-                ?.code || ''
-            ).trim() ||
-            String(
-              ((item.payload as Record<string, unknown> | null)?.leaseValidation as Record<string, unknown> | null)
-                ?.code || ''
-            ).trim(),
+          blockedReasonCode: resolveControlTaskReasonCode({
+            status: item.status,
+            errorCode: item.errorCode,
+            payload:
+              item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
+                ? (item.payload as Record<string, unknown>)
+                : null,
+          }),
         },
       })),
     });
@@ -728,30 +727,50 @@ router.get(
   '/tasks/failures-summary',
   asyncHandler(async (_req, res) => {
     await connectMongo();
+    const failedTasks = await ControlTaskModel.find({ status: 'FAILED' })
+      .sort({ updatedAt: -1 })
+      .limit(500)
+      .lean();
+    const summaryMap = new Map<string, { type: string; reasonCode: string; count: number; lastAt: Date | null }>();
 
-    const rows = await ControlTaskModel.aggregate([
-      { $match: { status: 'FAILED' } },
-      {
-        $group: {
-          _id: {
-            type: '$type',
-            errorCode: '$errorCode',
-          },
-          count: { $sum: 1 },
-          lastAt: { $max: '$updatedAt' },
-        },
-      },
-      { $sort: { count: -1, lastAt: -1 } },
-      { $limit: 20 },
-    ]);
+    for (const item of failedTasks) {
+      const reasonCode =
+        resolveControlTaskReasonCode({
+          status: item.status,
+          errorCode: item.errorCode,
+          payload:
+            item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
+              ? (item.payload as Record<string, unknown>)
+              : null,
+        }) || 'FAILED_UNKNOWN';
+      const type = String(item.type || '').trim();
+      const key = `${type}:${reasonCode}`;
+      const current = summaryMap.get(key) || { type, reasonCode, count: 0, lastAt: null };
+      current.count += 1;
+      const updatedAt =
+        item.updatedAt instanceof Date ? item.updatedAt : item.updatedAt ? new Date(item.updatedAt) : null;
+      if (!current.lastAt || ((updatedAt && updatedAt.getTime()) || 0) > current.lastAt.getTime()) {
+        current.lastAt = updatedAt;
+      }
+      summaryMap.set(key, current);
+    }
+
+    const failures = [...summaryMap.values()]
+      .sort((left, right) => {
+        if (left.count !== right.count) {
+          return right.count - left.count;
+        }
+        return (right.lastAt?.getTime() || 0) - (left.lastAt?.getTime() || 0);
+      })
+      .slice(0, 20);
 
     res.json({
       success: true,
-      failures: rows.map((item) => ({
-        type: String(item?._id?.type || ''),
-        errorCode: String(item?._id?.errorCode || 'UNKNOWN'),
-        count: Number(item?.count || 0),
-        lastAt: item?.lastAt || null,
+      failures: failures.map((item) => ({
+        type: item.type,
+        errorCode: item.reasonCode,
+        count: item.count,
+        lastAt: item.lastAt,
       })),
     });
   })

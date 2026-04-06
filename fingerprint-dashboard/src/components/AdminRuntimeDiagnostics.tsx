@@ -2,6 +2,7 @@
 
 import type {
   AdminAgentTaskSummary,
+  AdminTaskFailureSummary,
   AdminTaskEventSummary,
   ProxyAssetSummary,
 } from '@/lib/dashboard-types';
@@ -15,6 +16,7 @@ type Props = {
   error: string;
   tasks: AdminAgentTaskSummary[];
   events: AdminTaskEventSummary[];
+  failures: AdminTaskFailureSummary[];
   proxyAssets: AdminProxyUsageAsset[];
 };
 
@@ -29,6 +31,7 @@ export default function AdminRuntimeDiagnostics({
   error,
   tasks,
   events,
+  failures,
   proxyAssets,
 }: Props) {
   return (
@@ -122,6 +125,34 @@ export default function AdminRuntimeDiagnostics({
                       </div>
                     </div>
                     <div className="text-[11px] text-slate-500">{formatTime(event.createdAt)}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-2xl border border-white/8 bg-slate-900/55 p-5 shadow-[0_16px_40px_rgba(0,0,0,0.18)] backdrop-blur-xl">
+            <div className="mb-1 text-sm font-semibold text-slate-100">失败原因汇总</div>
+            <div className="mb-4 text-xs text-slate-500">按 task type 和归一化 reason code 聚合最近失败任务。</div>
+            {loading ? (
+              <div className="text-sm text-slate-400">正在加载失败汇总…</div>
+            ) : failures.length === 0 ? (
+              <div className="text-sm text-slate-500">暂无失败任务汇总。</div>
+            ) : (
+              <div className="space-y-2">
+                {failures.slice(0, 8).map((item) => (
+                  <div
+                    key={`${item.type}-${item.errorCode}`}
+                    className="flex items-center justify-between gap-3 rounded-xl border border-slate-800/70 bg-slate-950/40 px-3 py-2"
+                  >
+                    <div>
+                      <div className="text-sm text-slate-200">{item.type}</div>
+                      <div className="mt-1 text-[11px] text-slate-500">{item.errorCode}</div>
+                    </div>
+                    <div className="text-right text-[11px] text-slate-500">
+                      <div>{item.count} failures</div>
+                      <div>{formatTime(item.lastAt || null)}</div>
+                    </div>
                   </div>
                 ))}
               </div>

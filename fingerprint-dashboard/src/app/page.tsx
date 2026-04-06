@@ -34,6 +34,7 @@ import { useRouter } from 'next/navigation'
 import type { HostEnvironment, ProxyProtocol, ProxyVerificationRecord } from '@/lib/proxyTypes'
 import type {
   AdminAgentTaskSummary,
+  AdminTaskFailureSummary,
   AdminTaskEventSummary,
   Behavior,
   BehaviorAction,
@@ -289,6 +290,7 @@ export default function Home() {
   }>({ message: '', variant: 'info' });
   const [adminTaskRows, setAdminTaskRows] = useState<AdminAgentTaskSummary[]>([]);
   const [adminTaskEvents, setAdminTaskEvents] = useState<AdminTaskEventSummary[]>([]);
+  const [adminTaskFailures, setAdminTaskFailures] = useState<AdminTaskFailureSummary[]>([]);
   const [adminProxyUsage, setAdminProxyUsage] = useState<AdminProxyUsageAsset[]>([]);
   const [adminDiagnosticsLoading, setAdminDiagnosticsLoading] = useState(false);
   const [adminDiagnosticsError, setAdminDiagnosticsError] = useState('');
@@ -298,6 +300,7 @@ export default function Home() {
     if (currentUser?.role !== 'admin') {
       setAdminTaskRows([]);
       setAdminTaskEvents([]);
+      setAdminTaskFailures([]);
       setAdminProxyUsage([]);
       setAdminDiagnosticsError('');
       return;
@@ -305,14 +308,16 @@ export default function Home() {
     setAdminDiagnosticsLoading(true);
     setAdminDiagnosticsError('');
     try {
-      const [tasksRes, eventsRes, proxyUsageRes] = await Promise.all([
+      const [tasksRes, eventsRes, failuresRes, proxyUsageRes] = await Promise.all([
         apiFetch('/api/admin/agents/tasks?limit=12'),
         apiFetch('/api/admin/agents/tasks/events?limit=20'),
+        apiFetch('/api/admin/agents/tasks/failures-summary'),
         apiFetch('/api/admin/agents/proxy-usage'),
       ]);
-      const [tasksData, eventsData, proxyUsageData] = await Promise.all([
+      const [tasksData, eventsData, failuresData, proxyUsageData] = await Promise.all([
         tasksRes.json().catch(() => null),
         eventsRes.json().catch(() => null),
+        failuresRes.json().catch(() => null),
         proxyUsageRes.json().catch(() => null),
       ]);
       if (!tasksRes.ok || !tasksData?.success) {
@@ -321,11 +326,17 @@ export default function Home() {
       if (!eventsRes.ok || !eventsData?.success) {
         throw new Error(eventsData?.error || 'Failed to fetch admin task events');
       }
+      if (!failuresRes.ok || !failuresData?.success) {
+        throw new Error(failuresData?.error || 'Failed to fetch failure summary');
+      }
       if (!proxyUsageRes.ok || !proxyUsageData?.success) {
         throw new Error(proxyUsageData?.error || 'Failed to fetch proxy usage');
       }
       setAdminTaskRows(Array.isArray(tasksData.tasks) ? (tasksData.tasks as AdminAgentTaskSummary[]) : []);
       setAdminTaskEvents(Array.isArray(eventsData.events) ? (eventsData.events as AdminTaskEventSummary[]) : []);
+      setAdminTaskFailures(
+        Array.isArray(failuresData.failures) ? (failuresData.failures as AdminTaskFailureSummary[]) : []
+      );
       setAdminProxyUsage(
         Array.isArray(proxyUsageData.proxyAssets) ? (proxyUsageData.proxyAssets as AdminProxyUsageAsset[]) : []
       );
@@ -1305,6 +1316,7 @@ export default function Home() {
                   error={adminDiagnosticsError}
                   tasks={adminTaskRows}
                   events={adminTaskEvents}
+                  failures={adminTaskFailures}
                   proxyAssets={adminProxyUsage}
                 />
               ) : null}
