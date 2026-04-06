@@ -222,6 +222,25 @@ function getAgentRuntimeState() {
   const launchStages = Object.fromEntries(
     profiles.map((profile) => [profile.id, profile.fingerprintConfig.runtimeMetadata.launchValidationStage]),
   )
+  const profileIsolationSummaries = profiles.map((profile) => ({
+    profileId: profile.id,
+    name: profile.name,
+    trustedSnapshotStatus: profile.workspace?.trustSummary?.trustedSnapshotStatus || 'unknown',
+    lastQuickIsolationCheckSuccess:
+      profile.workspace?.trustSummary?.lastQuickIsolationCheckSuccess ??
+      profile.fingerprintConfig.runtimeMetadata.lastQuickIsolationCheck?.success ??
+      null,
+    lastQuickIsolationCheckAt:
+      profile.workspace?.trustSummary?.lastQuickIsolationCheckAt ||
+      profile.fingerprintConfig.runtimeMetadata.lastQuickIsolationCheck?.checkedAt ||
+      '',
+    activeRuntimeLockState: profile.workspace?.trustSummary?.activeRuntimeLock.state || 'unlocked',
+    workspaceHealthStatus: profile.workspace?.healthSummary.status || 'unknown',
+    workspaceConsistencyStatus: profile.workspace?.consistencySummary.status || 'unknown',
+    lastValidationLevel: profile.fingerprintConfig.runtimeMetadata.lastValidationLevel || 'unknown',
+    lastValidationMessage:
+      profile.fingerprintConfig.runtimeMetadata.lastValidationMessages?.[0] || '',
+  }))
   const hostInfo = getRuntimeHostInfo()
   const lockSummary = summarizeRuntimeLockStates()
   return {
@@ -239,6 +258,7 @@ function getAgentRuntimeState() {
     profileCount: profiles.length,
     lockedProfileIds: lockSummary.lockedProfileIds,
     staleLockProfileIds: lockSummary.staleLockProfileIds,
+    profileIsolationSummaries,
   }
 }
 

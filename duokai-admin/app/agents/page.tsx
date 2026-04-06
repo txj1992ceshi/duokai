@@ -31,7 +31,6 @@ type AgentItem = {
   syncVersion?: number;
   lastConfigSyncedAt?: string | null;
   hostInfo?: Record<string, unknown> | null;
-  runtimeStatus?: Record<string, unknown> | null;
   runtimeSummary?: {
     runningProfileCount: number;
     queuedProfileCount: number;
@@ -41,6 +40,21 @@ type AgentItem = {
     degraded: boolean;
     degradeReason?: string;
     lockState?: string;
+  } | null;
+  runtimeStatus?: {
+    profileIsolationSummaries?: Array<{
+      profileId: string;
+      name: string;
+      trustedSnapshotStatus: string;
+      lastQuickIsolationCheckSuccess: boolean | null;
+      lastQuickIsolationCheckAt?: string;
+      activeRuntimeLockState: string;
+      workspaceHealthStatus: string;
+      workspaceConsistencyStatus: string;
+      lastValidationLevel: string;
+      lastValidationMessage?: string;
+    }>;
+    [key: string]: unknown;
   } | null;
 };
 
@@ -244,6 +258,49 @@ function AgentsPageContent() {
     }
     const text = chunks.join(' | ');
     return text.length > 160 ? `${text.slice(0, 160)}...` : text;
+  }
+
+  function renderAgentIsolationSummary(agent: AgentItem): string {
+    const summaries = Array.isArray(agent.runtimeStatus?.profileIsolationSummaries)
+      ? agent.runtimeStatus?.profileIsolationSummaries
+      : [];
+    if (!summaries?.length) {
+      return '-';
+    }
+
+    const risky = summaries.filter((item) => {
+      const trusted = String(item.trustedSnapshotStatus || '').toLowerCase();
+      const lockState = String(item.activeRuntimeLockState || '').toLowerCase();
+      const health = String(item.workspaceHealthStatus || '').toLowerCase();
+      const consistency = String(item.workspaceConsistencyStatus || '').toLowerCase();
+      const quickFailed = item.lastQuickIsolationCheckSuccess === false;
+      return (
+        trusted === 'invalid' ||
+        trusted === 'stale' ||
+        lockState === 'stale-lock' ||
+        health === 'broken' ||
+        consistency === 'block' ||
+        quickFailed
+      );
+    });
+
+    const targets = (risky.length > 0 ? risky : summaries).slice(0, 3);
+    const rendered = targets.map((item) => {
+      const flags: string[] = [];
+      if (item.trustedSnapshotStatus) flags.push(`trust=${item.trustedSnapshotStatus}`);
+      if (item.activeRuntimeLockState && item.activeRuntimeLockState !== 'unlocked') {
+        flags.push(`lock=${item.activeRuntimeLockState}`);
+      }
+      if (item.lastQuickIsolationCheckSuccess === false) flags.push('quick=failed');
+      if (item.workspaceConsistencyStatus === 'block') flags.push('consistency=block');
+      else if (item.workspaceConsistencyStatus === 'warn') flags.push('consistency=warn');
+      if (item.workspaceHealthStatus === 'broken') flags.push('health=broken');
+      else if (item.workspaceHealthStatus === 'warning') flags.push('health=warning');
+      return `${item.name || item.profileId}: ${flags.join(', ') || 'healthy'}`;
+    });
+
+    const extra = risky.length > targets.length ? ` +${risky.length - targets.length}` : '';
+    return `${rendered.join(' | ')}${extra}`;
   }
 
   function prefillTaskComposer(
@@ -1079,6 +1136,7 @@ function AgentsPageContent() {
                 <th className="px-4 py-3 text-left">Agent</th>
                 <th className="px-4 py-3 text-left">状态</th>
                 <th className="px-4 py-3 text-left">运行模式/锁</th>
+                <th className="px-4 py-3 text-left">隔离信号</th>
                 <th className="px-4 py-3 text-left">最近心跳</th>
                 <th className="px-4 py-3 text-left">最近1h成功率</th>
                 <th className="px-4 py-3 text-left">卡住RUNNING</th>
@@ -1118,6 +1176,7 @@ function AgentsPageContent() {
                       </div>
                       {degradedText ? <div className="text-amber-300">{degradedText}</div> : null}
                     </td>
+                    <td className="px-4 py-3 text-xs text-neutral-300">{renderAgentIsolationSummary(item)}</td>
                     <td className="px-4 py-3">{item.lastSeenAt || '-'}</td>
                     <td
                       className={`px-4 py-3 ${
@@ -1153,7 +1212,7 @@ function AgentsPageContent() {
               })
             ) : (
               <tr>
-                <td className="px-4 py-4" colSpan={10}>
+                <td className="px-4 py-4" colSpan={11}>
                   <EmptyState
                     title={riskOnly ? '当前无风险 Agent' : '暂无 Agent'}
                     description={riskOnly ? '当前窗口内全部 Agent 健康状态正常。' : '先注册一个 Agent，然后在桌面端接入。'}
