@@ -16,6 +16,7 @@ import AppButton from '@/components/AppButton';
 import EmptyState from '@/components/EmptyState';
 import GlassCard from '@/components/GlassCard';
 import IpUsageSummary from '@/components/IpUsageSummary';
+import ProfileSecuritySummary from '@/components/ProfileSecuritySummary';
 import ProfileStorageStateEditor from '@/components/ProfileStorageStateEditor';
 import ProfileSyncSummary from '@/components/ProfileSyncSummary';
 import ProxyNodeCell from '@/components/ProxyNodeCell';
@@ -171,6 +172,7 @@ export default function DesktopProfileList({
                           {formatWorkspaceTrustSummary(profile)}
                         </div>
                         <IpUsageSummary profile={profile} compact />
+                        <ProfileSecuritySummary profile={profile} compact />
                       </div>
                     )}
                   </div>
@@ -225,6 +227,10 @@ export default function DesktopProfileList({
                     <div className="mb-3 rounded-xl border border-slate-800 bg-[#111722] px-3 py-3">
                       <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">IP 使用状态</div>
                       <IpUsageSummary profile={profile} />
+                    </div>
+                    <div className="mb-3 rounded-xl border border-slate-800 bg-[#111722] px-3 py-3">
+                      <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">安全状态</div>
+                      <ProfileSecuritySummary profile={profile} />
                     </div>
                     <ProfileStorageStateEditor
                       profileId={profile.id}
