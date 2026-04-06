@@ -1,5 +1,6 @@
 'use client';
 
+import AppButton from '@/components/AppButton';
 import type {
   AdminAgentHealthSummary,
   AdminAgentTaskSummary,
@@ -20,7 +21,15 @@ type Props = {
   failures: AdminTaskFailureSummary[];
   agents: AdminAgentHealthSummary[];
   proxyAssets: AdminProxyUsageAsset[];
+  retryingTaskId?: string | null;
+  onRetryTask?: (taskId: string) => Promise<void> | void;
 };
+
+function canRetryTask(task: AdminAgentTaskSummary) {
+  const attemptCount = typeof task.attemptCount === 'number' ? task.attemptCount : 1;
+  const maxAttempts = typeof task.maxAttempts === 'number' ? task.maxAttempts : 1;
+  return ['FAILED', 'CANCELLED'].includes(task.status) && attemptCount < maxAttempts;
+}
 
 function formatTime(value?: string | null) {
   if (!value) return 'unknown time';
@@ -36,6 +45,8 @@ export default function AdminRuntimeDiagnostics({
   failures,
   agents,
   proxyAssets,
+  retryingTaskId,
+  onRetryTask,
 }: Props) {
   return (
     <section className="space-y-4">
@@ -65,7 +76,19 @@ export default function AdminRuntimeDiagnostics({
                       <div className="text-sm font-medium text-slate-100">
                         {task.type} · {task.summary?.profileId || 'unknown-profile'}
                       </div>
-                      <div className="text-[11px] text-slate-400">{task.status}</div>
+                      <div className="flex items-center gap-2">
+                        <div className="text-[11px] text-slate-400">{task.status}</div>
+                        {canRetryTask(task) && onRetryTask ? (
+                          <AppButton
+                            size="sm"
+                            className="h-8 rounded-lg px-3 text-[11px]"
+                            disabled={retryingTaskId === task.taskId}
+                            onClick={() => onRetryTask(task.taskId)}
+                          >
+                            {retryingTaskId === task.taskId ? '重试中…' : '重试'}
+                          </AppButton>
+                        ) : null}
+                      </div>
                     </div>
                     <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-300">
                       {task.summary?.preLaunchDecisionCode ? (

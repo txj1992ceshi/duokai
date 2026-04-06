@@ -296,7 +296,25 @@ export default function Home() {
   const [adminProxyUsage, setAdminProxyUsage] = useState<AdminProxyUsageAsset[]>([]);
   const [adminDiagnosticsLoading, setAdminDiagnosticsLoading] = useState(false);
   const [adminDiagnosticsError, setAdminDiagnosticsError] = useState('');
+  const [retryingAdminTaskId, setRetryingAdminTaskId] = useState<string | null>(null);
   const controlPlaneOnly = RUNTIME_EXECUTION_MODE === 'control-plane';
+
+  const readResponseError = useCallback(async (res: Response, fallbackMessage: string) => {
+    const text = await res.text().catch(() => '');
+    if (text) {
+      try {
+        const json = JSON.parse(text) as Record<string, unknown>;
+        const detail = json.detail && typeof json.detail === 'object'
+          ? `\n${JSON.stringify(json.detail)}`
+          : '';
+        const primary = String(json.error || json.message || fallbackMessage);
+        return `${primary}${detail}${res.status ? `\nHTTP ${res.status}` : ''}`;
+      } catch {
+        return `${fallbackMessage}\n${text.slice(0, 500)}${res.status ? `\nHTTP ${res.status}` : ''}`;
+      }
+    }
+    return `${fallbackMessage}${res.status ? `\nHTTP ${res.status}` : ''}`;
+  }, []);
 
   const loadAdminDiagnostics = useCallback(async () => {
     if (currentUser?.role !== 'admin') {
@@ -357,6 +375,35 @@ export default function Home() {
       setAdminDiagnosticsLoading(false);
     }
   }, [currentUser?.role]);
+
+  const handleRetryAdminTask = useCallback(
+    async (taskId: string) => {
+      const normalizedTaskId = String(taskId || '').trim();
+      if (!normalizedTaskId) return;
+      setRetryingAdminTaskId(normalizedTaskId);
+      setAdminDiagnosticsError('');
+      try {
+        const res = await apiFetch(`/api/admin/agents/tasks/${normalizedTaskId}/retry`, {
+          method: 'POST',
+        });
+        if (!res.ok) {
+          throw new Error(await readResponseError(res, '任务重试失败'));
+        }
+        const payload = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+        if (payload?.success === false) {
+          throw new Error(String(payload.error || '任务重试失败'));
+        }
+        await loadAdminDiagnostics();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '任务重试失败';
+        setAdminDiagnosticsError(message);
+        alert(`任务重试失败: ${message}`);
+      } finally {
+        setRetryingAdminTaskId(null);
+      }
+    },
+    [loadAdminDiagnostics, readResponseError]
+  );
 
   const loadStorageStateStatus = useCallback(async (items: Array<{ id: string }>) => {
     try {
@@ -651,23 +698,6 @@ export default function Home() {
   const isRunningProfile = useCallback((profile: Profile) => {
     return profile.status === 'Running' || Boolean(profile.runtimeSessionId);
   }, []);
-
-  async function readResponseError(res: Response, fallbackMessage: string) {
-    const text = await res.text().catch(() => '');
-    if (text) {
-      try {
-        const json = JSON.parse(text) as Record<string, unknown>;
-        const detail = json.detail && typeof json.detail === 'object'
-          ? `\n${JSON.stringify(json.detail)}`
-          : '';
-        const primary = String(json.error || json.message || fallbackMessage);
-        return `${primary}${detail}${res.status ? `\nHTTP ${res.status}` : ''}`;
-      } catch {
-        return `${fallbackMessage}\n${text.slice(0, 500)}${res.status ? `\nHTTP ${res.status}` : ''}`;
-      }
-    }
-    return `${fallbackMessage}${res.status ? `\nHTTP ${res.status}` : ''}`;
-  }
 
   const handleStartSession = async (p: Profile) => {
     if (controlPlaneOnly) {
@@ -1330,6 +1360,8 @@ export default function Home() {
                   failures={adminTaskFailures}
                   agents={adminAgentHealth}
                   proxyAssets={adminProxyUsage}
+                  retryingTaskId={retryingAdminTaskId}
+                  onRetryTask={handleRetryAdminTask}
                 />
               ) : null}
             </div>
