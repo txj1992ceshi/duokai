@@ -86,6 +86,7 @@ Vultr file storage owns:
 9. Local desktop runtime executes the action.
 10. Agent reports compact task events and audit data back to control plane.
 11. Large artifacts are uploaded as file-backed objects, with only metadata stored in Mongo.
+12. Artifact read APIs return metadata by default and require explicit `includeContent=1` for full snapshot or storage-state bodies.
 
 ## Product Boundary
 

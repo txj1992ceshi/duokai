@@ -9,12 +9,22 @@ type RouteContext = {
   params: Promise<{ profileId: string }>;
 };
 
-async function serializeWorkspaceSnapshot(snapshot: Record<string, unknown> | null) {
+function shouldIncludeArtifactContent(input: string | null) {
+  const normalized = String(input || '').trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'full';
+}
+
+async function serializeWorkspaceSnapshot(
+  snapshot: Record<string, unknown> | null,
+  includeContent = false
+) {
   if (!snapshot) {
     return null;
   }
 
-  const artifactPayload = await resolveWorkspaceSnapshotArtifact(String(snapshot.fileRef || ''));
+  const artifactPayload = includeContent
+    ? await resolveWorkspaceSnapshotArtifact(String(snapshot.fileRef || ''))
+    : null;
 
   return {
     snapshotId: String(snapshot.snapshotId || ''),
@@ -63,6 +73,7 @@ export async function GET(req: NextRequest, context: RouteContext) {
   try {
     const authUser = requireUser(req);
     await connectMongo();
+    const includeContent = shouldIncludeArtifactContent(req.nextUrl.searchParams.get('includeContent'));
 
     const { profileId } = await context.params;
 
@@ -89,7 +100,7 @@ export async function GET(req: NextRequest, context: RouteContext) {
       success: true,
       snapshots: await Promise.all(
         snapshots.map((snapshot) =>
-          serializeWorkspaceSnapshot(snapshot as Record<string, unknown>)
+          serializeWorkspaceSnapshot(snapshot as Record<string, unknown>, includeContent)
         )
       ),
     });

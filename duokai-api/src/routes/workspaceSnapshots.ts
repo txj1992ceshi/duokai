@@ -6,6 +6,7 @@ import {
   resolveWorkspaceSnapshotArtifact,
   writeWorkspaceSnapshotArtifact,
 } from '../lib/storageArtifacts.js';
+import { compactStorageStatePayload, shouldIncludeArtifactContent } from '../lib/storageView.js';
 import { ProfileModel } from '../models/Profile.js';
 import { WorkspaceSnapshotModel } from '../models/WorkspaceSnapshot.js';
 
@@ -48,14 +49,6 @@ export function normalizeWorkspaceSnapshotPayload(
   };
 }
 
-function buildCompactStorageState(value: Record<string, unknown>) {
-  const next = { ...value };
-  if ('stateJson' in next) {
-    next.stateJson = null;
-  }
-  return next;
-}
-
 function normalizeSnapshotStorageState(value: unknown) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return {} as Record<string, unknown>;
@@ -63,11 +56,16 @@ function normalizeSnapshotStorageState(value: unknown) {
   return value as Record<string, unknown>;
 }
 
-async function serializeWorkspaceSnapshot(snapshot: Record<string, unknown> | null) {
+async function serializeWorkspaceSnapshot(
+  snapshot: Record<string, unknown> | null,
+  includeContent = false
+) {
   if (!snapshot) {
     return null;
   }
-  const artifactPayload = await resolveWorkspaceSnapshotArtifact(String(snapshot.fileRef || ''));
+  const artifactPayload = includeContent
+    ? await resolveWorkspaceSnapshotArtifact(String(snapshot.fileRef || ''))
+    : null;
   return {
     snapshotId: String(snapshot.snapshotId || ''),
     profileId: String(snapshot.profileId || ''),
@@ -134,11 +132,14 @@ router.get(
     })
       .sort({ updatedAt: -1 })
       .lean();
+    const includeContent = shouldIncludeArtifactContent(req.query.includeContent);
 
     res.json({
       success: true,
       snapshots: await Promise.all(
-        snapshots.map((snapshot) => serializeWorkspaceSnapshot(snapshot as Record<string, unknown>))
+        snapshots.map((snapshot) =>
+          serializeWorkspaceSnapshot(snapshot as Record<string, unknown>, includeContent)
+        )
       ),
     });
   })
@@ -167,6 +168,7 @@ router.get(
       profileId,
       snapshotId,
     }).lean();
+    const includeContent = shouldIncludeArtifactContent(req.query.includeContent);
 
     if (!snapshot) {
       res.status(404).json({ success: false, error: 'Workspace snapshot not found' });
@@ -175,7 +177,7 @@ router.get(
 
     res.json({
       success: true,
-      snapshot: await serializeWorkspaceSnapshot(snapshot as Record<string, unknown>),
+      snapshot: await serializeWorkspaceSnapshot(snapshot as Record<string, unknown>, includeContent),
     });
   })
 );
@@ -238,7 +240,7 @@ router.put(
         workspaceManifestRef: payload.workspaceManifestRef,
         storageStateRef: payload.storageStateRef,
         workspaceMetadata: payload.workspaceMetadata,
-        storageState: buildCompactStorageState(normalizeSnapshotStorageState(payload.storageState)),
+        storageState: compactStorageStatePayload(normalizeSnapshotStorageState(payload.storageState)),
         directoryManifest: [],
         healthSummary: payload.healthSummary,
         consistencySummary: payload.consistencySummary,
@@ -260,7 +262,7 @@ router.put(
 
     res.json({
       success: true,
-      snapshot: await serializeWorkspaceSnapshot(snapshot as Record<string, unknown>),
+      snapshot: await serializeWorkspaceSnapshot(snapshot as Record<string, unknown>, true),
     });
   })
 );

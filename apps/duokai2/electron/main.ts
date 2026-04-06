@@ -730,7 +730,9 @@ async function fetchRemoteProfileStorageState(profileId: string): Promise<Contro
   if (!getDesktopAuthState().authenticated) {
     return null
   }
-  const payload = await requestControlPlane(`/api/profile-storage-state/${encodeURIComponent(profileId)}`)
+  const payload = await requestControlPlane(
+    `/api/profile-storage-state/${encodeURIComponent(profileId)}?includeContent=1`,
+  )
   return (payload.storageState || null) as ControlPlaneStorageState | null
 }
 
@@ -755,7 +757,7 @@ async function fetchWorkspaceSnapshotFromControlPlane(
     return null
   }
   const payload = await requestControlPlane(
-    `/api/workspace-snapshots/${encodeURIComponent(profileId)}/${encodeURIComponent(snapshotId)}`,
+    `/api/workspace-snapshots/${encodeURIComponent(profileId)}/${encodeURIComponent(snapshotId)}?includeContent=1`,
   )
   return (payload.snapshot || null) as WorkspaceSnapshotRecord | null
 }

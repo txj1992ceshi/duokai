@@ -6,6 +6,7 @@ import {
   resolveStorageStateJson,
   writeStorageStateArtifact,
 } from '../lib/storageArtifacts.js';
+import { shouldIncludeArtifactContent } from '../lib/storageView.js';
 import { ProfileModel } from '../models/Profile.js';
 import { ProfileStorageStateModel } from '../models/ProfileStorageState.js';
 
@@ -30,15 +31,20 @@ function normalizeStorageStatePayload(body: Record<string, unknown>) {
   };
 }
 
-async function serializeStorageStateRecord(storageState: Record<string, unknown> | null) {
+async function serializeStorageStateRecord(
+  storageState: Record<string, unknown> | null,
+  includeContent = false
+) {
   if (!storageState) {
     return null;
   }
-  const resolvedStateJson = await resolveStorageStateJson({
-    inlineStateJson: storageState.inlineStateJson,
-    stateJson: storageState.stateJson,
-    fileRef: String(storageState.fileRef || ''),
-  });
+  const resolvedStateJson = includeContent
+    ? await resolveStorageStateJson({
+        inlineStateJson: storageState.inlineStateJson,
+        stateJson: storageState.stateJson,
+        fileRef: String(storageState.fileRef || ''),
+      })
+    : null;
   return {
     id: String(storageState._id),
     userId: String(storageState.userId),
@@ -54,8 +60,8 @@ async function serializeStorageStateRecord(storageState: Record<string, unknown>
     size: Number(storageState.size || 0),
     contentType: String(storageState.contentType || 'application/json'),
     retentionPolicy: String(storageState.retentionPolicy || 'latest-only'),
-    inlineStateJson: resolvedStateJson,
-    stateJson: resolvedStateJson,
+    inlineStateJson: includeContent ? resolvedStateJson : null,
+    stateJson: includeContent ? resolvedStateJson : null,
     createdAt: storageState.createdAt,
     updatedAt: storageState.updatedAt,
   };
@@ -82,10 +88,14 @@ router.get(
       userId: authUser.userId,
       profileId,
     }).lean();
+    const includeContent = shouldIncludeArtifactContent(req.query.includeContent);
 
     res.json({
       success: true,
-      storageState: await serializeStorageStateRecord(storageState as Record<string, unknown> | null),
+      storageState: await serializeStorageStateRecord(
+        storageState as Record<string, unknown> | null,
+        includeContent
+      ),
     });
   })
 );

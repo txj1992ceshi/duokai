@@ -74,6 +74,15 @@ During migration, inline JSON bodies may still appear in APIs for backward compa
 - inline bodies should be treated as transitional
 - clients should migrate toward fileRef + metadata
 
+## API Read Rule
+
+Storage-state and workspace-snapshot read APIs should return metadata-first payloads by default.
+
+- default GET responses should expose metadata, checksums, fileRef, version, timestamps, and compact storage state summaries
+- large inline content should only be returned when the caller explicitly requests it with `includeContent=1`
+- desktop restore flows and manual login-state inspection may request full content explicitly
+- list and summary views should stay metadata-only by default
+
 ## Retention Baseline
 
 - task events: 3-7 days

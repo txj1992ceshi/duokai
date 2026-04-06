@@ -903,7 +903,7 @@ export default function Home() {
 
   async function handleLoadSyncedLoginState(profileId: string) {
     try {
-      const saved = await getProfileStorageState(profileId);
+      const saved = await getProfileStorageState(profileId, { includeContent: true });
 
       if (!saved?.stateJson) {
         alert('暂无已同步登录态');

@@ -1,7 +1,21 @@
 import { apiFetch } from '@/lib/api-client';
 
-export async function getProfileStorageState(profileId: string) {
-  const res = await apiFetch(`/api/profile-storage-state/${profileId}`);
+type GetProfileStorageStateOptions = {
+  includeContent?: boolean;
+};
+
+export async function getProfileStorageState(
+  profileId: string,
+  options: GetProfileStorageStateOptions = {}
+) {
+  const params = new URLSearchParams();
+  if (options.includeContent) {
+    params.set('includeContent', '1');
+  }
+  const query = params.toString();
+  const res = await apiFetch(
+    `/api/profile-storage-state/${profileId}${query ? `?${query}` : ''}`
+  );
   const data = await res.json();
 
   if (!res.ok || !data.success) {
