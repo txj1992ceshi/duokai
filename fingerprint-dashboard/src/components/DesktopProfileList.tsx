@@ -22,6 +22,7 @@ import ProxyNodeCell from '@/components/ProxyNodeCell';
 import type { Profile } from '@/lib/dashboard-types';
 import {
   formatWorkspaceSnapshotSummary,
+  formatWorkspaceTrustSummary,
   getHostEnvironmentLabel,
   getProfileStatusLabel,
   getProfileStatusTone,
@@ -165,6 +166,9 @@ export default function DesktopProfileList({
                         </div>
                         <div className="text-[11px] text-slate-500">
                           {formatWorkspaceSnapshotSummary(profile)}
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          {formatWorkspaceTrustSummary(profile)}
                         </div>
                         <IpUsageSummary profile={profile} compact />
                       </div>

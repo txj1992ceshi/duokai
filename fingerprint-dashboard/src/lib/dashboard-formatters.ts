@@ -233,3 +233,43 @@ export function formatWorkspaceSnapshotSummary(
 
   return parts.join(' · ');
 }
+
+export function formatWorkspaceTrustSummary(
+  profile: Pick<Profile, 'workspace' | 'lastLaunchBlock'>
+) {
+  const trustSummary = profile.workspace?.trustSummary;
+  if (!trustSummary) {
+    return '隔离信任摘要未同步';
+  }
+
+  const parts: string[] = [];
+  if (trustSummary.trustedSnapshotStatus === 'trusted') {
+    parts.push('可信启动基线有效');
+  } else if (trustSummary.trustedSnapshotStatus === 'stale') {
+    parts.push('可信启动基线已过期');
+  } else if (trustSummary.trustedSnapshotStatus === 'invalid') {
+    parts.push('可信启动基线失效');
+  } else {
+    parts.push('尚未建立可信启动基线');
+  }
+
+  if (trustSummary.lastQuickIsolationCheckAt) {
+    parts.push(
+      trustSummary.lastQuickIsolationCheckSuccess === false
+        ? `快速隔离失败 ${new Date(trustSummary.lastQuickIsolationCheckAt).toLocaleString()}`
+        : `快速隔离 ${new Date(trustSummary.lastQuickIsolationCheckAt).toLocaleString()}`
+    );
+  }
+
+  if (trustSummary.activeRuntimeLock.state === 'locked') {
+    parts.push('运行锁定中');
+  } else if (trustSummary.activeRuntimeLock.state === 'stale-lock') {
+    parts.push('检测到陈旧锁');
+  }
+
+  if (profile.lastLaunchBlock?.code) {
+    parts.push(`最近阻断 ${profile.lastLaunchBlock.code}`);
+  }
+
+  return parts.join(' · ');
+}

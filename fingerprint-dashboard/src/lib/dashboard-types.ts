@@ -109,6 +109,19 @@ export interface WorkspaceDescriptor {
   paths: WorkspacePaths;
   healthSummary: WorkspaceHealthReport;
   consistencySummary: WorkspaceConsistencyReport;
+  trustSummary: {
+    lastQuickIsolationCheckAt: string;
+    lastQuickIsolationCheckSuccess: boolean | null;
+    lastQuickIsolationCheckMessage: string;
+    trustedSnapshotStatus: 'unknown' | 'trusted' | 'stale' | 'invalid';
+    trustedLaunchVerifiedAt: string;
+    activeRuntimeLock: {
+      state: 'unlocked' | 'locked' | 'stale-lock';
+      ownerDeviceId: string;
+      ownerPid: number | null;
+      updatedAt: string;
+    };
+  };
   snapshotSummary: WorkspaceSnapshotSummary;
   recovery: {
     lastRecoveryAt: string;

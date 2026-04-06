@@ -423,6 +423,65 @@ export default function WorkspaceSnapshotPanel({
         </div>
       </div>
 
+      <div className="grid gap-3 md:grid-cols-3">
+        <div className="rounded-xl border border-slate-800 bg-slate-900/70 px-3 py-3">
+          <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
+            <ShieldCheck size={12} />
+            Isolation Trust
+          </div>
+          <div className="text-sm text-slate-100">
+            {workspace.trustSummary.trustedSnapshotStatus || 'unknown'}
+          </div>
+          <div className="mt-1 text-[11px] text-slate-500">
+            {workspace.trustSummary.trustedLaunchVerifiedAt
+              ? `Verified ${formatDate(workspace.trustSummary.trustedLaunchVerifiedAt)}`
+              : '尚未建立可信启动基线'}
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-800 bg-slate-900/70 px-3 py-3">
+          <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
+            <Clock3 size={12} />
+            Quick Isolation
+          </div>
+          <div className="text-sm text-slate-100">
+            {workspace.trustSummary.lastQuickIsolationCheckSuccess === false
+              ? 'failed'
+              : workspace.trustSummary.lastQuickIsolationCheckSuccess === true
+                ? 'passed'
+                : 'unknown'}
+          </div>
+          <div className="mt-1 text-[11px] text-slate-500">
+            {workspace.trustSummary.lastQuickIsolationCheckAt
+              ? formatDate(workspace.trustSummary.lastQuickIsolationCheckAt)
+              : '从未'}
+          </div>
+          {workspace.trustSummary.lastQuickIsolationCheckMessage ? (
+            <div className="mt-2 text-[11px] text-amber-200">
+              {workspace.trustSummary.lastQuickIsolationCheckMessage}
+            </div>
+          ) : null}
+        </div>
+        <div className="rounded-xl border border-slate-800 bg-slate-900/70 px-3 py-3">
+          <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
+            <AlertTriangle size={12} />
+            Runtime Lock
+          </div>
+          <div className="text-sm text-slate-100">
+            {workspace.trustSummary.activeRuntimeLock.state || 'unlocked'}
+          </div>
+          <div className="mt-1 text-[11px] text-slate-500">
+            {workspace.trustSummary.activeRuntimeLock.updatedAt
+              ? formatDate(workspace.trustSummary.activeRuntimeLock.updatedAt)
+              : '从未'}
+          </div>
+          {workspace.trustSummary.activeRuntimeLock.ownerDeviceId ? (
+            <div className="mt-2 text-[11px] text-slate-500">
+              Device {workspace.trustSummary.activeRuntimeLock.ownerDeviceId}
+            </div>
+          ) : null}
+        </div>
+      </div>
+
       {errorMessage ? (
         <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-[11px] text-red-300">
           {errorMessage}
