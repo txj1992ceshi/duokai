@@ -434,6 +434,10 @@ function persistTrustedLaunchSummary(
   })
 }
 
+function isProfileLaunchInFlight(profileId: string): boolean {
+  return scheduler.getQueuedIds().includes(profileId) || scheduler.getStartingIds().includes(profileId)
+}
+
 async function releaseProfileRuntimeLock(profileId: string): Promise<void> {
   const timer = runtimeLockHeartbeatTimers.get(profileId)
   if (timer) {
@@ -450,7 +454,7 @@ async function releaseProfileRuntimeLock(profileId: string): Promise<void> {
   }
   try {
     unlinkSync(lockPath)
-    updateWorkspaceTrustSummary(profile, {
+    const updatedProfile = updateWorkspaceTrustSummary(profile, {
       activeRuntimeLock: {
         state: 'unlocked',
         ownerDeviceId: '',
@@ -458,6 +462,7 @@ async function releaseProfileRuntimeLock(profileId: string): Promise<void> {
         updatedAt: new Date().toISOString(),
       },
     })
+    void syncWorkspaceSummaryToControlPlane(updatedProfile).catch(() => {})
   } catch (error) {
     audit('runtime_lock_release_failed', {
       profileId,
@@ -508,7 +513,7 @@ function acquireProfileRuntimeLock(profile: ProfileRecord): { record: RuntimeLoc
     }
   }
   const record = writeRuntimeLockRecord(profile, 'starting')
-  updateWorkspaceTrustSummary(profile, {
+  const updatedProfile = updateWorkspaceTrustSummary(profile, {
     activeRuntimeLock: {
       state: 'locked',
       ownerDeviceId: getControlPlaneDeviceId(),
@@ -516,6 +521,7 @@ function acquireProfileRuntimeLock(profile: ProfileRecord): { record: RuntimeLoc
       updatedAt: record.updatedAt,
     },
   })
+  void syncWorkspaceSummaryToControlPlane(updatedProfile).catch(() => {})
   startRuntimeLockHeartbeat(profile.id)
   audit(staleReclaimed ? 'runtime_lock_reclaimed' : 'runtime_lock_acquired', {
     profileId: profile.id,
@@ -531,7 +537,7 @@ function markProfileRuntimeLockRunning(profileId: string): void {
     return
   }
   writeRuntimeLockRecord(profile, 'running')
-  updateWorkspaceTrustSummary(profile, {
+  const updatedProfile = updateWorkspaceTrustSummary(profile, {
     activeRuntimeLock: {
       state: 'locked',
       ownerDeviceId: getControlPlaneDeviceId(),
@@ -539,6 +545,7 @@ function markProfileRuntimeLockRunning(profileId: string): void {
       updatedAt: new Date().toISOString(),
     },
   })
+  void syncWorkspaceSummaryToControlPlane(updatedProfile).catch(() => {})
 }
 
 function summarizeRuntimeLockStates(): {
@@ -569,7 +576,7 @@ function cleanupRuntimeLocksOnStartup(): void {
     }
     try {
       unlinkSync(getProfileRuntimeLockPath(profile))
-      updateWorkspaceTrustSummary(profile, {
+      const updatedProfile = updateWorkspaceTrustSummary(profile, {
         activeRuntimeLock: {
           state: 'unlocked',
           ownerDeviceId: '',
@@ -577,6 +584,7 @@ function cleanupRuntimeLocksOnStartup(): void {
           updatedAt: new Date().toISOString(),
         },
       })
+      void syncWorkspaceSummaryToControlPlane(updatedProfile).catch(() => {})
       audit('runtime_lock_cleanup_startup', { profileId: profile.id })
     } catch (error) {
       audit('runtime_lock_cleanup_startup_failed', {
@@ -750,6 +758,9 @@ async function restoreWorkspaceSnapshotForProfile(
   snapshotId: string,
   recoveryReason = `restore:${snapshotId}`,
 ): Promise<ProfileRecord> {
+  if (isProfileLaunchInFlight(profileId)) {
+    throw new Error(`Cannot restore workspace snapshot while profile ${profileId} is queued or starting`)
+  }
   await stopRuntime(profileId)
   const profile = ensureWorkspaceLayoutForProfileId(profileId)
   const restoreResult = await restoreWorkspaceSnapshotRecord(profile, snapshotId, {
@@ -807,6 +818,9 @@ async function restoreWorkspaceSnapshotForProfile(
 }
 
 async function rollbackWorkspaceSnapshotForProfile(profileId: string): Promise<ProfileRecord> {
+  if (isProfileLaunchInFlight(profileId)) {
+    throw new Error(`Cannot roll back workspace snapshot while profile ${profileId} is queued or starting`)
+  }
   await stopRuntime(profileId)
   const profile = ensureWorkspaceLayoutForProfileId(profileId)
   const rollbackResult = await rollbackWorkspaceToLastKnownGoodRecord(profile, {
@@ -3951,9 +3965,33 @@ const scheduler = new RuntimeScheduler({
 })
 
 async function enqueueLaunch(profileId: string): Promise<void> {
+  const profile = requireDatabase().getProfileById(profileId)
+  if (!profile) {
+    throw new Error('Profile not found')
+  }
   if (runtimeContexts.has(profileId)) {
-    audit('enqueue_skip_existing', { profileId })
-    return
+    audit('enqueue_rejected_running', { profileId })
+    throw new Error('Profile is already running')
+  }
+  if (scheduler.getStartingIds().includes(profileId)) {
+    audit('enqueue_rejected_starting', { profileId })
+    throw new Error('Profile is already starting')
+  }
+  if (scheduler.getQueuedIds().includes(profileId)) {
+    audit('enqueue_rejected_queued', { profileId })
+    throw new Error('Profile is already queued for launch')
+  }
+  const runtimeLockState = getRuntimeLockStateForProfile(profile)
+  if (runtimeLockState === 'locked') {
+    const existingLock = readRuntimeLockRecord(profile)
+    audit('enqueue_rejected_runtime_lock', {
+      profileId,
+      ownerPid: existingLock?.ownerPid ?? null,
+      updatedAt: existingLock?.updatedAt ?? '',
+    })
+    throw new Error(
+      `Profile runtime lock is already active (pid=${existingLock?.ownerPid ?? 'unknown'}, updatedAt=${existingLock?.updatedAt ?? 'unknown'})`,
+    )
   }
   if (scheduler.getQueuedIds().length > MAX_QUEUE) {
     audit('enqueue_rejected_queue_full', { profileId, queueLen: scheduler.getQueuedIds().length })
@@ -3961,8 +3999,8 @@ async function enqueueLaunch(profileId: string): Promise<void> {
   }
   const accepted = scheduler.enqueue(profileId)
   if (!accepted) {
-    audit('enqueue_skip_existing', { profileId })
-    return
+    audit('enqueue_rejected_duplicate', { profileId })
+    throw new Error('Profile launch is already pending')
   }
   audit('enqueue', { profileId, queueLen: scheduler.getQueuedIds().length })
 }

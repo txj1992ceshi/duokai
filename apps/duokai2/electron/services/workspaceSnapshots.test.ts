@@ -318,6 +318,72 @@ test('restoreWorkspaceSnapshot rejects legacy snapshots without stateJson', asyn
   )
 })
 
+test('restoreWorkspaceSnapshot rejects snapshots whose manifest identity mismatches the target profile', async () => {
+  const profile = buildProfile('snapshot-identity-mismatch')
+  const snapshot = await createWorkspaceSnapshot(profile, {
+    snapshotId: 'snapshot-identity-mismatch-1',
+    storageStatePath: path.join(profile.workspace!.paths.profileDir, 'storageState.json'),
+    storageStateSource: 'local-disk',
+  })
+  const mismatchedSnapshot = {
+    ...snapshot,
+    manifest: {
+      ...snapshot.manifest,
+      workspaceIdentityProfileId: 'other-profile',
+    },
+  }
+  writeFileSync(
+    path.join(profile.workspace!.paths.metaDir, 'snapshots', 'snapshot-identity-mismatch-1.json'),
+    JSON.stringify(mismatchedSnapshot, null, 2),
+    'utf8',
+  )
+
+  await assert.rejects(
+    restoreWorkspaceSnapshot(profile, 'snapshot-identity-mismatch-1', {
+      storageStatePath: path.join(profile.workspace!.paths.profileDir, 'storageState.json'),
+      recoveryReason: 'restore:snapshot-identity-mismatch-1',
+    }),
+    /manifest identity/i,
+  )
+})
+
+test('restoreWorkspaceSnapshot rejects snapshots whose config fingerprint no longer matches the profile', async () => {
+  const baseProfile = buildProfile('snapshot-config-mismatch')
+  const profile: ProfileRecord = {
+    ...baseProfile,
+    fingerprintConfig: {
+      ...baseProfile.fingerprintConfig,
+      runtimeMetadata: {
+        ...baseProfile.fingerprintConfig.runtimeMetadata,
+        configFingerprintHash: 'original-config-hash',
+      },
+    },
+  }
+  await createWorkspaceSnapshot(profile, {
+    snapshotId: 'snapshot-config-mismatch-1',
+    storageStatePath: path.join(profile.workspace!.paths.profileDir, 'storageState.json'),
+    storageStateSource: 'local-disk',
+  })
+  const mismatchedProfile: ProfileRecord = {
+    ...profile,
+    fingerprintConfig: {
+      ...profile.fingerprintConfig,
+      runtimeMetadata: {
+        ...profile.fingerprintConfig.runtimeMetadata,
+        configFingerprintHash: 'changed-config-hash',
+      },
+    },
+  }
+
+  await assert.rejects(
+    restoreWorkspaceSnapshot(mismatchedProfile, 'snapshot-config-mismatch-1', {
+      storageStatePath: path.join(profile.workspace!.paths.profileDir, 'storageState.json'),
+      recoveryReason: 'restore:snapshot-config-mismatch-1',
+    }),
+    /config fingerprint/i,
+  )
+})
+
 test('rollbackWorkspaceToLastKnownGood restores the referenced snapshot', async () => {
   const profile = buildProfile('snapshot-rollback')
   await createWorkspaceSnapshot(profile, {

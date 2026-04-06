@@ -185,6 +185,9 @@ export async function createWorkspaceSnapshot(
     workspaceIdentityProfileId: profile.workspace.identityProfileId,
     templateFingerprintHash: profile.workspace.templateBinding.templateFingerprintHash,
     templateRevision: profile.workspace.templateBinding.templateRevision,
+    configFingerprintHash: profile.fingerprintConfig.runtimeMetadata.configFingerprintHash || '',
+    proxyFingerprintHash: profile.fingerprintConfig.runtimeMetadata.proxyFingerprintHash || '',
+    trustedSnapshotStatus: profile.fingerprintConfig.runtimeMetadata.trustedSnapshotStatus || 'unknown',
     storageStateVersion: storageState.version,
     storageStateHash: storageState.stateHash,
     workspaceStateHash: hashStructuredPayload({
@@ -408,11 +411,38 @@ export async function restoreWorkspaceSnapshot(
   if (snapshot.profileId !== profile.id) {
     throw new Error(`Workspace snapshot ${snapshotId} does not belong to profile ${profile.id}`)
   }
+  if (
+    String(snapshot.manifest.workspaceIdentityProfileId || '') &&
+    snapshot.manifest.workspaceIdentityProfileId !== profile.id
+  ) {
+    throw new Error(`Workspace snapshot ${snapshotId} manifest identity does not match profile ${profile.id}`)
+  }
   if (!snapshot.workspaceMetadata) {
     throw new Error(`Workspace snapshot ${snapshotId} is missing workspace metadata`)
   }
+  if (snapshot.workspaceMetadata.identityProfileId && snapshot.workspaceMetadata.identityProfileId !== profile.id) {
+    throw new Error(`Workspace snapshot ${snapshotId} metadata identity does not match profile ${profile.id}`)
+  }
   if (!snapshot.templateRevision || !snapshot.templateFingerprintHash) {
     throw new Error(`Workspace snapshot ${snapshotId} is missing template binding data`)
+  }
+  const currentConfigFingerprintHash = String(profile.fingerprintConfig.runtimeMetadata.configFingerprintHash || '')
+  const currentProxyFingerprintHash = String(profile.fingerprintConfig.runtimeMetadata.proxyFingerprintHash || '')
+  const snapshotConfigFingerprintHash = String(snapshot.manifest.configFingerprintHash || '')
+  const snapshotProxyFingerprintHash = String(snapshot.manifest.proxyFingerprintHash || '')
+  if (
+    snapshotConfigFingerprintHash &&
+    currentConfigFingerprintHash &&
+    snapshotConfigFingerprintHash !== currentConfigFingerprintHash
+  ) {
+    throw new Error(`Workspace snapshot ${snapshotId} config fingerprint no longer matches profile ${profile.id}`)
+  }
+  if (
+    snapshotProxyFingerprintHash &&
+    currentProxyFingerprintHash &&
+    snapshotProxyFingerprintHash !== currentProxyFingerprintHash
+  ) {
+    throw new Error(`Workspace snapshot ${snapshotId} proxy fingerprint no longer matches profile ${profile.id}`)
   }
   if (snapshot.storageState.stateJson === undefined) {
     throw new Error(`Workspace snapshot ${snapshotId} is not restorable in v1 because stateJson is missing`)
