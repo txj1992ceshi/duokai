@@ -366,3 +366,50 @@ export type CurrentUserSummary = {
   name?: string;
   role?: string;
 } | null;
+
+export interface AdminAgentTaskSummary {
+  id: string;
+  taskId: string;
+  agentId: string;
+  type: string;
+  status: string;
+  idempotencyKey: string;
+  payload: Record<string, unknown>;
+  createdAt?: string;
+  pulledAt?: string | null;
+  startedAt?: string | null;
+  endedAt?: string | null;
+  errorCode?: string;
+  errorMessage?: string;
+  outputRef?: string;
+  diagnostics?: unknown;
+  createdByUserId?: string;
+  createdByEmail?: string;
+  summary?: {
+    profileId?: string;
+    snapshotId?: string;
+    ipUsageMode?: string;
+    proxySharingMode?: string;
+    leaseValidationCode?: string;
+    preLaunchDecisionCode?: string;
+    preLaunchApproved?: boolean;
+    blockedReasonCode?: string;
+  };
+}
+
+export interface AdminTaskEventSummary {
+  id: string;
+  taskId: string;
+  agentId: string;
+  status: string;
+  idempotencyKey?: string;
+  detail?: Record<string, unknown> | null;
+  createdAt?: string;
+  summary?: {
+    profileId?: string;
+    action?: string;
+    ipUsageMode?: string;
+    leaseValidationCode?: string;
+    preLaunchDecisionCode?: string;
+  };
+}

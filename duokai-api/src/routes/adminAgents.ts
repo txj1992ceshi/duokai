@@ -588,6 +588,7 @@ router.get(
     res.json({
       success: true,
       tasks: tasks.map((item) => ({
+        id: String(item._id),
         taskId: item.taskId,
         agentId: item.agentId,
         type: item.type,
@@ -604,6 +605,34 @@ router.get(
         diagnostics: item.diagnostics ?? null,
         createdByUserId: item.createdByUserId || '',
         createdByEmail: item.createdByEmail || '',
+        summary: {
+          profileId: String((item.payload as Record<string, unknown> | null)?.profileId || '').trim(),
+          snapshotId: String((item.payload as Record<string, unknown> | null)?.snapshotId || '').trim(),
+          ipUsageMode: String((item.payload as Record<string, unknown> | null)?.ipUsageMode || '').trim(),
+          proxySharingMode: String((item.payload as Record<string, unknown> | null)?.proxySharingMode || '').trim(),
+          leaseValidationCode: String(
+            ((item.payload as Record<string, unknown> | null)?.leaseValidation as Record<string, unknown> | null)
+              ?.code || ''
+          ).trim(),
+          preLaunchDecisionCode: String(
+            ((item.payload as Record<string, unknown> | null)?.preLaunchDecision as Record<string, unknown> | null)
+              ?.code || ''
+          ).trim(),
+          preLaunchApproved: Boolean(
+            ((item.payload as Record<string, unknown> | null)?.preLaunchDecision as Record<string, unknown> | null)
+              ?.approved
+          ),
+          blockedReasonCode:
+            String(item.errorCode || '').trim() ||
+            String(
+              ((item.payload as Record<string, unknown> | null)?.preLaunchDecision as Record<string, unknown> | null)
+                ?.code || ''
+            ).trim() ||
+            String(
+              ((item.payload as Record<string, unknown> | null)?.leaseValidation as Record<string, unknown> | null)
+                ?.code || ''
+            ).trim(),
+        },
       })),
     });
   })
@@ -679,6 +708,17 @@ router.get(
         idempotencyKey: item.idempotencyKey,
         detail: item.detail,
         createdAt: item.createdAt,
+        summary: {
+          profileId: String((item.detail as Record<string, unknown> | null)?.profileId || '').trim(),
+          action: String((item.detail as Record<string, unknown> | null)?.action || '').trim(),
+          ipUsageMode: String((item.detail as Record<string, unknown> | null)?.ipUsageMode || '').trim(),
+          leaseValidationCode: String(
+            (item.detail as Record<string, unknown> | null)?.leaseValidationCode || ''
+          ).trim(),
+          preLaunchDecisionCode: String(
+            (item.detail as Record<string, unknown> | null)?.preLaunchDecisionCode || ''
+          ).trim(),
+        },
       })),
     });
   })

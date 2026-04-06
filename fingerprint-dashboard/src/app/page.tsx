@@ -20,6 +20,7 @@ import GlassCard from '@/components/GlassCard'
 import EmptyState from '@/components/EmptyState'
 import DashboardSidebar from '@/components/DashboardSidebar'
 import DashboardTopbar from '@/components/DashboardTopbar'
+import AdminRuntimeDiagnostics from '@/components/AdminRuntimeDiagnostics'
 import DesktopProfileList from '@/components/DesktopProfileList'
 import MobileProfileTable from '@/components/MobileProfileTable'
 import GroupProfilesTable from '@/components/GroupProfilesTable'
@@ -32,6 +33,8 @@ import { listWorkspaceSnapshots } from '@/lib/workspace-snapshot-client'
 import { useRouter } from 'next/navigation'
 import type { HostEnvironment, ProxyProtocol, ProxyVerificationRecord } from '@/lib/proxyTypes'
 import type {
+  AdminAgentTaskSummary,
+  AdminTaskEventSummary,
   Behavior,
   BehaviorAction,
   CurrentUserSummary,
@@ -55,6 +58,10 @@ import {
 
 type RuntimeSessionSummary = {
   profileId?: string;
+};
+
+type AdminProxyUsageAsset = ProxyAssetSummary & {
+  affectedProfiles?: Array<{ profileId: string; name: string }>;
 };
 
 const RUNTIME_EXECUTION_MODE =
@@ -280,7 +287,54 @@ export default function Home() {
     message: string;
     variant: 'error' | 'success' | 'info';
   }>({ message: '', variant: 'info' });
+  const [adminTaskRows, setAdminTaskRows] = useState<AdminAgentTaskSummary[]>([]);
+  const [adminTaskEvents, setAdminTaskEvents] = useState<AdminTaskEventSummary[]>([]);
+  const [adminProxyUsage, setAdminProxyUsage] = useState<AdminProxyUsageAsset[]>([]);
+  const [adminDiagnosticsLoading, setAdminDiagnosticsLoading] = useState(false);
+  const [adminDiagnosticsError, setAdminDiagnosticsError] = useState('');
   const controlPlaneOnly = RUNTIME_EXECUTION_MODE === 'control-plane';
+
+  const loadAdminDiagnostics = useCallback(async () => {
+    if (currentUser?.role !== 'admin') {
+      setAdminTaskRows([]);
+      setAdminTaskEvents([]);
+      setAdminProxyUsage([]);
+      setAdminDiagnosticsError('');
+      return;
+    }
+    setAdminDiagnosticsLoading(true);
+    setAdminDiagnosticsError('');
+    try {
+      const [tasksRes, eventsRes, proxyUsageRes] = await Promise.all([
+        apiFetch('/api/admin/agents/tasks?limit=12'),
+        apiFetch('/api/admin/agents/tasks/events?limit=20'),
+        apiFetch('/api/admin/agents/proxy-usage'),
+      ]);
+      const [tasksData, eventsData, proxyUsageData] = await Promise.all([
+        tasksRes.json().catch(() => null),
+        eventsRes.json().catch(() => null),
+        proxyUsageRes.json().catch(() => null),
+      ]);
+      if (!tasksRes.ok || !tasksData?.success) {
+        throw new Error(tasksData?.error || 'Failed to fetch admin tasks');
+      }
+      if (!eventsRes.ok || !eventsData?.success) {
+        throw new Error(eventsData?.error || 'Failed to fetch admin task events');
+      }
+      if (!proxyUsageRes.ok || !proxyUsageData?.success) {
+        throw new Error(proxyUsageData?.error || 'Failed to fetch proxy usage');
+      }
+      setAdminTaskRows(Array.isArray(tasksData.tasks) ? (tasksData.tasks as AdminAgentTaskSummary[]) : []);
+      setAdminTaskEvents(Array.isArray(eventsData.events) ? (eventsData.events as AdminTaskEventSummary[]) : []);
+      setAdminProxyUsage(
+        Array.isArray(proxyUsageData.proxyAssets) ? (proxyUsageData.proxyAssets as AdminProxyUsageAsset[]) : []
+      );
+    } catch (error) {
+      setAdminDiagnosticsError(error instanceof Error ? error.message : 'Failed to fetch admin diagnostics');
+    } finally {
+      setAdminDiagnosticsLoading(false);
+    }
+  }, [currentUser?.role]);
 
   const loadStorageStateStatus = useCallback(async (items: Array<{ id: string }>) => {
     try {
@@ -489,6 +543,13 @@ export default function Home() {
   }, [router]);
 
   useEffect(() => { void fetchProfiles() }, [fetchProfiles])
+
+  useEffect(() => {
+    if (activeTab !== '控制台' || currentUser?.role !== 'admin') {
+      return;
+    }
+    void loadAdminDiagnostics();
+  }, [activeTab, currentUser?.role, loadAdminDiagnostics]);
 
   // Poll runtime server status every 5 seconds
   useEffect(() => {
@@ -1207,36 +1268,47 @@ export default function Home() {
 
           {/* ─── 控制台 ─── */}
           {activeTab === '控制台' && (
-            <ConsoleOverview
-              stats={[
-                {
-                  title: '活跃环境',
-                  value: activeProfilesCount.toString(),
-                  sub: `共 ${totalProfilesCount} 个环境`,
-                  icon: Globe,
-                  color: 'bg-blue-500/10 text-blue-400',
-                },
-                {
-                  title: '可用代理',
-                  value: onlineProxiesCount.toString(),
-                  sub: `共 ${totalProxiesCount} 个节点`,
-                  icon: Network,
-                  color: 'bg-purple-500/10 text-purple-400',
-                },
-                {
-                  title: '指纹健康度',
-                  value: `${avgHealth}%`,
-                  sub: '平均安全得分',
-                  icon: ShieldCheck,
-                  color: 'bg-green-500/10 text-green-400',
-                },
-              ]}
-              activities={[
-                { text: '环境「Facebook#12」已成功启动', time: '刚刚', ok: true },
-                { text: '代理节点 103.4.1.22 心跳检测正常', time: '2 分钟前', ok: true },
-                { text: '环境「TikTok#3」代理连接超时', time: '15 分钟前', ok: false },
-              ]}
-            />
+            <div className="space-y-6 animate-in fade-in duration-300">
+              <ConsoleOverview
+                stats={[
+                  {
+                    title: '活跃环境',
+                    value: activeProfilesCount.toString(),
+                    sub: `共 ${totalProfilesCount} 个环境`,
+                    icon: Globe,
+                    color: 'bg-blue-500/10 text-blue-400',
+                  },
+                  {
+                    title: '可用代理',
+                    value: onlineProxiesCount.toString(),
+                    sub: `共 ${totalProxiesCount} 个节点`,
+                    icon: Network,
+                    color: 'bg-purple-500/10 text-purple-400',
+                  },
+                  {
+                    title: '指纹健康度',
+                    value: `${avgHealth}%`,
+                    sub: '平均安全得分',
+                    icon: ShieldCheck,
+                    color: 'bg-green-500/10 text-green-400',
+                  },
+                ]}
+                activities={[
+                  { text: '环境「Facebook#12」已成功启动', time: '刚刚', ok: true },
+                  { text: '代理节点 103.4.1.22 心跳检测正常', time: '2 分钟前', ok: true },
+                  { text: '环境「TikTok#3」代理连接超时', time: '15 分钟前', ok: false },
+                ]}
+              />
+              {currentUser?.role === 'admin' ? (
+                <AdminRuntimeDiagnostics
+                  loading={adminDiagnosticsLoading}
+                  error={adminDiagnosticsError}
+                  tasks={adminTaskRows}
+                  events={adminTaskEvents}
+                  proxyAssets={adminProxyUsage}
+                />
+              ) : null}
+            </div>
           )}
 
           {/* ─── 浏览器环境 ─── */}
