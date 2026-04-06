@@ -6,6 +6,7 @@ import {
   getAgentSelectionState,
   resolveDuplicateTaskBlock,
   selectAgentForAction,
+  validateAgentRuntimeModeSupport,
 } from './controlPlaneDecision.js';
 
 test('evaluateProfilePreLaunch blocks unsupported runtime mode', () => {
@@ -22,6 +23,32 @@ test('evaluateProfilePreLaunch blocks unsupported runtime mode', () => {
 
   assert.equal(result.ok, false);
   assert.equal(result.code, 'RUNTIME_MODE_UNSUPPORTED');
+});
+
+test('evaluateProfilePreLaunch blocks strong-local when feature flag is disabled', () => {
+  const previous = process.env.DUOKAI_ENABLE_STRONG_LOCAL;
+  process.env.DUOKAI_ENABLE_STRONG_LOCAL = '0';
+  try {
+    const result = evaluateProfilePreLaunch({
+      _id: 'profile-1',
+      runtimeMode: 'strong-local',
+      lifecycleState: 'draft',
+      cooldownSummary: { active: false },
+      workspace: {
+        healthSummary: { status: 'healthy', messages: [] },
+        consistencySummary: { status: 'pass', messages: [] },
+      },
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'STRONG_LOCAL_DISABLED');
+  } finally {
+    if (previous === undefined) {
+      delete process.env.DUOKAI_ENABLE_STRONG_LOCAL;
+    } else {
+      process.env.DUOKAI_ENABLE_STRONG_LOCAL = previous;
+    }
+  }
 });
 
 test('evaluateProfilePreLaunch blocks workspace readiness failures', () => {
@@ -93,4 +120,22 @@ test('compareAgentPriority prefers fewer stale locks, then fewer running profile
   });
 
   assert.ok(compareAgentPriority(lowLoad, stale) < 0);
+});
+
+test('validateAgentRuntimeModeSupport blocks agent without requested strong-local support', () => {
+  const result = validateAgentRuntimeModeSupport({
+    profile: {
+      _id: 'profile-1',
+      runtimeMode: 'strong-local',
+    },
+    agent: {
+      agentId: 'agent-1',
+      runtimeStatus: {
+        supportedRuntimeModes: ['local'],
+      },
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'AGENT_RUNTIME_MODE_UNSUPPORTED');
 });

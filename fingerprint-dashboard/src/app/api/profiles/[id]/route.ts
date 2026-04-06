@@ -23,6 +23,14 @@ function resolveDefaultIpUsageMode(purpose: unknown) {
   return String(purpose || '').trim() === 'register' ? 'dedicated' : 'shared';
 }
 
+function normalizeRuntimeMode(input: unknown) {
+  const normalized = String(input || '').trim();
+  if (normalized === 'strong-local' || normalized === 'vm' || normalized === 'container') {
+    return normalized;
+  }
+  return 'local';
+}
+
 function serializeProfile(profile: Record<string, unknown>) {
   return {
     id: String(profile._id),
@@ -30,7 +38,7 @@ function serializeProfile(profile: Record<string, unknown>) {
     name: profile.name,
     platform: profile.platform || profile.startupPlatform || '',
     purpose: profile.purpose || 'operation',
-    runtimeMode: profile.runtimeMode || 'local',
+    runtimeMode: normalizeRuntimeMode(profile.runtimeMode),
     proxyBindingMode: profile.proxyBindingMode || 'dedicated',
     ipUsageMode: profile.ipUsageMode || resolveDefaultIpUsageMode(profile.purpose || 'operation'),
     lifecycleState: profile.lifecycleState || 'draft',
@@ -133,7 +141,7 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
     if (typeof body.name === 'string') updateData.name = body.name.trim();
     if (typeof body.platform === 'string') updateData.platform = body.platform.trim();
     if (typeof body.purpose === 'string') updateData.purpose = body.purpose.trim();
-    if (typeof body.runtimeMode === 'string') updateData.runtimeMode = body.runtimeMode.trim();
+    if (body.runtimeMode !== undefined) updateData.runtimeMode = normalizeRuntimeMode(body.runtimeMode);
     if (typeof body.proxyBindingMode === 'string') updateData.proxyBindingMode = body.proxyBindingMode.trim();
     if (typeof body.ipUsageMode === 'string') updateData.ipUsageMode = body.ipUsageMode.trim();
     if (typeof body.lifecycleState === 'string') updateData.lifecycleState = body.lifecycleState.trim();

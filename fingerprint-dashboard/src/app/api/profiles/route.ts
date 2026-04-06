@@ -20,6 +20,14 @@ function resolveDefaultIpUsageMode(purpose: unknown) {
   return String(purpose || '').trim() === 'register' ? 'dedicated' : 'shared';
 }
 
+function normalizeRuntimeMode(input: unknown) {
+  const normalized = String(input || '').trim();
+  if (normalized === 'strong-local' || normalized === 'vm' || normalized === 'container') {
+    return normalized;
+  }
+  return 'local';
+}
+
 function serializeProfile(profile: Record<string, unknown>, storageStateSynced = false) {
   return {
     id: String(profile._id),
@@ -27,7 +35,7 @@ function serializeProfile(profile: Record<string, unknown>, storageStateSynced =
     name: profile.name,
     platform: profile.platform || profile.startupPlatform || '',
     purpose: profile.purpose || 'operation',
-    runtimeMode: profile.runtimeMode || 'local',
+    runtimeMode: normalizeRuntimeMode(profile.runtimeMode),
     proxyBindingMode: profile.proxyBindingMode || 'dedicated',
     ipUsageMode: profile.ipUsageMode || resolveDefaultIpUsageMode(profile.purpose || 'operation'),
     lifecycleState: profile.lifecycleState || 'draft',
@@ -133,7 +141,7 @@ export async function POST(req: NextRequest) {
       name: String(body.name || 'New Profile').trim(),
       platform: String(body.platform || body.startupPlatform || '').trim(),
       purpose: String(body.purpose || 'operation').trim() || 'operation',
-      runtimeMode: String(body.runtimeMode || 'local').trim() || 'local',
+      runtimeMode: normalizeRuntimeMode(body.runtimeMode),
       proxyBindingMode: String(body.proxyBindingMode || 'dedicated').trim() || 'dedicated',
       ipUsageMode:
         String(body.ipUsageMode || resolveDefaultIpUsageMode(body.purpose || 'operation')).trim() ||

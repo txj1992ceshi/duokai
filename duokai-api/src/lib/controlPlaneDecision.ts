@@ -1,4 +1,5 @@
 import { getDefaultPlatformPolicy } from './platformPolicies.js';
+import { getRuntimeModeSupportDecision, normalizeRuntimeMode, normalizeSupportedRuntimeModes } from './runtimeModes.js';
 import { validateProfileLeaseForStart, type LeaseValidationResult } from './ipLease.js';
 
 const AGENT_ACTIVE_WINDOW_MS = 2 * 60 * 1000;
@@ -12,6 +13,7 @@ type AgentLike = {
   status?: string;
   capabilities?: unknown[];
   runtimeStatus?: RuntimeStatusShape;
+  hostInfo?: Record<string, unknown> | null;
   lastSeenAt?: Date | string | null;
 };
 
@@ -110,6 +112,14 @@ export function getAgentSelectionState(agent: AgentLike): AgentSelectionState {
   };
 }
 
+export function getSupportedRuntimeModes(agent: Pick<AgentLike, 'runtimeStatus' | 'hostInfo'>) {
+  const hostInfoModes = normalizeSupportedRuntimeModes(agent.hostInfo?.supportedRuntimeModes);
+  if (hostInfoModes.length > 0) {
+    return hostInfoModes;
+  }
+  return normalizeSupportedRuntimeModes(agent.runtimeStatus?.supportedRuntimeModes);
+}
+
 export function compareAgentPriority(left: AgentSelectionState, right: AgentSelectionState) {
   if (left.staleLockCount !== right.staleLockCount) {
     return left.staleLockCount - right.staleLockCount;
@@ -188,7 +198,7 @@ function normalizeCooldownSummary(input: unknown) {
 export function evaluateProfilePreLaunch(profile: ProfileLike): PreLaunchDecision {
   const profileId = String(profile.id || profile._id || '').trim();
   const lifecycleState = String(profile.lifecycleState || 'draft').trim() || 'draft';
-  const runtimeMode = String(profile.runtimeMode || 'local').trim() || 'local';
+  const runtimeMode = normalizeRuntimeMode(profile.runtimeMode);
   const cooldownSummary = normalizeCooldownSummary(profile.cooldownSummary);
   const workspace =
     profile.workspace && typeof profile.workspace === 'object'
@@ -221,12 +231,13 @@ export function evaluateProfilePreLaunch(profile: ProfileLike): PreLaunchDecisio
     };
   }
 
-  if (runtimeMode === 'vm' || runtimeMode === 'container') {
+  const runtimeModeDecision = getRuntimeModeSupportDecision(runtimeMode);
+  if (!runtimeModeDecision.ok) {
     return {
       ok: false,
-      code: 'RUNTIME_MODE_UNSUPPORTED',
-      message: 'The selected runtime mode is not currently supported for launch.',
-      detail: { profileId, runtimeMode },
+      code: runtimeModeDecision.code,
+      message: runtimeModeDecision.message,
+      detail: { profileId, ...(runtimeModeDecision.detail || {}) },
     };
   }
 
@@ -267,6 +278,68 @@ export function evaluateProfilePreLaunch(profile: ProfileLike): PreLaunchDecisio
       workspaceHealthStatus: String(healthSummary.status || 'unknown').trim() || 'unknown',
       workspaceConsistencyStatus: String(consistencySummary.status || 'unknown').trim() || 'unknown',
       cooldownActive: cooldownSummary.active,
+    },
+  };
+}
+
+export function validateAgentRuntimeModeSupport(options: {
+  profile: Pick<ProfileLike, 'id' | '_id' | 'runtimeMode'>;
+  agent: Pick<AgentLike, 'agentId' | 'runtimeStatus' | 'hostInfo'>;
+}): PreLaunchDecision {
+  const profileId = String(options.profile.id || options.profile._id || '').trim();
+  const runtimeMode = normalizeRuntimeMode(options.profile.runtimeMode);
+  const supportedRuntimeModes = getSupportedRuntimeModes(options.agent);
+
+  if (runtimeMode === 'local') {
+    if (supportedRuntimeModes.length > 0 && !supportedRuntimeModes.includes('local')) {
+      return {
+        ok: false,
+        code: 'AGENT_RUNTIME_MODE_UNSUPPORTED',
+        message: 'The selected agent does not advertise support for the requested runtime mode.',
+        detail: {
+          profileId,
+          runtimeMode,
+          agentId: options.agent.agentId,
+          supportedRuntimeModes,
+        },
+      };
+    }
+    return {
+      ok: true,
+      code: 'APPROVED',
+      message: 'Selected agent supports the requested runtime mode.',
+      detail: {
+        profileId,
+        runtimeMode,
+        agentId: options.agent.agentId,
+        supportedRuntimeModes,
+      },
+    };
+  }
+
+  if (!supportedRuntimeModes.includes(runtimeMode)) {
+    return {
+      ok: false,
+      code: 'AGENT_RUNTIME_MODE_UNSUPPORTED',
+      message: 'The selected agent does not advertise support for the requested runtime mode.',
+      detail: {
+        profileId,
+        runtimeMode,
+        agentId: options.agent.agentId,
+        supportedRuntimeModes,
+      },
+    };
+  }
+
+  return {
+    ok: true,
+    code: 'APPROVED',
+    message: 'Selected agent supports the requested runtime mode.',
+    detail: {
+      profileId,
+      runtimeMode,
+      agentId: options.agent.agentId,
+      supportedRuntimeModes,
     },
   };
 }

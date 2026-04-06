@@ -95,6 +95,7 @@ export default function EditProfileModal({
   const purpose = profile.purpose || 'operation';
   const ipUsageMode = profile.ipUsageMode || (purpose === 'register' ? 'dedicated' : 'shared');
   const sharedModeBlockedByPurpose = purpose === 'register' && ipUsageMode === 'shared';
+  const runtimeMode = profile.runtimeMode || 'local';
 
   return (
     <div className="absolute inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/80 p-4 backdrop-blur-sm">
@@ -174,6 +175,39 @@ export default function EditProfileModal({
               <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
                 打开环境后，会默认进入当前所选平台。选择“自定义平台”时可填写任意站点地址。
               </p>
+            </div>
+
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
+              <div className="mb-2 flex items-center gap-2 text-xs font-bold text-slate-300">
+                <Zap size={14} className="text-blue-300" />
+                Runtime 模式
+              </div>
+              <AppSelect
+                className="h-11 rounded-xl border-slate-700 bg-slate-900"
+                value={runtimeMode}
+                onChange={(e) =>
+                  onProfileChange({
+                    ...profile,
+                    runtimeMode: e.target.value as Profile['runtimeMode'],
+                  })
+                }
+              >
+                <option value="local">Local</option>
+                <option value="strong-local">Strong Local</option>
+                <option value="vm">VM</option>
+                <option value="container">Container</option>
+              </AppSelect>
+              <div className="mt-2 space-y-1 text-[11px] leading-relaxed">
+                <p className={runtimeMode === 'local' ? 'text-slate-300' : 'text-slate-500'}>
+                  Local: 当前正式支持的默认模式，使用本地 workspace、路径隔离和运行锁。
+                </p>
+                <p className={runtimeMode === 'strong-local' ? 'text-slate-300' : 'text-slate-500'}>
+                  Strong Local: 受控增强模式，只有 control plane 开启 `DUOKAI_ENABLE_STRONG_LOCAL` 且目标 agent 声明支持时才允许启动。
+                </p>
+                <p className={runtimeMode === 'vm' || runtimeMode === 'container' ? 'text-amber-300' : 'text-slate-500'}>
+                  VM / Container: 当前仍是 roadmap contract。系统会在启动审批前明确拒绝，不会再假装自动降级成功。
+                </p>
+              </div>
             </div>
 
             <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4">

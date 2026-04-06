@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { connectMongo } from '../lib/mongodb.js';
 import { asyncHandler } from '../lib/http.js';
+import { normalizeRuntimeMode } from '../lib/runtimeModes.js';
 import { normalizeWorkspacePayload, serializeProfile } from '../lib/serializers.js';
 import { resolveDefaultIpUsageMode } from '../lib/platformPolicies.js';
 import { requireUser } from '../middlewares/auth.js';
@@ -59,7 +60,7 @@ router.post(
       name: String(body.name || 'New Profile').trim(),
       platform: String(body.platform || body.startupPlatform || '').trim(),
       purpose: String(body.purpose || body.environmentPurpose || 'operation').trim() || 'operation',
-      runtimeMode: String(body.runtimeMode || 'local').trim() || 'local',
+      runtimeMode: normalizeRuntimeMode(body.runtimeMode),
       proxyBindingMode: String(body.proxyBindingMode || 'dedicated').trim() || 'dedicated',
       ipUsageMode:
         String(
@@ -168,7 +169,7 @@ router.patch(
     if (typeof body.name === 'string') updateData.name = body.name.trim();
     if (typeof body.platform === 'string') updateData.platform = body.platform.trim();
     if (typeof body.purpose === 'string') updateData.purpose = body.purpose.trim();
-    if (typeof body.runtimeMode === 'string') updateData.runtimeMode = body.runtimeMode.trim();
+    if (body.runtimeMode !== undefined) updateData.runtimeMode = normalizeRuntimeMode(body.runtimeMode);
     if (typeof body.proxyBindingMode === 'string') updateData.proxyBindingMode = body.proxyBindingMode.trim();
     if (typeof body.ipUsageMode === 'string') updateData.ipUsageMode = body.ipUsageMode.trim();
     if (typeof body.lifecycleState === 'string') updateData.lifecycleState = body.lifecycleState.trim();

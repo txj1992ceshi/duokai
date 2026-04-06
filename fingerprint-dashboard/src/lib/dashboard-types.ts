@@ -394,6 +394,7 @@ export interface AdminAgentTaskSummary {
     profileId?: string;
     snapshotId?: string;
     ipUsageMode?: string;
+    runtimeMode?: string;
     proxySharingMode?: string;
     leaseValidationCode?: string;
     preLaunchDecisionCode?: string;
@@ -414,6 +415,7 @@ export interface AdminTaskEventSummary {
     profileId?: string;
     action?: string;
     ipUsageMode?: string;
+    runtimeMode?: string;
     leaseValidationCode?: string;
     preLaunchDecisionCode?: string;
   };

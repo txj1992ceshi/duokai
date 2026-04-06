@@ -622,6 +622,7 @@ router.get(
           profileId: String((item.payload as Record<string, unknown> | null)?.profileId || '').trim(),
           snapshotId: String((item.payload as Record<string, unknown> | null)?.snapshotId || '').trim(),
           ipUsageMode: String((item.payload as Record<string, unknown> | null)?.ipUsageMode || '').trim(),
+          runtimeMode: String((item.payload as Record<string, unknown> | null)?.runtimeMode || '').trim(),
           proxySharingMode: String((item.payload as Record<string, unknown> | null)?.proxySharingMode || '').trim(),
           leaseValidationCode: String(
             ((item.payload as Record<string, unknown> | null)?.leaseValidation as Record<string, unknown> | null)
@@ -724,6 +725,7 @@ router.get(
           profileId: String((item.detail as Record<string, unknown> | null)?.profileId || '').trim(),
           action: String((item.detail as Record<string, unknown> | null)?.action || '').trim(),
           ipUsageMode: String((item.detail as Record<string, unknown> | null)?.ipUsageMode || '').trim(),
+          runtimeMode: String((item.detail as Record<string, unknown> | null)?.runtimeMode || '').trim(),
           leaseValidationCode: String(
             (item.detail as Record<string, unknown> | null)?.leaseValidationCode || ''
           ).trim(),

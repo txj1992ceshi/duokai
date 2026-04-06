@@ -118,6 +118,11 @@ export default function AdminRuntimeDiagnostics({
                           {task.summary.ipUsageMode}
                         </span>
                       ) : null}
+                      {task.summary?.runtimeMode ? (
+                        <span className="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-cyan-200">
+                          runtime {task.summary.runtimeMode}
+                        </span>
+                      ) : null}
                       {task.summary?.proxySharingMode ? (
                         <span className="rounded-full border border-fuchsia-500/30 bg-fuchsia-500/10 px-2 py-1 text-fuchsia-200">
                           proxy {task.summary.proxySharingMode}
@@ -175,6 +180,9 @@ export default function AdminRuntimeDiagnostics({
                       </div>
                       {event.summary?.ipUsageMode ? (
                         <div className="mt-1 text-[11px] text-slate-500">ip mode {event.summary.ipUsageMode}</div>
+                      ) : null}
+                      {event.summary?.runtimeMode ? (
+                        <div className="mt-1 text-[11px] text-slate-500">runtime {event.summary.runtimeMode}</div>
                       ) : null}
                       {event.detail?.blockedReasonCode ? (
                         <div className="mt-1 text-[11px] text-amber-300">

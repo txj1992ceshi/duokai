@@ -10,8 +10,10 @@ import {
   evaluateProfilePreLaunch,
   resolveDuplicateTaskBlock,
   selectAgentForAction,
+  validateAgentRuntimeModeSupport,
   validateStartWithLease,
 } from '../lib/controlPlaneDecision.js';
+import { normalizeRuntimeMode } from '../lib/runtimeModes.js';
 import { asyncHandler } from '../lib/http.js';
 import { connectMongo } from '../lib/mongodb.js';
 import { getDefaultPlatformPolicy } from '../lib/platformPolicies.js';
@@ -187,6 +189,29 @@ router.post(
       return;
     }
 
+    const requestedRuntimeMode = normalizeRuntimeMode((profile as { runtimeMode?: unknown }).runtimeMode);
+    const agentRuntimeModeDecision =
+      action === 'start'
+        ? validateAgentRuntimeModeSupport({
+            profile,
+            agent: selectedAgent,
+          })
+        : null;
+    if (agentRuntimeModeDecision && !agentRuntimeModeDecision.ok) {
+      await persistLastLaunchBlock(req.authUser?.userId || '', profileId, {
+        code: agentRuntimeModeDecision.code,
+        message: agentRuntimeModeDecision.message,
+        detail: agentRuntimeModeDecision.detail || null,
+      });
+      res.status(409).json({
+        success: false,
+        code: agentRuntimeModeDecision.code,
+        error: agentRuntimeModeDecision.message,
+        detail: agentRuntimeModeDecision.detail || null,
+      });
+      return;
+    }
+
     const runningProfileIds = selectedState?.runningProfileIds || [];
     if (action === 'start' && runningProfileIds.includes(profileId)) {
       await clearLastLaunchBlock(req.authUser?.userId || '', profileId);
@@ -329,6 +354,7 @@ router.post(
           action === 'start'
             ? String((profile as { ipUsageMode?: unknown }).ipUsageMode || '').trim()
             : '',
+        runtimeMode: action === 'start' ? requestedRuntimeMode : '',
         proxySharingMode:
           action === 'start'
             ? String((proxyAsset as { sharingMode?: unknown } | null)?.sharingMode || '').trim()
@@ -371,6 +397,7 @@ router.post(
         source: 'duokai-api',
         activeLeaseId: String((activeLease as { leaseId?: unknown } | null)?.leaseId || '').trim(),
         ipUsageMode: String((profile as { ipUsageMode?: unknown }).ipUsageMode || '').trim(),
+        runtimeMode: requestedRuntimeMode,
         leaseValidationCode: leaseValidation?.code || '',
         preLaunchDecisionCode: action === 'start' ? preLaunchDecision?.code || 'APPROVED' : 'APPROVED',
       },
@@ -396,6 +423,7 @@ router.post(
           runningCount: selectedState?.runningCount || 0,
         },
         preLaunchDecisionCode: action === 'start' ? preLaunchDecision?.code || 'APPROVED' : 'APPROVED',
+        runtimeMode: requestedRuntimeMode,
       },
     });
   }),

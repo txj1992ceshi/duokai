@@ -82,8 +82,15 @@ All runtime failures must map to explainable reasons, including:
 ## Runtime Modes
 
 - `local`: production-ready file and process isolation
-- `strong-local`: stricter local isolation when supported
+- `strong-local`: stricter local isolation, but only when the control plane feature flag `DUOKAI_ENABLE_STRONG_LOCAL` is enabled and the selected agent explicitly advertises support
 - `vm`: declared contract only until real implementation exists
 - `container`: Linux-only contract only until real implementation exists
 
-Unimplemented modes must not pretend to be active.
+Control-plane approval rules:
+
+- `local` remains the default and must not silently downgrade from another requested mode
+- `strong-local` must fail clearly when the feature flag is disabled
+- `strong-local` must fail clearly when the selected agent does not advertise `strong-local` support
+- `vm` and `container` must fail before task creation with explicit reason codes
+
+Unimplemented modes must not pretend to be active, and unsupported modes must not silently fall back.
