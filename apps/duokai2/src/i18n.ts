@@ -279,7 +279,7 @@ export const dictionaries: Record<LocaleCode, Dictionary> = {
       runningSummary: (running, total) => `${running} 个运行中 / 共 ${total} 个环境`,
       activeNow: (count) => `${count} 个正在运行`,
       importSummary: (result) =>
-        `已导入 环境 ${result.profilesImported} 个，代理 ${result.proxiesImported} 个，模板 ${result.templatesImported} 个，云手机 ${result.cloudPhonesImported} 个`,
+        `已导入 环境 ${result.profilesImported} 个，代理 ${result.proxiesImported} 个，模板 ${result.templatesImported} 个，云手机 ${result.cloudPhonesImported} 个，workspace 快照 ${result.workspaceSnapshotsImported || 0} 个`,
       envLanguageLabel: (code) => {
         if (code === 'zh-CN') return '简体中文'
         if (code === 'zh-TW') return '繁體中文'
@@ -535,7 +535,7 @@ export const dictionaries: Record<LocaleCode, Dictionary> = {
       runningSummary: (running, total) => `${running} running / ${total} profiles`,
       activeNow: (count) => `${count} active right now`,
       importSummary: (result) =>
-        `Imported ${result.profilesImported} profiles, ${result.proxiesImported} proxies, ${result.templatesImported} templates, ${result.cloudPhonesImported} cloud phones`,
+        `Imported ${result.profilesImported} profiles, ${result.proxiesImported} proxies, ${result.templatesImported} templates, ${result.cloudPhonesImported} cloud phones, and ${result.workspaceSnapshotsImported || 0} workspace snapshots`,
       envLanguageLabel: (code) => {
         if (code === 'zh-CN') return 'Simplified Chinese'
         if (code === 'zh-TW') return 'Traditional Chinese'

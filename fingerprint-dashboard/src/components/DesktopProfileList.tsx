@@ -20,6 +20,7 @@ import ProfileSyncSummary from '@/components/ProfileSyncSummary';
 import ProxyNodeCell from '@/components/ProxyNodeCell';
 import type { Profile } from '@/lib/dashboard-types';
 import {
+  formatWorkspaceSnapshotSummary,
   getHostEnvironmentLabel,
   getProfileStatusLabel,
   getProfileStatusTone,
@@ -160,6 +161,9 @@ export default function DesktopProfileList({
                             syncSummaryClass={getSyncSummaryClass(getProfileSyncSummary(profile))}
                             storageStateSynced={!!storageStateMap[profile.id]}
                           />
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          {formatWorkspaceSnapshotSummary(profile)}
                         </div>
                       </div>
                     )}

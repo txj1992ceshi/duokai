@@ -22,7 +22,9 @@ import type {
   DesktopAuthState,
   DesktopRuntimeInfo,
   DesktopUpdateState,
+  DeviceProfile,
   DetectedLocalEmulator,
+  EnvironmentPurpose,
   FingerprintConfig,
   ImportResult,
   LogEntry,
@@ -33,6 +35,7 @@ import type {
   RuntimeStatus,
   SettingsPayload,
   TemplateRecord,
+  WorkspaceSnapshotRecord,
 } from './shared/types'
 import type { DesktopApi } from './shared/ipc'
 import {
@@ -56,6 +59,8 @@ type ProfileFormState = {
   groupName: string
   tagsText: string
   notes: string
+  environmentPurpose: EnvironmentPurpose
+  deviceProfile: DeviceProfile | null
   fingerprintConfig: FingerprintConfig
 }
 
@@ -125,6 +130,64 @@ const STARTUP_PLATFORM_OPTIONS = [
   { value: 'custom', labelZh: '自定义平台', labelEn: 'Custom platform' },
 ] as const
 
+const ENVIRONMENT_PURPOSE_OPTIONS: Array<{ value: EnvironmentPurpose; zh: string; en: string }> = [
+  { value: 'operation', zh: '日常运营', en: 'Operation' },
+  { value: 'nurture', zh: '养号维护', en: 'Nurture' },
+  { value: 'register', zh: '注册环境', en: 'Register' },
+] as const
+
+const ENVIRONMENT_PURPOSE_PRESETS: Record<
+  EnvironmentPurpose,
+  {
+    summaryZh: string
+    summaryEn: string
+  }
+> = {
+  register: {
+    summaryZh: '注册环境优先保持稳定身份，不随机化，不清缓存，并强依赖 IP 联动的语言、时区和地理位置。',
+    summaryEn:
+      'Register profiles keep a stable identity, avoid randomization/cache resets, and rely on IP-derived language, timezone, and geolocation.',
+  },
+  nurture: {
+    summaryZh: '养号环境强调登录态连续性与长期稳定，尽量避免会引起身份漂移的设置。',
+    summaryEn:
+      'Nurture profiles prioritize session continuity and long-term stability, avoiding settings that cause identity drift.',
+  },
+  operation: {
+    summaryZh: '日常运营环境面向持续使用，保留会话与标签页同步，兼顾稳定性和日常效率。',
+    summaryEn:
+      'Operation profiles are tuned for ongoing use, keeping sessions and tabs stable for daily workflows.',
+  },
+}
+
+const PLATFORM_TEMPLATE_PRESETS: Record<
+  'linkedin' | 'tiktok',
+  {
+    recommendedPurpose: EnvironmentPurpose
+    summaryZh: string
+    summaryEn: string
+    strategyZh: string
+    strategyEn: string
+  }
+> = {
+  linkedin: {
+    recommendedPurpose: 'register',
+    summaryZh: '更保守的办公桌面画像，适合注册与资料完善。',
+    summaryEn: 'Conservative office-style desktop profile suited for registration and profile completion.',
+    strategyZh: 'LinkedIn 建议一号一 IP、低频注册、优先办公型桌面画像，并避免随机化与清缓存。',
+    strategyEn:
+      'LinkedIn favors one-account-per-IP, low-frequency registration, office-style desktop fingerprints, and avoiding randomization or cache wipes.',
+  },
+  tiktok: {
+    recommendedPurpose: 'nurture',
+    summaryZh: '偏内容消费与日常运营的桌面画像，适合养号和长期使用。',
+    summaryEn: 'Content-oriented desktop profile suited for nurture and long-term operation.',
+    strategyZh: 'TikTok 更重视地区一致性、媒体能力与长期会话连续性，适合先养号再进入日常运营。',
+    strategyEn:
+      'TikTok cares more about regional consistency, media capabilities, and long-lived sessions, so nurturing before daily operation is preferred.',
+  },
+}
+
 function buildDesktopUserAgent(operatingSystem: string, browserVersion: string): string {
   const majorVersion = String(browserVersion || '136').trim() || '136'
   const os = operatingSystem.toLowerCase()
@@ -162,6 +225,163 @@ function normalizeFingerprintForSave(config: FingerprintConfig): FingerprintConf
       customPlatformUrl: resolvedStartupUrl,
     },
   }
+}
+
+function summarizeDeviceProfile(profile: DeviceProfile | null, fallback: FingerprintConfig): string {
+  const operatingSystem = fallback.advanced.operatingSystem || profile?.operatingSystem || ''
+  const browserVersion = fallback.advanced.browserVersion || profile?.browserVersion || ''
+  const viewport = `${fallback.advanced.windowWidth}x${fallback.advanced.windowHeight}`
+  const language = fallback.language || profile?.locale.language || ''
+  const timezone = fallback.timezone || profile?.locale.timezone || ''
+  return [operatingSystem, `Chrome ${browserVersion}`, viewport, language, timezone]
+    .filter(Boolean)
+    .join(' · ')
+}
+
+function summarizeSupportMatrix(profile: DeviceProfile | null, locale: string): string {
+  if (!profile) {
+    return locale === 'zh-CN' ? '画像将在保存后生成。' : 'Device profile will be generated after save.'
+  }
+  const activeEntries = Object.entries(profile.support)
+    .filter(([, value]) => value !== 'placeholder')
+    .map(([key, value]) => `${key}:${value}`)
+  if (activeEntries.length === 0) {
+    return locale === 'zh-CN' ? '当前未启用额外画像能力。' : 'No extra profile capabilities are active.'
+  }
+  return activeEntries.join(' · ')
+}
+
+function summarizeIdentitySignature(profile: DeviceProfile | null, fallback: FingerprintConfig): string {
+  const operatingSystem = profile?.operatingSystem || fallback.advanced.operatingSystem || ''
+  const platform = profile?.platform || (operatingSystem.includes('Windows') ? 'Win32' : operatingSystem.includes('mac') ? 'MacIntel' : 'Linux x86_64')
+  const browserKernel = profile?.browserKernel || fallback.advanced.browserKernel
+  const browserVersion = profile?.browserVersion || fallback.advanced.browserVersion || ''
+  const deviceClass =
+    profile?.deviceClass ||
+    (fallback.advanced.deviceMode === 'desktop' ? 'desktop' : 'mobile')
+  return [operatingSystem, platform, `${browserKernel} ${browserVersion}`.trim(), deviceClass]
+    .filter(Boolean)
+    .join(' · ')
+}
+
+function summarizeLocaleSignature(profile: DeviceProfile | null, fallback: FingerprintConfig): string {
+  const language = profile?.locale.language || fallback.language || ''
+  const interfaceLanguage = profile?.locale.interfaceLanguage || fallback.advanced.interfaceLanguage || ''
+  const timezone = profile?.locale.timezone || fallback.timezone || ''
+  const geolocation = profile?.locale.geolocation || fallback.advanced.geolocation || ''
+  return [language, interfaceLanguage, timezone, geolocation].filter(Boolean).join(' · ')
+}
+
+function summarizeHardwareSignature(profile: DeviceProfile | null, fallback: FingerprintConfig): string {
+  const width = profile?.viewport.width || fallback.advanced.windowWidth
+  const height = profile?.viewport.height || fallback.advanced.windowHeight
+  const cpu = profile?.hardware.cpuCores || fallback.advanced.cpuCores
+  const memory = profile?.hardware.memoryGb || fallback.advanced.memoryGb
+  const renderer = profile?.hardware.webglRenderer || fallback.advanced.webglRenderer || ''
+  return [`${width}x${height}`, `${cpu}C/${memory}GB`, renderer].filter(Boolean).join(' · ')
+}
+
+function summarizeSupportHighlights(profile: DeviceProfile | null, locale: string): string {
+  if (!profile) {
+    return locale === 'zh-CN' ? '画像能力摘要将在保存后生成。' : 'Profile capability summary will appear after save.'
+  }
+  const labels: Record<string, { zh: string; en: string }> = {
+    fonts: { zh: '字体', en: 'Fonts' },
+    mediaDevices: { zh: '媒体设备', en: 'Media devices' },
+    speechVoices: { zh: '语音列表', en: 'Speech voices' },
+    canvas: { zh: 'Canvas', en: 'Canvas' },
+    webgl: { zh: 'WebGL', en: 'WebGL' },
+    audio: { zh: '音频', en: 'Audio' },
+    clientRects: { zh: '布局测量', en: 'Client rects' },
+    geolocation: { zh: '地理位置', en: 'Geolocation' },
+    deviceInfo: { zh: '设备信息', en: 'Device info' },
+  }
+  return Object.entries(profile.support)
+    .filter(([key]) => key in labels)
+    .map(([key, value]) => `${locale === 'zh-CN' ? labels[key].zh : labels[key].en}:${value}`)
+    .join(' · ')
+}
+
+function getEnvironmentPurposeLabel(purpose: EnvironmentPurpose, locale: string): string {
+  const match = ENVIRONMENT_PURPOSE_OPTIONS.find((item) => item.value === purpose)
+  if (!match) {
+    return purpose
+  }
+  return locale === 'zh-CN' ? match.zh : match.en
+}
+
+function getEnvironmentPurposeSummary(purpose: EnvironmentPurpose, locale: string): string {
+  const preset = ENVIRONMENT_PURPOSE_PRESETS[purpose]
+  if (!preset) {
+    return locale === 'zh-CN' ? '当前环境用途未应用专属策略。' : 'No dedicated purpose strategy is applied.'
+  }
+  return locale === 'zh-CN' ? preset.summaryZh : preset.summaryEn
+}
+
+function getRegistrationRiskLabel(
+  level: 'unknown' | 'low' | 'medium' | 'high',
+  locale: string,
+): string {
+  if (level === 'high') {
+    return locale === 'zh-CN' ? '高风险' : 'High risk'
+  }
+  if (level === 'medium') {
+    return locale === 'zh-CN' ? '中风险' : 'Medium risk'
+  }
+  if (level === 'low') {
+    return locale === 'zh-CN' ? '低风险' : 'Low risk'
+  }
+  return locale === 'zh-CN' ? '未评估' : 'Not assessed'
+}
+
+function getPlatformTemplateSummary(platform: string, locale: string): string {
+  const preset =
+    platform === 'linkedin' || platform === 'tiktok' ? PLATFORM_TEMPLATE_PRESETS[platform] : null
+  if (!preset) {
+    return locale === 'zh-CN' ? '当前平台未应用专属模板。' : 'No dedicated platform template is applied.'
+  }
+  return locale === 'zh-CN' ? preset.summaryZh : preset.summaryEn
+}
+
+function getPlatformStrategySummary(platform: string, locale: string): string {
+  const preset =
+    platform === 'linkedin' || platform === 'tiktok' ? PLATFORM_TEMPLATE_PRESETS[platform] : null
+  if (!preset) {
+    return locale === 'zh-CN' ? '当前平台暂无额外行为策略。' : 'No extra behavior strategy is defined for this platform.'
+  }
+  return locale === 'zh-CN' ? preset.strategyZh : preset.strategyEn
+}
+
+function getLifecycleStageSummary(profile: ProfileRecord, locale: string): string {
+  const metadata = profile.fingerprintConfig.runtimeMetadata
+  const parts: string[] = []
+  if (metadata.lastRegisterLaunchAt) {
+    parts.push(
+      locale === 'zh-CN'
+        ? `最近注册启动 ${new Date(metadata.lastRegisterLaunchAt).toLocaleString()}`
+        : `Last register launch ${new Date(metadata.lastRegisterLaunchAt).toLocaleString()}`,
+    )
+  }
+  if (metadata.lastNurtureTransitionAt) {
+    parts.push(
+      locale === 'zh-CN'
+        ? `进入养号 ${new Date(metadata.lastNurtureTransitionAt).toLocaleString()}`
+        : `Entered nurture ${new Date(metadata.lastNurtureTransitionAt).toLocaleString()}`,
+    )
+  }
+  if (metadata.lastOperationTransitionAt) {
+    parts.push(
+      locale === 'zh-CN'
+        ? `进入运营 ${new Date(metadata.lastOperationTransitionAt).toLocaleString()}`
+        : `Entered operation ${new Date(metadata.lastOperationTransitionAt).toLocaleString()}`,
+    )
+  }
+  if (parts.length === 0) {
+    return locale === 'zh-CN'
+      ? '当前环境尚未记录注册/养号/运营迁移。'
+      : 'No register/nurture/operation transition is recorded yet.'
+  }
+  return parts.join(' · ')
 }
 
 const defaultFingerprint: FingerprintConfig = {
@@ -259,6 +479,15 @@ const defaultFingerprint: FingerprintConfig = {
     lastProxyCheckMessage: '',
     lastValidationLevel: 'unknown',
     lastValidationMessages: [],
+    lastRegistrationRiskScore: 0,
+    lastRegistrationRiskLevel: 'unknown',
+    lastRegistrationRiskFactors: [],
+    lastRegisterLaunchAt: '',
+    lastPurposeTransitionAt: '',
+    lastPurposeTransitionFrom: '',
+    lastPurposeTransitionTo: '',
+    lastNurtureTransitionAt: '',
+    lastOperationTransitionAt: '',
     lastQuickCheckAt: '',
     lastQuickCheckSuccess: null,
     lastQuickCheckMessage: '',
@@ -330,6 +559,217 @@ function cloneFingerprintConfig(base: FingerprintConfig = defaultFingerprint): F
   }
 }
 
+function applyPlatformPresetToForm(
+  fingerprintConfig: FingerprintConfig,
+  environmentPurpose: EnvironmentPurpose,
+  platform: string,
+): { fingerprintConfig: FingerprintConfig; environmentPurpose: EnvironmentPurpose } {
+  if (!platform || platform === 'custom') {
+    return {
+      fingerprintConfig: {
+        ...fingerprintConfig,
+        basicSettings: {
+          ...fingerprintConfig.basicSettings,
+          platform,
+        },
+      },
+      environmentPurpose,
+    }
+  }
+
+  const baseFingerprint = {
+    ...fingerprintConfig,
+    basicSettings: {
+      ...fingerprintConfig.basicSettings,
+      platform,
+      customPlatformName: '',
+      customPlatformUrl: '',
+    },
+  }
+
+  if (platform === 'linkedin') {
+    const browserVersion = '136'
+    const operatingSystem = 'Windows'
+    const preset: { environmentPurpose: EnvironmentPurpose; fingerprintConfig: FingerprintConfig } = {
+      environmentPurpose: PLATFORM_TEMPLATE_PRESETS.linkedin.recommendedPurpose,
+      fingerprintConfig: {
+        ...baseFingerprint,
+        userAgent: buildDesktopUserAgent(operatingSystem, browserVersion),
+        commonSettings: {
+          ...baseFingerprint.commonSettings,
+          pageMode: 'local',
+          blockImages: false,
+          syncTabs: false,
+          syncCookies: true,
+          clearCacheOnLaunch: false,
+          randomizeFingerprintOnLaunch: false,
+          allowChromeLogin: false,
+          memorySaver: true,
+        },
+        advanced: {
+          ...baseFingerprint.advanced,
+          deviceMode: 'desktop',
+          operatingSystem,
+          browserVersion,
+          autoLanguageFromIp: true,
+          autoInterfaceLanguageFromIp: false,
+          autoTimezoneFromIp: true,
+          autoGeolocationFromIp: true,
+          geolocationPermission: 'ask',
+          windowWidth: 1440,
+          windowHeight: 900,
+          resolutionMode: 'system',
+          fontMode: 'system',
+          canvasMode: 'random',
+          webglImageMode: 'random',
+          webglMetadataMode: 'custom',
+          webglVendor: 'Google Inc. (Intel)',
+          webglRenderer: 'ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)',
+          audioContextMode: 'random',
+          mediaDevicesMode: 'off',
+          speechVoicesMode: 'random',
+          clientRectsMode: 'random',
+          cpuMode: 'system',
+          cpuCores: 8,
+          memoryGb: 8,
+        },
+        resolution: '1440x900',
+      },
+    }
+    return applyEnvironmentPurposePresetToForm(
+      preset.fingerprintConfig,
+      preset.environmentPurpose,
+    )
+  }
+
+  if (platform === 'tiktok') {
+    const browserVersion = '136'
+    const operatingSystem = 'Windows'
+    const preset: { environmentPurpose: EnvironmentPurpose; fingerprintConfig: FingerprintConfig } = {
+      environmentPurpose: PLATFORM_TEMPLATE_PRESETS.tiktok.recommendedPurpose,
+      fingerprintConfig: {
+        ...baseFingerprint,
+        userAgent: buildDesktopUserAgent(operatingSystem, browserVersion),
+        commonSettings: {
+          ...baseFingerprint.commonSettings,
+          pageMode: 'local',
+          blockImages: false,
+          syncTabs: true,
+          syncCookies: true,
+          clearCacheOnLaunch: false,
+          randomizeFingerprintOnLaunch: false,
+          memorySaver: false,
+        },
+        advanced: {
+          ...baseFingerprint.advanced,
+          deviceMode: 'desktop',
+          operatingSystem,
+          browserVersion,
+          autoLanguageFromIp: true,
+          autoInterfaceLanguageFromIp: false,
+          autoTimezoneFromIp: true,
+          autoGeolocationFromIp: true,
+          geolocationPermission: 'ask',
+          windowWidth: 1600,
+          windowHeight: 900,
+          resolutionMode: 'system',
+          fontMode: 'system',
+          canvasMode: 'random',
+          webglImageMode: 'random',
+          webglMetadataMode: 'custom',
+          webglVendor: 'Google Inc. (Intel)',
+          webglRenderer: 'ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)',
+          audioContextMode: 'random',
+          mediaDevicesMode: 'random',
+          speechVoicesMode: 'random',
+          clientRectsMode: 'random',
+          cpuMode: 'system',
+          cpuCores: 8,
+          memoryGb: 8,
+        },
+        resolution: '1600x900',
+      },
+    }
+    return applyEnvironmentPurposePresetToForm(
+      preset.fingerprintConfig,
+      preset.environmentPurpose,
+    )
+  }
+
+  return {
+    fingerprintConfig: baseFingerprint,
+    environmentPurpose,
+  }
+}
+
+function applyEnvironmentPurposePresetToForm(
+  fingerprintConfig: FingerprintConfig,
+  environmentPurpose: EnvironmentPurpose,
+): { fingerprintConfig: FingerprintConfig; environmentPurpose: EnvironmentPurpose } {
+  const baseFingerprint = cloneFingerprintConfig(fingerprintConfig)
+
+  if (environmentPurpose === 'register') {
+    return {
+      environmentPurpose,
+      fingerprintConfig: {
+        ...baseFingerprint,
+        commonSettings: {
+          ...baseFingerprint.commonSettings,
+          clearCacheOnLaunch: false,
+          randomizeFingerprintOnLaunch: false,
+          syncCookies: true,
+          syncTabs: false,
+          allowChromeLogin: false,
+        },
+        advanced: {
+          ...baseFingerprint.advanced,
+          autoLanguageFromIp: true,
+          autoTimezoneFromIp: true,
+          autoGeolocationFromIp: true,
+          geolocationPermission: 'ask',
+        },
+      },
+    }
+  }
+
+  if (environmentPurpose === 'nurture') {
+    return {
+      environmentPurpose,
+      fingerprintConfig: {
+        ...baseFingerprint,
+        commonSettings: {
+          ...baseFingerprint.commonSettings,
+          clearCacheOnLaunch: false,
+          randomizeFingerprintOnLaunch: false,
+          syncCookies: true,
+          syncTabs: true,
+          memorySaver: true,
+        },
+        advanced: {
+          ...baseFingerprint.advanced,
+          autoLanguageFromIp: true,
+          autoTimezoneFromIp: true,
+          autoGeolocationFromIp: true,
+        },
+      },
+    }
+  }
+
+  return {
+    environmentPurpose,
+    fingerprintConfig: {
+      ...baseFingerprint,
+      commonSettings: {
+        ...baseFingerprint.commonSettings,
+        clearCacheOnLaunch: false,
+        randomizeFingerprintOnLaunch: false,
+        syncCookies: true,
+        syncTabs: true,
+      },
+    },
+  }
+}
+
 function emptyProfile(
   proxyId: string | null = null,
   defaultLanguage: string = DEFAULT_ENVIRONMENT_LANGUAGE,
@@ -340,6 +780,8 @@ function emptyProfile(
     groupName: '',
     tagsText: '',
     notes: '',
+    environmentPurpose: 'operation',
+    deviceProfile: null,
     fingerprintConfig: {
       ...cloneFingerprintConfig(defaultFingerprint),
       language: normalizeEnvironmentLanguage(defaultLanguage),
@@ -354,6 +796,8 @@ function emptyTemplate(proxyId: string | null = null): TemplateFormState {
     groupName: '',
     tagsText: '',
     notes: '',
+    environmentPurpose: 'operation',
+    deviceProfile: null,
     fingerprintConfig: cloneFingerprintConfig(defaultFingerprint),
   }
 }
@@ -568,6 +1012,10 @@ function App() {
   const [cloudPhoneDetails, setCloudPhoneDetails] = useState<CloudPhoneDetails | null>(null)
   const [showMoreProfileCommon, setShowMoreProfileCommon] = useState(false)
   const [showMoreProfileFingerprint, setShowMoreProfileFingerprint] = useState(false)
+  const [workspaceSnapshotsByProfileId, setWorkspaceSnapshotsByProfileId] = useState<
+    Record<string, WorkspaceSnapshotRecord[]>
+  >({})
+  const [snapshotLoadingProfileId, setSnapshotLoadingProfileId] = useState<string | null>(null)
   const lastUpdateNoticeKeyRef = useRef('')
 
   const locale = getLocaleFromSettings(settings.uiLanguage)
@@ -644,6 +1092,15 @@ function App() {
   const showTemplateWorkspace = resourceMode === 'templates'
   const showCloudPhoneList = cloudPhonePageMode === 'list'
   const showCloudPhoneEditor = cloudPhonePageMode !== 'list'
+  const selectedProfile = useMemo(
+    () => profiles.find((item) => item.id === selectedProfileId) ?? null,
+    [profiles, selectedProfileId],
+  )
+  const selectedProfileSnapshots = useMemo(
+    () => (selectedProfileId ? workspaceSnapshotsByProfileId[selectedProfileId] ?? [] : []),
+    [selectedProfileId, workspaceSnapshotsByProfileId],
+  )
+  const selectedProfileWorkspace = selectedProfile?.workspace ?? null
 
   const bridgeUnavailableMessage = useCallback((path?: string) => {
     if (locale === 'zh-CN') {
@@ -838,6 +1295,70 @@ function App() {
       return t.common.never
     }
     return new Date(value).toLocaleString(locale)
+  }
+
+  function formatSnapshotLabel(snapshotId: string) {
+    return snapshotId.length > 12 ? snapshotId.slice(0, 12) : snapshotId
+  }
+
+  function describeSnapshotStatus(snapshot: WorkspaceSnapshotRecord) {
+    if (snapshot.consistencySummary.status === 'block') {
+      return {
+        label: locale === 'zh-CN' ? '校验阻断' : 'Consistency blocked',
+        className: 'error',
+      }
+    }
+    if (snapshot.healthSummary.status === 'warning' || snapshot.consistencySummary.status === 'warn') {
+      return {
+        label: locale === 'zh-CN' ? '需人工确认' : 'Needs review',
+        className: 'pending',
+      }
+    }
+    if (snapshot.validatedStartAt) {
+      return {
+        label: locale === 'zh-CN' ? '已通过启动验证' : 'Launch-validated',
+        className: 'synced',
+      }
+    }
+    return {
+      label: locale === 'zh-CN' ? '普通快照' : 'Snapshot saved',
+      className: 'idle',
+    }
+  }
+
+  function getSnapshotSummaryLine(profile: ProfileRecord) {
+    const summary = profile.workspace?.snapshotSummary
+    if (!summary) {
+      return locale === 'zh-CN'
+        ? '旧环境尚未补齐 workspace 快照摘要'
+        : 'Legacy profile has not populated workspace snapshot summary yet'
+    }
+    const parts: string[] = []
+    if (summary.lastSnapshotId) {
+      parts.push(
+        locale === 'zh-CN'
+          ? `最近快照 ${formatDate(summary.lastSnapshotAt)}`
+          : `Last snapshot ${formatDate(summary.lastSnapshotAt)}`,
+      )
+    }
+    if (summary.lastKnownGoodSnapshotId) {
+      parts.push(
+        locale === 'zh-CN'
+          ? `最近可回滚基线 ${formatDate(summary.lastKnownGoodSnapshotAt)}`
+          : `Last known good ${formatDate(summary.lastKnownGoodSnapshotAt)}`,
+      )
+    }
+    if (summary.lastKnownGoodStatus === 'invalid') {
+      parts.push(
+        locale === 'zh-CN'
+          ? `最近可回滚基线已失效${summary.lastKnownGoodInvalidationReason ? ` (${summary.lastKnownGoodInvalidationReason})` : ''}`
+          : `Last known good invalidated${summary.lastKnownGoodInvalidationReason ? ` (${summary.lastKnownGoodInvalidationReason})` : ''}`,
+      )
+    }
+    if (parts.length === 0) {
+      return locale === 'zh-CN' ? '尚未创建 workspace 快照' : 'No workspace snapshots yet'
+    }
+    return parts.join(' · ')
   }
 
   function describeUpdateStatus(state: UpdateState | null) {
@@ -1078,10 +1599,21 @@ function App() {
       groupName: profile.groupName,
       tagsText: profile.tags.join(', '),
       notes: profile.notes,
+      environmentPurpose: profile.environmentPurpose,
+      deviceProfile: profile.deviceProfile,
       fingerprintConfig: cloneFingerprintConfig(profile.fingerprintConfig),
     })
     // Only initialize when selected profile changes.
     // Polling refresh updates `profiles` frequently and should not overwrite in-progress edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedProfileId])
+
+  useEffect(() => {
+    if (!selectedProfileId) {
+      return
+    }
+    void loadWorkspaceSnapshots(selectedProfileId, { showError: false })
+    // Only refresh snapshots when profile selection changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProfileId])
 
@@ -1132,6 +1664,8 @@ function App() {
       groupName: template.groupName,
       tagsText: template.tags.join(', '),
       notes: template.notes,
+      environmentPurpose: template.environmentPurpose,
+      deviceProfile: null,
       fingerprintConfig: cloneFingerprintConfig(template.fingerprintConfig),
     })
   }, [selectedTemplateId, templates])
@@ -1372,6 +1906,93 @@ function App() {
     }
   }
 
+  async function loadWorkspaceSnapshots(
+    profileId: string,
+    options: { showError?: boolean } = {},
+  ) {
+    setSnapshotLoadingProfileId(profileId)
+    try {
+      const api = requireDesktopApi(['workspace.snapshots.list'])
+      const snapshots = await api.workspace.snapshots.list(profileId)
+      setWorkspaceSnapshotsByProfileId((current) => ({
+        ...current,
+        [profileId]: snapshots,
+      }))
+      return snapshots
+    } catch (error) {
+      if (options.showError !== false) {
+        setErrorMessage(localizeError(error))
+      }
+      return []
+    } finally {
+      setSnapshotLoadingProfileId((current) => (current === profileId ? null : current))
+    }
+  }
+
+  async function createWorkspaceSnapshotForProfile(profileId: string) {
+    await withBusy(
+      locale === 'zh-CN' ? '正在创建 workspace 快照...' : 'Creating workspace snapshot...',
+      async () => {
+        const api = requireDesktopApi(['workspace.snapshots.create'])
+        const snapshot = await api.workspace.snapshots.create(profileId)
+        await loadWorkspaceSnapshots(profileId, { showError: false })
+        setNoticeMessage(
+          locale === 'zh-CN'
+            ? `已创建快照 ${formatSnapshotLabel(snapshot.snapshotId)}。`
+            : `Created snapshot ${formatSnapshotLabel(snapshot.snapshotId)}.`,
+        )
+      },
+    )
+  }
+
+  async function restoreWorkspaceSnapshotForProfile(profileId: string, snapshotId: string) {
+    const confirmed = window.confirm(
+      locale === 'zh-CN'
+        ? '恢复快照会写回当前 workspace 元数据和登录态，继续吗？'
+        : 'Restoring a snapshot will write back workspace metadata and storage state. Continue?',
+    )
+    if (!confirmed) {
+      return
+    }
+    await withBusy(
+      locale === 'zh-CN' ? '正在恢复 workspace 快照...' : 'Restoring workspace snapshot...',
+      async () => {
+        const api = requireDesktopApi(['workspace.snapshots.restore'])
+        await api.workspace.snapshots.restore(profileId, snapshotId)
+        await loadWorkspaceSnapshots(profileId, { showError: false })
+        setNoticeMessage(
+          locale === 'zh-CN'
+            ? `已恢复快照 ${formatSnapshotLabel(snapshotId)}。`
+            : `Restored snapshot ${formatSnapshotLabel(snapshotId)}.`,
+        )
+      },
+    )
+  }
+
+  async function rollbackWorkspaceSnapshotForProfile(profileId: string) {
+    const confirmed = window.confirm(
+      locale === 'zh-CN'
+        ? '将回滚到最近一次 last known good 快照，继续吗？'
+        : 'This will roll back to the latest last known good snapshot. Continue?',
+    )
+    if (!confirmed) {
+      return
+    }
+    await withBusy(
+      locale === 'zh-CN' ? '正在回滚到最近可用快照...' : 'Rolling back to last known good snapshot...',
+      async () => {
+        const api = requireDesktopApi(['workspace.snapshots.rollback'])
+        const restoredProfile = await api.workspace.snapshots.rollback(profileId)
+        await loadWorkspaceSnapshots(profileId, { showError: false })
+        setNoticeMessage(
+          locale === 'zh-CN'
+            ? `已回滚 ${restoredProfile.name} 到最近可用快照。`
+            : `Rolled back ${restoredProfile.name} to the last known good snapshot.`,
+        )
+      },
+    )
+  }
+
   function toggleProfileSelection(profileId: string) {
     setSelectedProfileIds((current) =>
       current.includes(profileId)
@@ -1435,6 +2056,8 @@ function App() {
       groupName: template.groupName,
       tagsText: template.tags.join(', '),
       notes: template.notes,
+      environmentPurpose: template.environmentPurpose,
+      deviceProfile: null,
       fingerprintConfig: {
         ...cloneFingerprintConfig(template.fingerprintConfig),
         runtimeMetadata: {
@@ -1498,6 +2121,8 @@ function App() {
           groupName: profileForm.groupName,
           tags: normalizeTags(profileForm.tagsText),
           notes: profileForm.notes,
+          environmentPurpose: profileForm.environmentPurpose,
+          deviceProfile: profileForm.deviceProfile ?? undefined,
           fingerprintConfig: normalizeFingerprintForSave({
             ...profileForm.fingerprintConfig,
             basicSettings: {
@@ -1561,9 +2186,10 @@ function App() {
           name: templateForm.name.trim(),
           proxyId: templateForm.proxyId || null,
           groupName: templateForm.groupName,
+          environmentPurpose: templateForm.environmentPurpose,
           tags: normalizeTags(templateForm.tagsText),
           notes: templateForm.notes,
-          fingerprintConfig: {
+          fingerprintConfig: normalizeFingerprintForSave({
             ...templateForm.fingerprintConfig,
             runtimeMetadata: {
               ...defaultFingerprint.runtimeMetadata,
@@ -1582,7 +2208,7 @@ function App() {
                   : '',
             },
             resolution: `${templateForm.fingerprintConfig.advanced.windowWidth}x${templateForm.fingerprintConfig.advanced.windowHeight}`,
-          },
+          }),
         }
         if (selectedTemplateId) {
           await api.templates.update({
@@ -1712,6 +2338,43 @@ function App() {
     } catch (error) {
       setErrorMessage(localizeError(error))
     }
+  }
+
+  async function transitionProfilePurpose(profile: ProfileRecord, targetPurpose: EnvironmentPurpose) {
+    if (profile.environmentPurpose === targetPurpose) {
+      return
+    }
+    const next = applyEnvironmentPurposePresetToForm(
+      cloneFingerprintConfig(profile.fingerprintConfig),
+      targetPurpose,
+    )
+    await withBusy(
+      locale === 'zh-CN'
+        ? `正在迁移到${getEnvironmentPurposeLabel(targetPurpose, locale)}...`
+        : `Migrating to ${getEnvironmentPurposeLabel(targetPurpose, locale)}...`,
+      async () => {
+        const api = requireDesktopApi(['profiles.update'])
+        await api.profiles.update({
+          id: profile.id,
+          name: profile.name,
+          proxyId: profile.proxyId,
+          groupName: profile.groupName,
+          tags: profile.tags,
+          notes: profile.notes,
+          environmentPurpose: next.environmentPurpose,
+          deviceProfile: profile.deviceProfile,
+          fingerprintConfig: normalizeFingerprintForSave({
+            ...next.fingerprintConfig,
+            resolution: `${next.fingerprintConfig.advanced.windowWidth}x${next.fingerprintConfig.advanced.windowHeight}`,
+          }),
+        })
+        setNoticeMessage(
+          locale === 'zh-CN'
+            ? `环境已迁移到${getEnvironmentPurposeLabel(targetPurpose, locale)}。`
+            : `Profile migrated to ${getEnvironmentPurposeLabel(targetPurpose, locale)}.`,
+        )
+      },
+    )
   }
 
   function getProfileVisualState(profile: ProfileRecord): ProfileRecord['status'] {
@@ -2517,12 +3180,62 @@ function App() {
                             </label>
                             <div className="list-main">
                               <strong>{profile.name}</strong>
-                              <p>
-                                {profile.tags.join(', ') || t.common.noTags}
-                                {profile.fingerprintConfig.runtimeMetadata.lastResolvedIp
-                                  ? ` · IP ${profile.fingerprintConfig.runtimeMetadata.lastResolvedIp} · ${profile.fingerprintConfig.runtimeMetadata.lastResolvedCountry || profile.fingerprintConfig.runtimeMetadata.lastResolvedRegion || profile.fingerprintConfig.runtimeMetadata.lastResolvedTimezone}`
-                                  : ''}
-                              </p>
+                        <p>
+                          {profile.tags.join(', ') || t.common.noTags}
+                          {profile.fingerprintConfig.runtimeMetadata.lastResolvedIp
+                            ? ` · IP ${profile.fingerprintConfig.runtimeMetadata.lastResolvedIp} · ${profile.fingerprintConfig.runtimeMetadata.lastResolvedCountry || profile.fingerprintConfig.runtimeMetadata.lastResolvedRegion || profile.fingerprintConfig.runtimeMetadata.lastResolvedTimezone}`
+                            : ''}
+                        </p>
+                        <p>
+                          {getEnvironmentPurposeLabel(profile.environmentPurpose, locale)}
+                          {` · ${summarizeDeviceProfile(profile.deviceProfile, profile.fingerprintConfig)}`}
+                        </p>
+                        <p className="section-note">{getEnvironmentPurposeSummary(profile.environmentPurpose, locale)}</p>
+                        <p className="section-note">
+                          {locale === 'zh-CN' ? '身份签名：' : 'Identity: '}
+                          {summarizeIdentitySignature(profile.deviceProfile, profile.fingerprintConfig)}
+                        </p>
+                        <p className="section-note">
+                          {locale === 'zh-CN' ? '地区签名：' : 'Locale: '}
+                          {summarizeLocaleSignature(profile.deviceProfile, profile.fingerprintConfig)}
+                        </p>
+                        <p className="section-note">
+                          {locale === 'zh-CN' ? '硬件签名：' : 'Hardware: '}
+                          {summarizeHardwareSignature(profile.deviceProfile, profile.fingerprintConfig)}
+                        </p>
+                        <p className="section-note">
+                          {locale === 'zh-CN' ? '阶段轨迹：' : 'Lifecycle: '}
+                          {getLifecycleStageSummary(profile, locale)}
+                        </p>
+                        <p className="section-note">
+                          {locale === 'zh-CN' ? 'Workspace 快照：' : 'Workspace snapshots: '}
+                          {getSnapshotSummaryLine(profile)}
+                        </p>
+                        {profile.environmentPurpose === 'register' ? (
+                          <p className="section-note">
+                            {locale === 'zh-CN'
+                              ? `注册风险：${getRegistrationRiskLabel(
+                                  profile.fingerprintConfig.runtimeMetadata.lastRegistrationRiskLevel,
+                                  locale,
+                                )} · ${profile.fingerprintConfig.runtimeMetadata.lastRegistrationRiskScore} 分`
+                              : `Registration risk: ${getRegistrationRiskLabel(
+                                  profile.fingerprintConfig.runtimeMetadata.lastRegistrationRiskLevel,
+                                  locale,
+                                )} · ${profile.fingerprintConfig.runtimeMetadata.lastRegistrationRiskScore} points`}
+                            {profile.fingerprintConfig.runtimeMetadata.lastRegistrationRiskFactors.length > 0
+                              ? ` · ${profile.fingerprintConfig.runtimeMetadata.lastRegistrationRiskFactors.join(' ')}`
+                              : ''}
+                          </p>
+                        ) : null}
+                        {profile.fingerprintConfig.runtimeMetadata.lastValidationLevel !== 'unknown' ? (
+                          <p>
+                            {locale === 'zh-CN' ? '最近校验' : 'Latest validation'}
+                                  {`: ${profile.fingerprintConfig.runtimeMetadata.lastValidationLevel}`}
+                                  {profile.fingerprintConfig.runtimeMetadata.lastValidationMessages.length > 0
+                                    ? ` · ${profile.fingerprintConfig.runtimeMetadata.lastValidationMessages.join(' ')}`
+                                    : ''}
+                                </p>
+                              ) : null}
                               {storageSyncSummary ? (
                                 <div className={`storage-sync-note ${storageSyncSummary.className}`}>
                                   <span className="storage-sync-note-label">{storageSyncSummary.label}</span>
@@ -2558,6 +3271,24 @@ function App() {
                               >
                                 {t.common.clone}
                               </button>
+                              {profile.environmentPurpose === 'register' ? (
+                                <button
+                                  className="ghost"
+                                  disabled={isActive}
+                                  onClick={() => void transitionProfilePurpose(profile, 'nurture')}
+                                >
+                                  {locale === 'zh-CN' ? '迁移养号' : 'Move to nurture'}
+                                </button>
+                              ) : null}
+                              {profile.environmentPurpose === 'nurture' ? (
+                                <button
+                                  className="ghost"
+                                  disabled={isActive}
+                                  onClick={() => void transitionProfilePurpose(profile, 'operation')}
+                                >
+                                  {locale === 'zh-CN' ? '转为运营' : 'Move to operation'}
+                                </button>
+                              ) : null}
                               {showLaunching ? (
                                 <button
                                   className="primary launch-button is-launching"
@@ -2598,7 +3329,30 @@ function App() {
                     <article key={template.id} className="list-row">
                       <div className="list-main">
                         <strong>{template.name}</strong>
-                        <p>{template.tags.join(', ') || t.common.noTags}</p>
+                        <p>
+                          {[
+                            getEnvironmentPurposeLabel(template.environmentPurpose, locale),
+                            template.tags.join(', ') || t.common.noTags,
+                          ].join(' · ')}
+                        </p>
+                        <p className="section-note">
+                          {locale === 'zh-CN'
+                            ? `平台模板：${getPlatformTemplateSummary(template.fingerprintConfig.basicSettings.platform, locale)}`
+                            : `Platform template: ${getPlatformTemplateSummary(template.fingerprintConfig.basicSettings.platform, locale)}`}
+                        </p>
+                        <p className="section-note">
+                          {locale === 'zh-CN'
+                            ? `平台策略：${getPlatformStrategySummary(template.fingerprintConfig.basicSettings.platform, locale)}`
+                            : `Platform strategy: ${getPlatformStrategySummary(template.fingerprintConfig.basicSettings.platform, locale)}`}
+                        </p>
+                        <p className="section-note">
+                          {locale === 'zh-CN' ? '身份签名：' : 'Identity: '}
+                          {summarizeIdentitySignature(null, template.fingerprintConfig)}
+                        </p>
+                        <p className="section-note">
+                          {locale === 'zh-CN' ? '地区签名：' : 'Locale: '}
+                          {summarizeLocaleSignature(null, template.fingerprintConfig)}
+                        </p>
                       </div>
                       <div className="list-meta">
                         <button className="ghost" onClick={() => setSelectedTemplateId(template.id)}>
@@ -2676,6 +3430,190 @@ function App() {
                       {profileForm.fingerprintConfig.runtimeMetadata.lastValidationMessages.join(' ')}
                     </div>
                   ) : null}
+                  {profileForm.environmentPurpose === 'register' ? (
+                    <div className="section-note">
+                      {locale === 'zh-CN'
+                        ? `注册风险：${getRegistrationRiskLabel(
+                            profileForm.fingerprintConfig.runtimeMetadata.lastRegistrationRiskLevel,
+                            locale,
+                          )} · ${profileForm.fingerprintConfig.runtimeMetadata.lastRegistrationRiskScore} 分`
+                        : `Registration risk: ${getRegistrationRiskLabel(
+                            profileForm.fingerprintConfig.runtimeMetadata.lastRegistrationRiskLevel,
+                            locale,
+                          )} · ${profileForm.fingerprintConfig.runtimeMetadata.lastRegistrationRiskScore} points`}
+                      {profileForm.fingerprintConfig.runtimeMetadata.lastRegistrationRiskFactors.length > 0
+                        ? ` · ${profileForm.fingerprintConfig.runtimeMetadata.lastRegistrationRiskFactors.join(' ')}`
+                        : ''}
+                    </div>
+                  ) : null}
+                  {selectedProfile && selectedProfileWorkspace ? (
+                    <section className="workspace-snapshots-panel">
+                      <div className="section-title section-title-sub">
+                        <div>
+                          <h2>{locale === 'zh-CN' ? 'Workspace 快照' : 'Workspace snapshots'}</h2>
+                          <p className="section-note workspace-snapshot-subtitle">
+                            {locale === 'zh-CN'
+                              ? '这里展示当前环境的 workspace 快照、最近可回滚基线，以及最近一次恢复记录。'
+                              : 'This panel shows workspace snapshots, the last rollback baseline, and the latest recovery record.'}
+                          </p>
+                        </div>
+                        <div className="chip-row">
+                          <button
+                            className="ghost"
+                            type="button"
+                            onClick={() => void loadWorkspaceSnapshots(selectedProfile.id)}
+                            disabled={snapshotLoadingProfileId === selectedProfile.id}
+                          >
+                            {snapshotLoadingProfileId === selectedProfile.id
+                              ? (locale === 'zh-CN' ? '刷新中...' : 'Refreshing...')
+                              : (locale === 'zh-CN' ? '刷新快照' : 'Refresh snapshots')}
+                          </button>
+                          <button
+                            className="secondary"
+                            type="button"
+                            onClick={() => void rollbackWorkspaceSnapshotForProfile(selectedProfile.id)}
+                            disabled={
+                              !selectedProfileWorkspace.snapshotSummary.lastKnownGoodSnapshotId ||
+                              selectedProfileWorkspace.snapshotSummary.lastKnownGoodStatus === 'invalid'
+                            }
+                          >
+                            {locale === 'zh-CN' ? '回滚到最近可用快照' : 'Rollback to last known good'}
+                          </button>
+                          <button
+                            className="primary"
+                            type="button"
+                            onClick={() => void createWorkspaceSnapshotForProfile(selectedProfile.id)}
+                          >
+                            {locale === 'zh-CN' ? '创建快照' : 'Create snapshot'}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="workspace-snapshot-summary-grid">
+                        <article className="workspace-snapshot-summary-card">
+                          <span>{locale === 'zh-CN' ? '最近快照' : 'Last snapshot'}</span>
+                          <strong>
+                            {selectedProfileWorkspace.snapshotSummary.lastSnapshotId
+                              ? formatSnapshotLabel(selectedProfileWorkspace.snapshotSummary.lastSnapshotId)
+                              : t.common.never}
+                          </strong>
+                          <small>
+                            {formatDate(selectedProfileWorkspace.snapshotSummary.lastSnapshotAt)}
+                          </small>
+                        </article>
+                        <article className="workspace-snapshot-summary-card">
+                          <span>{locale === 'zh-CN' ? '最近可用基线' : 'Last known good'}</span>
+                          <strong>
+                            {selectedProfileWorkspace.snapshotSummary.lastKnownGoodSnapshotId
+                              ? formatSnapshotLabel(
+                                  selectedProfileWorkspace.snapshotSummary.lastKnownGoodSnapshotId,
+                                )
+                              : t.common.never}
+                          </strong>
+                          <small>
+                            {formatDate(
+                              selectedProfileWorkspace.snapshotSummary.lastKnownGoodSnapshotAt,
+                            )}
+                          </small>
+                          {selectedProfileWorkspace.snapshotSummary.lastKnownGoodStatus === 'invalid' ? (
+                            <small>
+                              {locale === 'zh-CN'
+                                ? `已失效：${selectedProfileWorkspace.snapshotSummary.lastKnownGoodInvalidationReason || 'unknown'}`
+                                : `Invalidated: ${selectedProfileWorkspace.snapshotSummary.lastKnownGoodInvalidationReason || 'unknown'}`}
+                            </small>
+                          ) : null}
+                        </article>
+                        <article className="workspace-snapshot-summary-card">
+                          <span>{locale === 'zh-CN' ? '最近恢复' : 'Latest recovery'}</span>
+                          <strong>
+                            {selectedProfileWorkspace.recovery.lastRecoveryReason || t.common.never}
+                          </strong>
+                          <small>{formatDate(selectedProfileWorkspace.recovery.lastRecoveryAt)}</small>
+                        </article>
+                      </div>
+
+                      {selectedProfileSnapshots.length > 0 ? (
+                        <div className="workspace-snapshot-list">
+                          {selectedProfileSnapshots.map((snapshot) => {
+                            const snapshotStatus = describeSnapshotStatus(snapshot)
+                            const isKnownGood =
+                              snapshot.snapshotId ===
+                              selectedProfileWorkspace.snapshotSummary.lastKnownGoodSnapshotId
+                            return (
+                              <article key={snapshot.snapshotId} className="workspace-snapshot-row">
+                                <div className="workspace-snapshot-main">
+                                  <div className="workspace-snapshot-header">
+                                    <strong>{formatSnapshotLabel(snapshot.snapshotId)}</strong>
+                                    <span
+                                      className={`storage-sync-note ${snapshotStatus.className} workspace-snapshot-status`}
+                                    >
+                                      <span className="storage-sync-note-label">
+                                        {snapshotStatus.label}
+                                      </span>
+                                      {isKnownGood
+                                        ? locale === 'zh-CN'
+                                          ? '当前 last known good'
+                                          : 'Current last known good'
+                                        : snapshot.validatedStartAt
+                                          ? formatDate(snapshot.validatedStartAt)
+                                          : formatDate(snapshot.updatedAt)}
+                                    </span>
+                                  </div>
+                                  <p>
+                                    {locale === 'zh-CN' ? '创建时间：' : 'Created: '}
+                                    {formatDate(snapshot.createdAt)}
+                                    {' · '}
+                                    {locale === 'zh-CN' ? '存储版本：' : 'Storage version: '}
+                                    {snapshot.storageState.version || 0}
+                                  </p>
+                                  <p className="section-note">
+                                    {locale === 'zh-CN' ? '模板指纹：' : 'Template fingerprint: '}
+                                    {snapshot.templateFingerprintHash || t.common.never}
+                                  </p>
+                                  <p className="section-note">
+                                    {locale === 'zh-CN' ? '目录摘要：' : 'Managed directories: '}
+                                    {snapshot.directoryManifest
+                                      .map((entry) => `${entry.key}(${entry.entryCount})`)
+                                      .join(' · ')}
+                                  </p>
+                                  {snapshot.validatedStartAt ? (
+                                    <p className="section-note">
+                                      {locale === 'zh-CN' ? '启动验证通过：' : 'Launch validated: '}
+                                      {formatDate(snapshot.validatedStartAt)}
+                                    </p>
+                                  ) : null}
+                                </div>
+                                <div className="workspace-snapshot-actions">
+                                  <button
+                                    className="ghost"
+                                    type="button"
+                                    onClick={() =>
+                                      void restoreWorkspaceSnapshotForProfile(
+                                        selectedProfile.id,
+                                        snapshot.snapshotId,
+                                      )
+                                    }
+                                  >
+                                    {locale === 'zh-CN' ? '恢复此快照' : 'Restore snapshot'}
+                                  </button>
+                                </div>
+                              </article>
+                            )
+                          })}
+                        </div>
+                      ) : (
+                        <p className="empty workspace-snapshot-empty">
+                          {snapshotLoadingProfileId === selectedProfile.id
+                            ? (locale === 'zh-CN'
+                                ? '正在读取 workspace 快照...'
+                                : 'Loading workspace snapshots...')
+                            : (locale === 'zh-CN'
+                                ? '当前环境还没有 workspace 快照。'
+                                : 'This profile does not have workspace snapshots yet.')}
+                        </p>
+                      )}
+                    </section>
+                  ) : null}
                   {(() => {
                     const storageSyncSummary = getStorageSyncSummary({
                       id: selectedProfileId || 'draft',
@@ -2684,6 +3622,88 @@ function App() {
                       groupName: profileForm.groupName,
                       tags: normalizeTags(profileForm.tagsText),
                       notes: profileForm.notes,
+                      environmentPurpose: profileForm.environmentPurpose,
+                      deviceProfile:
+                        profileForm.deviceProfile || {
+                          version: 1,
+                          deviceClass:
+                            profileForm.fingerprintConfig.advanced.deviceMode === 'desktop'
+                              ? 'desktop'
+                              : 'mobile',
+                          operatingSystem: profileForm.fingerprintConfig.advanced.operatingSystem,
+                          platform: profileForm.fingerprintConfig.advanced.operatingSystem.includes('mac')
+                            ? 'MacIntel'
+                            : profileForm.fingerprintConfig.advanced.operatingSystem.includes('Windows')
+                              ? 'Win32'
+                              : 'Linux x86_64',
+                          browserKernel: profileForm.fingerprintConfig.advanced.browserKernel,
+                          browserVersion: profileForm.fingerprintConfig.advanced.browserVersion,
+                          userAgent: profileForm.fingerprintConfig.userAgent,
+                          viewport: {
+                            width: profileForm.fingerprintConfig.advanced.windowWidth,
+                            height: profileForm.fingerprintConfig.advanced.windowHeight,
+                          },
+                          locale: {
+                            language: profileForm.fingerprintConfig.language,
+                            interfaceLanguage: profileForm.fingerprintConfig.advanced.interfaceLanguage,
+                            timezone: profileForm.fingerprintConfig.timezone,
+                            geolocation: profileForm.fingerprintConfig.advanced.geolocation,
+                          },
+                          hardware: {
+                            cpuCores: profileForm.fingerprintConfig.advanced.cpuCores,
+                            memoryGb: profileForm.fingerprintConfig.advanced.memoryGb,
+                            webglVendor: profileForm.fingerprintConfig.advanced.webglVendor,
+                            webglRenderer: profileForm.fingerprintConfig.advanced.webglRenderer,
+                          },
+                          mediaProfile: {
+                            fontMode: profileForm.fingerprintConfig.advanced.fontMode,
+                            mediaDevicesMode: profileForm.fingerprintConfig.advanced.mediaDevicesMode,
+                            speechVoicesMode: profileForm.fingerprintConfig.advanced.speechVoicesMode,
+                            canvasMode: profileForm.fingerprintConfig.advanced.canvasMode,
+                            webglImageMode: profileForm.fingerprintConfig.advanced.webglImageMode,
+                            webglMetadataMode: profileForm.fingerprintConfig.advanced.webglMetadataMode,
+                            audioContextMode: profileForm.fingerprintConfig.advanced.audioContextMode,
+                            clientRectsMode: profileForm.fingerprintConfig.advanced.clientRectsMode,
+                          },
+                          support: {
+                            fonts: 'partial',
+                            mediaDevices:
+                              profileForm.fingerprintConfig.advanced.mediaDevicesMode === 'off'
+                                ? 'partial'
+                                : 'active',
+                            speechVoices:
+                              profileForm.fingerprintConfig.advanced.speechVoicesMode === 'off'
+                                ? 'partial'
+                                : 'active',
+                            canvas:
+                              profileForm.fingerprintConfig.advanced.canvasMode === 'off'
+                                ? 'partial'
+                                : 'active',
+                            webgl:
+                              profileForm.fingerprintConfig.advanced.webglImageMode === 'off' &&
+                              profileForm.fingerprintConfig.advanced.webglMetadataMode === 'off'
+                                ? 'partial'
+                                : 'active',
+                            audio:
+                              profileForm.fingerprintConfig.advanced.audioContextMode === 'off'
+                                ? 'partial'
+                                : 'active',
+                            clientRects:
+                              profileForm.fingerprintConfig.advanced.clientRectsMode === 'off'
+                                ? 'partial'
+                                : 'active',
+                            geolocation:
+                              profileForm.fingerprintConfig.advanced.autoGeolocationFromIp ||
+                              Boolean(profileForm.fingerprintConfig.advanced.geolocation)
+                                ? 'active'
+                                : 'partial',
+                            deviceInfo: 'partial',
+                            sslFingerprint: 'placeholder',
+                            pluginFingerprint: 'placeholder',
+                          },
+                          createdAt: '',
+                          updatedAt: '',
+                        },
                       fingerprintConfig: profileForm.fingerprintConfig,
                       status: 'stopped',
                       lastStartedAt: null,
@@ -2699,6 +3719,166 @@ function App() {
                   })()}
                   <div className="section-title section-title-sub">
                     <h2>{locale === 'zh-CN' ? '基础设置' : 'Basic settings'}</h2>
+                  </div>
+                  <div className="split">
+                    <label>
+                      <span>{locale === 'zh-CN' ? '环境用途' : 'Environment purpose'}</span>
+                      <select
+                        value={profileForm.environmentPurpose}
+                        onChange={(event) =>
+                          setProfileForm((current) => {
+                            const next = applyEnvironmentPurposePresetToForm(
+                              current.fingerprintConfig,
+                              event.target.value as EnvironmentPurpose,
+                            )
+                            return {
+                              ...current,
+                              environmentPurpose: next.environmentPurpose,
+                              fingerprintConfig: next.fingerprintConfig,
+                              deviceProfile: null,
+                            }
+                          })
+                        }
+                      >
+                        {ENVIRONMENT_PURPOSE_OPTIONS.map((item) => (
+                          <option key={item.value} value={item.value}>
+                            {locale === 'zh-CN' ? item.zh : item.en}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>{locale === 'zh-CN' ? '设备画像摘要' : 'Device profile summary'}</span>
+                      <input
+                        value={summarizeDeviceProfile(profileForm.deviceProfile, profileForm.fingerprintConfig)}
+                        readOnly
+                      />
+                    </label>
+                  </div>
+                  <div className="section-note">
+                    {getEnvironmentPurposeSummary(profileForm.environmentPurpose, locale)}
+                  </div>
+                  <div className="section-note">
+                    {locale === 'zh-CN' ? '阶段轨迹：' : 'Lifecycle: '}
+                    {getLifecycleStageSummary(
+                      {
+                        id: selectedProfileId || 'draft',
+                        name: profileForm.name || 'draft',
+                        proxyId: profileForm.proxyId,
+                        groupName: profileForm.groupName,
+                        tags: normalizeTags(profileForm.tagsText),
+                        notes: profileForm.notes,
+                        environmentPurpose: profileForm.environmentPurpose,
+                        deviceProfile: profileForm.deviceProfile || {
+                          version: 1,
+                          deviceClass:
+                            profileForm.fingerprintConfig.advanced.deviceMode === 'desktop'
+                              ? 'desktop'
+                              : 'mobile',
+                          operatingSystem: profileForm.fingerprintConfig.advanced.operatingSystem,
+                          platform: profileForm.fingerprintConfig.advanced.operatingSystem.includes('mac')
+                            ? 'MacIntel'
+                            : profileForm.fingerprintConfig.advanced.operatingSystem.includes('Windows')
+                              ? 'Win32'
+                              : 'Linux x86_64',
+                          browserKernel: profileForm.fingerprintConfig.advanced.browserKernel,
+                          browserVersion: profileForm.fingerprintConfig.advanced.browserVersion,
+                          userAgent: profileForm.fingerprintConfig.userAgent,
+                          viewport: {
+                            width: profileForm.fingerprintConfig.advanced.windowWidth,
+                            height: profileForm.fingerprintConfig.advanced.windowHeight,
+                          },
+                          locale: {
+                            language: profileForm.fingerprintConfig.language,
+                            interfaceLanguage: profileForm.fingerprintConfig.advanced.interfaceLanguage,
+                            timezone: profileForm.fingerprintConfig.timezone,
+                            geolocation: profileForm.fingerprintConfig.advanced.geolocation,
+                          },
+                          hardware: {
+                            cpuCores: profileForm.fingerprintConfig.advanced.cpuCores,
+                            memoryGb: profileForm.fingerprintConfig.advanced.memoryGb,
+                            webglVendor: profileForm.fingerprintConfig.advanced.webglVendor,
+                            webglRenderer: profileForm.fingerprintConfig.advanced.webglRenderer,
+                          },
+                          mediaProfile: {
+                            fontMode: profileForm.fingerprintConfig.advanced.fontMode,
+                            mediaDevicesMode: profileForm.fingerprintConfig.advanced.mediaDevicesMode,
+                            speechVoicesMode: profileForm.fingerprintConfig.advanced.speechVoicesMode,
+                            canvasMode: profileForm.fingerprintConfig.advanced.canvasMode,
+                            webglImageMode: profileForm.fingerprintConfig.advanced.webglImageMode,
+                            webglMetadataMode: profileForm.fingerprintConfig.advanced.webglMetadataMode,
+                            audioContextMode: profileForm.fingerprintConfig.advanced.audioContextMode,
+                            clientRectsMode: profileForm.fingerprintConfig.advanced.clientRectsMode,
+                          },
+                          support: {
+                            fonts: 'partial',
+                            mediaDevices:
+                              profileForm.fingerprintConfig.advanced.mediaDevicesMode === 'off'
+                                ? 'partial'
+                                : 'active',
+                            speechVoices:
+                              profileForm.fingerprintConfig.advanced.speechVoicesMode === 'off'
+                                ? 'partial'
+                                : 'active',
+                            canvas:
+                              profileForm.fingerprintConfig.advanced.canvasMode === 'off'
+                                ? 'partial'
+                                : 'active',
+                            webgl:
+                              profileForm.fingerprintConfig.advanced.webglImageMode === 'off' &&
+                              profileForm.fingerprintConfig.advanced.webglMetadataMode === 'off'
+                                ? 'partial'
+                                : 'active',
+                            audio:
+                              profileForm.fingerprintConfig.advanced.audioContextMode === 'off'
+                                ? 'partial'
+                                : 'active',
+                            clientRects:
+                              profileForm.fingerprintConfig.advanced.clientRectsMode === 'off'
+                                ? 'partial'
+                                : 'active',
+                            geolocation:
+                              profileForm.fingerprintConfig.advanced.autoGeolocationFromIp ||
+                              Boolean(profileForm.fingerprintConfig.advanced.geolocation)
+                                ? 'active'
+                                : 'partial',
+                            deviceInfo: 'partial',
+                            sslFingerprint: 'placeholder',
+                            pluginFingerprint: 'placeholder',
+                          },
+                          createdAt: '',
+                          updatedAt: '',
+                        },
+                        fingerprintConfig: profileForm.fingerprintConfig,
+                        status: 'stopped',
+                        lastStartedAt: null,
+                        createdAt: '',
+                        updatedAt: '',
+                      },
+                      locale,
+                    )}
+                  </div>
+                  <div className="section-note">
+                    {locale === 'zh-CN' ? '身份签名：' : 'Identity: '}
+                    {summarizeIdentitySignature(profileForm.deviceProfile, profileForm.fingerprintConfig)}
+                  </div>
+                  <div className="section-note">
+                    {locale === 'zh-CN' ? '地区签名：' : 'Locale: '}
+                    {summarizeLocaleSignature(profileForm.deviceProfile, profileForm.fingerprintConfig)}
+                  </div>
+                  <div className="section-note">
+                    {locale === 'zh-CN' ? '硬件签名：' : 'Hardware: '}
+                    {summarizeHardwareSignature(profileForm.deviceProfile, profileForm.fingerprintConfig)}
+                  </div>
+                  <div className="section-note">
+                    {locale === 'zh-CN'
+                      ? `字段支持矩阵：${summarizeSupportMatrix(profileForm.deviceProfile, locale)}`
+                      : `Support matrix: ${summarizeSupportMatrix(profileForm.deviceProfile, locale)}`}
+                  </div>
+                  <div className="section-note">
+                    {locale === 'zh-CN'
+                      ? `画像能力摘要：${summarizeSupportHighlights(profileForm.deviceProfile, locale)}`
+                      : `Capability summary: ${summarizeSupportHighlights(profileForm.deviceProfile, locale)}`}
                   </div>
                   <label>
                     <span>{t.profiles.name}</span>
@@ -2718,24 +3898,19 @@ function App() {
                       <select
                         value={profileForm.fingerprintConfig.basicSettings.platform}
                         onChange={(event) =>
-                          setProfileForm((current) => ({
-                            ...current,
-                            fingerprintConfig: {
-                              ...current.fingerprintConfig,
-                              basicSettings: {
-                                ...current.fingerprintConfig.basicSettings,
-                                platform: event.target.value,
-                                customPlatformName:
-                                  event.target.value === 'custom'
-                                    ? current.fingerprintConfig.basicSettings.customPlatformName
-                                    : '',
-                                customPlatformUrl:
-                                  event.target.value === 'custom'
-                                    ? current.fingerprintConfig.basicSettings.customPlatformUrl
-                                    : '',
-                              },
-                            },
-                          }))
+                          setProfileForm((current) => {
+                            const next = applyPlatformPresetToForm(
+                              current.fingerprintConfig,
+                              current.environmentPurpose,
+                              event.target.value,
+                            )
+                            return {
+                              ...current,
+                              environmentPurpose: next.environmentPurpose,
+                              fingerprintConfig: next.fingerprintConfig,
+                              deviceProfile: null,
+                            }
+                          })
                         }
                       >
                         {STARTUP_PLATFORM_OPTIONS.map((item) => (
@@ -2745,6 +3920,16 @@ function App() {
                         ))}
                       </select>
                     </label>
+                  </div>
+                  <div className="section-note">
+                    {locale === 'zh-CN'
+                      ? `平台模板：${getPlatformTemplateSummary(profileForm.fingerprintConfig.basicSettings.platform, locale)}`
+                      : `Platform template: ${getPlatformTemplateSummary(profileForm.fingerprintConfig.basicSettings.platform, locale)}`}
+                  </div>
+                  <div className="section-note">
+                    {locale === 'zh-CN'
+                      ? `平台策略：${getPlatformStrategySummary(profileForm.fingerprintConfig.basicSettings.platform, locale)}`
+                      : `Platform strategy: ${getPlatformStrategySummary(profileForm.fingerprintConfig.basicSettings.platform, locale)}`}
                   </div>
                   {profileForm.fingerprintConfig.basicSettings.platform === 'custom' ? (
                     <div className="split">
@@ -3471,24 +4656,19 @@ function App() {
                     <select
                       value={templateForm.fingerprintConfig.basicSettings.platform}
                       onChange={(event) =>
-                        setTemplateForm((current) => ({
-                          ...current,
-                          fingerprintConfig: {
-                            ...current.fingerprintConfig,
-                            basicSettings: {
-                              ...current.fingerprintConfig.basicSettings,
-                              platform: event.target.value,
-                              customPlatformName:
-                                event.target.value === 'custom'
-                                  ? current.fingerprintConfig.basicSettings.customPlatformName
-                                  : '',
-                              customPlatformUrl:
-                                event.target.value === 'custom'
-                                  ? current.fingerprintConfig.basicSettings.customPlatformUrl
-                                  : '',
-                            },
-                          },
-                        }))
+                        setTemplateForm((current) => {
+                          const next = applyPlatformPresetToForm(
+                            current.fingerprintConfig,
+                            current.environmentPurpose,
+                            event.target.value,
+                          )
+                          return {
+                            ...current,
+                            environmentPurpose: next.environmentPurpose,
+                            fingerprintConfig: next.fingerprintConfig,
+                            deviceProfile: null,
+                          }
+                        })
                       }
                     >
                       {STARTUP_PLATFORM_OPTIONS.map((item) => (
@@ -3498,6 +4678,70 @@ function App() {
                       ))}
                     </select>
                   </label>
+                  <label>
+                    <span>{locale === 'zh-CN' ? '模板用途' : 'Template purpose'}</span>
+                    <select
+                      value={templateForm.environmentPurpose}
+                      onChange={(event) =>
+                        setTemplateForm((current) => {
+                          const next = applyEnvironmentPurposePresetToForm(
+                            current.fingerprintConfig,
+                            event.target.value as EnvironmentPurpose,
+                          )
+                          return {
+                            ...current,
+                            environmentPurpose: next.environmentPurpose,
+                            fingerprintConfig: next.fingerprintConfig,
+                            deviceProfile: null,
+                          }
+                        })
+                      }
+                    >
+                      {ENVIRONMENT_PURPOSE_OPTIONS.map((item) => (
+                        <option key={item.value} value={item.value}>
+                          {locale === 'zh-CN' ? item.zh : item.en}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="section-note">
+                    {getEnvironmentPurposeSummary(templateForm.environmentPurpose, locale)}
+                  </div>
+                  <div className="section-note">
+                    {getEnvironmentPurposeSummary(templateForm.environmentPurpose, locale)}
+                  </div>
+                  <div className="section-note">
+                    {locale === 'zh-CN' ? '身份签名：' : 'Identity: '}
+                    {summarizeIdentitySignature(null, templateForm.fingerprintConfig)}
+                  </div>
+                  <div className="section-note">
+                    {locale === 'zh-CN' ? '地区签名：' : 'Locale: '}
+                    {summarizeLocaleSignature(null, templateForm.fingerprintConfig)}
+                  </div>
+                  <div className="section-note">
+                    {locale === 'zh-CN' ? '硬件签名：' : 'Hardware: '}
+                    {summarizeHardwareSignature(null, templateForm.fingerprintConfig)}
+                  </div>
+                  <div className="section-note">
+                    {locale === 'zh-CN'
+                      ? `平台模板：${getPlatformTemplateSummary(templateForm.fingerprintConfig.basicSettings.platform, locale)}`
+                      : `Platform template: ${getPlatformTemplateSummary(templateForm.fingerprintConfig.basicSettings.platform, locale)}`}
+                  </div>
+                  <div className="section-note">
+                    {locale === 'zh-CN'
+                      ? `平台策略：${getPlatformStrategySummary(templateForm.fingerprintConfig.basicSettings.platform, locale)}`
+                      : `Platform strategy: ${getPlatformStrategySummary(templateForm.fingerprintConfig.basicSettings.platform, locale)}`}
+                  </div>
+                  <div className="section-note">
+                    {locale === 'zh-CN'
+                      ? `模板建议用途：${getEnvironmentPurposeLabel(templateForm.environmentPurpose, locale)}`
+                      : `Recommended purpose: ${getEnvironmentPurposeLabel(templateForm.environmentPurpose, locale)}`}
+                  </div>
+                  <div className="section-note">
+                    {locale === 'zh-CN'
+                      ? `画像能力摘要：${summarizeSupportHighlights(templateForm.deviceProfile, locale)}`
+                      : `Capability summary: ${summarizeSupportHighlights(templateForm.deviceProfile, locale)}`}
+                  </div>
                   {templateForm.fingerprintConfig.basicSettings.platform === 'custom' ? (
                     <div className="split">
                       <label>

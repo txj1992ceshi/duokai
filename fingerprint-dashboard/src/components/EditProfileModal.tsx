@@ -18,7 +18,8 @@ import {
 import AppButton from '@/components/AppButton';
 import AppInput from '@/components/AppInput';
 import AppSelect from '@/components/AppSelect';
-import type { GroupItem, Profile } from '@/lib/dashboard-types';
+import WorkspaceSnapshotPanel from '@/components/WorkspaceSnapshotPanel';
+import type { GroupItem, Profile, WorkspaceSnapshotRecord } from '@/lib/dashboard-types';
 import type {
   HostEnvironment,
   ProxyCheckStatus,
@@ -39,6 +40,9 @@ type Props = {
   controlPlaneOnly: boolean;
   proxyResult: ProxyVerificationRecord | null;
   proxyBrowserResult: ProxyVerificationRecord | null;
+  workspaceSnapshots: WorkspaceSnapshotRecord[];
+  workspaceSnapshotsLoading: boolean;
+  workspaceSnapshotsError: string;
   platformOptions: readonly PlatformOption[];
   onClose: () => void;
   onSubmit: (e: React.FormEvent<HTMLFormElement>) => void;
@@ -46,6 +50,7 @@ type Props = {
   onCheckProxy: () => void;
   onBrowserCheckProxy: () => void;
   onAdoptCurrentProxyResult: () => void;
+  onRefreshWorkspaceSnapshots: () => void;
   getPlatformUrl: (platform?: string) => string;
   buildProxyFromDraft: (draft: Partial<Profile>) => string;
   formatExpectedTarget: (profile: Pick<Profile, 'expectedProxyIp' | 'expectedProxyCountry' | 'expectedProxyRegion'>) => string;
@@ -66,6 +71,9 @@ export default function EditProfileModal({
   controlPlaneOnly,
   proxyResult,
   proxyBrowserResult,
+  workspaceSnapshots,
+  workspaceSnapshotsLoading,
+  workspaceSnapshotsError,
   platformOptions,
   onClose,
   onSubmit,
@@ -73,6 +81,7 @@ export default function EditProfileModal({
   onCheckProxy,
   onBrowserCheckProxy,
   onAdoptCurrentProxyResult,
+  onRefreshWorkspaceSnapshots,
   getPlatformUrl,
   buildProxyFromDraft,
   formatExpectedTarget,
@@ -556,6 +565,14 @@ export default function EditProfileModal({
                 onChange={(e) => onProfileChange({ ...profile, seed: e.target.value })}
               />
             </div>
+
+            <WorkspaceSnapshotPanel
+              profile={profile}
+              snapshots={workspaceSnapshots}
+              loading={workspaceSnapshotsLoading}
+              errorMessage={workspaceSnapshotsError}
+              onRefresh={onRefreshWorkspaceSnapshots}
+            />
           </div>
 
           <div className="flex shrink-0 justify-end space-x-2 border-t border-slate-800 bg-[#141720] px-6 py-4">

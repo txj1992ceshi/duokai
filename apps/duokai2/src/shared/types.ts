@@ -21,6 +21,179 @@ export type SimpleFingerprintMode = 'random' | 'off' | 'custom'
 export type CpuMode = 'system' | 'custom'
 export type ResolutionMode = 'system' | 'custom' | 'random'
 export type FontMode = 'system' | 'random'
+export type EnvironmentPurpose = 'register' | 'nurture' | 'operation'
+export type FingerprintSupportStatus = 'active' | 'partial' | 'placeholder'
+export type IpUsageKind = 'launch' | 'register-launch'
+export type WorkspaceAllowedOverrideKey =
+  | 'timezone'
+  | 'browserLanguage'
+  | 'resolution'
+  | 'downloadsDirAlias'
+  | 'nonCriticalLaunchArgs'
+export type WorkspaceBlockedOverrideKey =
+  | 'browserFamily'
+  | 'profileDir'
+  | 'extensionsDirRoot'
+  | 'webrtcHardPolicy'
+  | 'ipv6HardPolicy'
+  | 'browserMajorVersionRange'
+export type WorkspaceMigrationState =
+  | 'not_started'
+  | 'in_progress'
+  | 'completed'
+  | 'failed_retriable'
+  | 'failed_manual'
+export type WorkspaceMigrationCheckpointName =
+  | 'legacy_profile_detected'
+  | 'workspace_meta_initialized'
+  | 'directory_layout_prepared'
+  | 'path_mapping_persisted'
+  | 'template_binding_resolved'
+  | 'consistency_baseline_written'
+  | 'migration_completed'
+
+export interface WorkspaceMigrationCheckpoint {
+  name: WorkspaceMigrationCheckpointName
+  completedAt: string
+}
+
+export interface WorkspaceTemplateBinding {
+  templateId: string
+  templateRevision: string
+  // Runtime consistency validation must prefer templateFingerprintHash over templateRevision.
+  templateFingerprintHash: string
+}
+
+export interface WorkspacePaths {
+  profileDir: string
+  cacheDir: string
+  downloadsDir: string
+  extensionsDir: string
+  metaDir: string
+}
+
+export interface WorkspaceEnvironment {
+  browserFamily: BrowserKernel
+  browserMajorVersionRange: string
+  systemLanguage: string
+  browserLanguage: string
+  timezone: string
+  resolution: string
+  fontStrategy: FontMode
+  webrtcPolicy: WebRtcMode
+  ipv6Policy: ProfileProxySettings['ipProtocol']
+  downloadsDir: string
+  launchArgs: string[]
+}
+
+export interface WorkspaceHealthReport {
+  status: 'unknown' | 'healthy' | 'warning' | 'broken'
+  messages: string[]
+  checkedAt: string
+}
+
+export interface WorkspaceConsistencyReport {
+  status: 'unknown' | 'pass' | 'warn' | 'block'
+  messages: string[]
+  checkedAt: string
+  templateFingerprintHash: string
+  templateRevision: string
+}
+
+export interface WorkspaceSnapshotSummary {
+  lastSnapshotId: string
+  lastSnapshotAt: string
+  lastKnownGoodSnapshotId: string
+  lastKnownGoodSnapshotAt: string
+  lastKnownGoodStatus: 'unknown' | 'valid' | 'invalid'
+  lastKnownGoodInvalidatedAt: string
+  lastKnownGoodInvalidationReason: string
+}
+
+export interface WorkspaceDescriptor {
+  identityProfileId: string
+  version: number
+  migrationState: WorkspaceMigrationState
+  migrationCheckpoints: WorkspaceMigrationCheckpoint[]
+  templateBinding: WorkspaceTemplateBinding
+  allowedOverrides: WorkspaceAllowedOverrideKey[]
+  blockedOverrides: WorkspaceBlockedOverrideKey[]
+  declaredOverrides: Partial<Record<WorkspaceAllowedOverrideKey, string | string[]>>
+  // Runtime source of truth. Legacy profile fields are compatibility mirrors only.
+  resolvedEnvironment: WorkspaceEnvironment
+  paths: WorkspacePaths
+  healthSummary: WorkspaceHealthReport
+  consistencySummary: WorkspaceConsistencyReport
+  snapshotSummary: WorkspaceSnapshotSummary
+  recovery: {
+    lastRecoveryAt: string
+    lastRecoveryReason: string
+  }
+}
+
+export interface WorkspaceSnapshotStorageStateMetadata {
+  version: number
+  stateHash: string
+  updatedAt: string
+  deviceId: string
+  source: string
+  stateJson?: BrowserStorageState | null
+}
+
+export interface BrowserStorageState {
+  cookies?: Array<Record<string, unknown>>
+  origins?: Array<{
+    origin: string
+    localStorage?: Array<{ name: string; value: string }>
+  }>
+}
+
+export interface WorkspaceSnapshotDirectoryEntry {
+  key: keyof WorkspacePaths
+  path: string
+  exists: boolean
+  entryCount: number
+  fileCount: number
+  directoryCount: number
+  totalBytes: number
+  latestModifiedAt: string
+}
+
+export interface WorkspaceSnapshotRecord {
+  snapshotId: string
+  profileId: string
+  templateRevision: string
+  templateFingerprintHash: string
+  manifest: Record<string, unknown>
+  workspaceMetadata: WorkspaceDescriptor
+  storageState: WorkspaceSnapshotStorageStateMetadata
+  directoryManifest: WorkspaceSnapshotDirectoryEntry[]
+  healthSummary: WorkspaceHealthReport
+  consistencySummary: WorkspaceConsistencyReport
+  validatedStartAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ResolvedWorkspaceLaunchConfig {
+  // profileDir is the only persistent browser user data root.
+  userDataDir: string
+  downloadsDir: string
+  locale: string
+  timezoneId: string
+  viewport: {
+    width: number
+    height: number
+  }
+  webrtcPolicy: WebRtcMode
+  launchArgs: string[]
+}
+
+export interface WorkspaceGateResult {
+  status: 'pass' | 'warn' | 'block'
+  messages: string[]
+  workspace: WorkspaceDescriptor
+}
 
 export interface ProfileBasicSettings {
   platform: string
@@ -115,6 +288,15 @@ export interface ProfileRuntimeMetadata {
   lastProxyCheckMessage: string
   lastValidationLevel: 'unknown' | 'pass' | 'warn' | 'block'
   lastValidationMessages: string[]
+  lastRegistrationRiskScore: number
+  lastRegistrationRiskLevel: 'unknown' | 'low' | 'medium' | 'high'
+  lastRegistrationRiskFactors: string[]
+  lastRegisterLaunchAt: string
+  lastPurposeTransitionAt: string
+  lastPurposeTransitionFrom: EnvironmentPurpose | ''
+  lastPurposeTransitionTo: EnvironmentPurpose | ''
+  lastNurtureTransitionAt: string
+  lastOperationTransitionAt: string
   lastQuickCheckAt: string
   lastQuickCheckSuccess: boolean | null
   lastQuickCheckMessage: string
@@ -132,6 +314,59 @@ export interface ProfileRuntimeMetadata {
   lastStorageStateDeviceId: string
   lastStorageStateSyncStatus: 'idle' | 'synced' | 'pending' | 'conflict' | 'error'
   lastStorageStateSyncMessage: string
+}
+
+export interface DeviceProfileSupportMatrix {
+  fonts: FingerprintSupportStatus
+  mediaDevices: FingerprintSupportStatus
+  speechVoices: FingerprintSupportStatus
+  canvas: FingerprintSupportStatus
+  webgl: FingerprintSupportStatus
+  audio: FingerprintSupportStatus
+  clientRects: FingerprintSupportStatus
+  geolocation: FingerprintSupportStatus
+  deviceInfo: FingerprintSupportStatus
+  sslFingerprint: FingerprintSupportStatus
+  pluginFingerprint: FingerprintSupportStatus
+}
+
+export interface DeviceProfile {
+  version: number
+  deviceClass: 'desktop' | 'mobile'
+  operatingSystem: string
+  platform: string
+  browserKernel: BrowserKernel
+  browserVersion: string
+  userAgent: string
+  viewport: {
+    width: number
+    height: number
+  }
+  locale: {
+    language: string
+    interfaceLanguage: string
+    timezone: string
+    geolocation: string
+  }
+  hardware: {
+    cpuCores: number
+    memoryGb: number
+    webglVendor: string
+    webglRenderer: string
+  }
+  mediaProfile: {
+    fontMode: FontMode
+    mediaDevicesMode: SimpleFingerprintMode
+    speechVoicesMode: SimpleFingerprintMode
+    canvasMode: CanvasMode
+    webglImageMode: WebglMode
+    webglMetadataMode: WebglMode
+    audioContextMode: SimpleFingerprintMode
+    clientRectsMode: SimpleFingerprintMode
+  }
+  support: DeviceProfileSupportMatrix
+  createdAt: string
+  updatedAt: string
 }
 
 export interface TrustedIsolationCheck {
@@ -189,7 +424,12 @@ export interface ProfileRecord {
   groupName: string
   tags: string[]
   notes: string
+  environmentPurpose: EnvironmentPurpose
+  deviceProfile: DeviceProfile
   fingerprintConfig: FingerprintConfig
+  // Runtime behavior must resolve from workspace.resolvedEnvironment.
+  // fingerprintConfig and other legacy fields remain compatibility mirrors only.
+  workspace?: WorkspaceDescriptor | null
   status: ProfileStatus
   lastStartedAt: string | null
   createdAt: string
@@ -203,7 +443,9 @@ export interface TemplateRecord {
   groupName: string
   tags: string[]
   notes: string
+  environmentPurpose: EnvironmentPurpose
   fingerprintConfig: FingerprintConfig
+  workspaceTemplate?: Partial<WorkspaceEnvironment> | null
   createdAt: string
   updatedAt: string
 }
@@ -228,6 +470,25 @@ export interface LogEntry {
   category: LogCategory
   message: string
   profileId: string | null
+  createdAt: string
+}
+
+export interface IpUsageRecord {
+  id: string
+  profileId: string
+  proxyId: string | null
+  environmentPurpose: EnvironmentPurpose
+  platform: string
+  usageKind: IpUsageKind
+  egressIp: string
+  country: string
+  region: string
+  city: string
+  timezone: string
+  language: string
+  geolocation: string
+  success: boolean
+  message: string
   createdAt: string
 }
 
@@ -396,7 +657,10 @@ export interface CreateProfileInput {
   groupName: string
   tags: string[]
   notes: string
+  environmentPurpose?: EnvironmentPurpose
+  deviceProfile?: DeviceProfile
   fingerprintConfig: FingerprintConfig
+  workspace?: WorkspaceDescriptor | null
 }
 
 export interface UpdateProfileInput extends CreateProfileInput {
@@ -409,7 +673,9 @@ export interface CreateTemplateInput {
   groupName: string
   tags: string[]
   notes: string
+  environmentPurpose?: EnvironmentPurpose
   fingerprintConfig: FingerprintConfig
+  workspaceTemplate?: Partial<WorkspaceEnvironment> | null
 }
 
 export interface UpdateTemplateInput extends CreateTemplateInput {
@@ -509,6 +775,7 @@ export interface DesktopAuthState {
 export interface ProfileDirectoryInfo {
   appDataDir: string
   profilesDir: string
+  workspacesDir: string
   chromiumExecutable?: string
 }
 
@@ -519,6 +786,21 @@ export interface ExportBundle {
   proxies: ProxyRecord[]
   templates: TemplateRecord[]
   cloudPhones: CloudPhoneRecord[]
+  settings?: SettingsPayload
+  workspaceSnapshots?: WorkspaceSnapshotRecord[]
+  workspaceManifest?: {
+    schemaVersion: number
+    pathRewriteStrategy: 'workspace-resolver-v1'
+    entries: Array<{
+      profileId: string
+      identityProfileId: string
+      templateFingerprintHash: string
+      snapshotCount: number
+      exportedPaths: WorkspacePaths
+      lastSnapshotId: string
+      lastKnownGoodSnapshotId: string
+    }>
+  }
 }
 
 export interface RemoteConfigSnapshot {
@@ -535,7 +817,9 @@ export interface ImportResult {
   proxiesImported: number
   templatesImported: number
   cloudPhonesImported: number
+  workspaceSnapshotsImported?: number
   warnings: string[]
+  profileIdMap?: Record<string, string>
 }
 
 export interface DesktopRuntimeInfo {

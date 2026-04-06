@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { connectMongo } from '../lib/mongodb.js';
 import { asyncHandler } from '../lib/http.js';
-import { serializeProfile } from '../lib/serializers.js';
+import { normalizeWorkspacePayload, serializeProfile } from '../lib/serializers.js';
 import { requireUser } from '../middlewares/auth.js';
 import { ProfileModel } from '../models/Profile.js';
 import { ProfileStorageStateModel } from '../models/ProfileStorageState.js';
@@ -77,7 +77,11 @@ router.post(
       proxyFingerprintHash: body.proxyFingerprintHash || '',
       lastQuickIsolationCheck: body.lastQuickIsolationCheck || null,
       trustedLaunchSnapshot: body.trustedLaunchSnapshot || null,
+      workspace: normalizeWorkspacePayload('pending-profile-id', body.workspace),
     });
+
+    profile.workspace = normalizeWorkspacePayload(String(profile._id), profile.workspace);
+    await profile.save();
 
     res.json({
       success: true,
@@ -122,6 +126,7 @@ router.patch(
     await connectMongo();
     const authUser = req.authUser!;
     const body = req.body || {};
+    const profileId = String(req.params.id);
     const updateData: Record<string, unknown> = {};
 
     if (typeof body.name === 'string') updateData.name = body.name.trim();
@@ -169,9 +174,12 @@ router.patch(
     if (body.trustedLaunchSnapshot !== undefined) {
       updateData.trustedLaunchSnapshot = body.trustedLaunchSnapshot;
     }
+    if (body.workspace !== undefined) {
+      updateData.workspace = normalizeWorkspacePayload(profileId, body.workspace);
+    }
 
     const profile = await ProfileModel.findOneAndUpdate(
-      { _id: req.params.id, userId: authUser.userId },
+      { _id: profileId, userId: authUser.userId },
       updateData,
       { new: true }
     ).lean();
@@ -183,7 +191,7 @@ router.patch(
 
     const storageState = await ProfileStorageStateModel.findOne({
       userId: authUser.userId,
-      profileId: req.params.id,
+      profileId,
     })
       .select('_id')
       .lean();

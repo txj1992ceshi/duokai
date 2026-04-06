@@ -20,11 +20,16 @@ import { chromium } from 'playwright'
 import type { BrowserContext } from 'playwright'
 import { DatabaseService } from './services/database'
 import {
+  createDeviceProfileFromFingerprint,
+  DEFAULT_ENVIRONMENT_PURPOSE,
+} from './services/deviceProfile'
+import {
   createCloudPhonePayload,
   createDefaultFingerprint,
   createProfilePayload,
   createProxyPayload,
   createTemplatePayload,
+  syncFingerprintConfigWithWorkspaceEnvironment,
 } from './services/factories'
 import {
   CloudPhoneProviderRegistry,
@@ -34,6 +39,7 @@ import {
   ThirdPartyCloudPhoneProvider,
 } from './services/cloudPhones'
 import {
+  ensureWorkspaceLayoutForProfile,
   ensureProfileDirectory,
   getProfileDirectoryInfo,
   getProfilePath,
@@ -41,18 +47,35 @@ import {
 import {
   buildChromiumLaunchEnv,
   buildProxyServer,
-  buildRuntimeArgs,
-  normalizeResolution,
-  parseLocale,
   proxyToPlaywrightConfig,
   resolveChromiumExecutable,
 } from './services/runtime'
+import { resolveWorkspaceLaunchConfig } from './services/workspaceRuntime'
+import {
+  applyLastKnownGoodAssessment,
+  createWorkspaceSnapshot,
+  evaluateLastKnownGoodSnapshot,
+  getWorkspaceSnapshotById,
+  doesWorkspaceSnapshotMatchProfile,
+  listWorkspaceSnapshots,
+  restoreWorkspaceSnapshot as restoreWorkspaceSnapshotRecord,
+  rollbackWorkspaceToLastKnownGood as rollbackWorkspaceToLastKnownGoodRecord,
+  updateWorkspaceSnapshotValidation,
+} from './services/workspaceSnapshots'
+import {
+  buildExportBundleV2,
+  importWorkspaceSnapshotsFromBundle,
+} from './services/importExport'
 import { buildFingerprintInitScript } from './services/fingerprint'
 import { applyNetworkDerivedFingerprint } from './services/networkProfileResolver'
 import { resolveLaunchProxy } from './services/proxyBridge'
 import { RuntimeScheduler } from './services/runtimeScheduler'
 import { AgentService } from './services/agentService'
-import { validateProfileForLaunch } from './services/profileValidator'
+import {
+  assessRegistrationRisk,
+  validateProfileReadiness,
+  validateWorkspaceGate,
+} from './services/profileValidator'
 import { ContainerManager } from './services/containerManager'
 import {
   isRuntimeHostSupported,
@@ -85,6 +108,7 @@ import type {
   UpdateTemplateInput,
   UpdateProfileInput,
   UpdateProxyInput,
+  WorkspaceSnapshotRecord,
 } from '../src/shared/types'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -92,6 +116,14 @@ const DEFAULT_TIMEZONE_FALLBACK = 'America/Los_Angeles'
 const DEFAULT_CONCURRENT_STARTS = 2
 const DEFAULT_ACTIVE_LIMIT = 6
 const DEFAULT_LAUNCH_RETRIES = 2
+const DEFAULT_REGISTER_IP_COOLDOWN_HOURS = 24
+const DEFAULT_REGISTER_IP_MAX_PROFILES = 1
+const DEFAULT_LINKEDIN_REGISTER_IP_COOLDOWN_HOURS = 72
+const DEFAULT_LINKEDIN_REGISTER_IP_MAX_PROFILES = 1
+const DEFAULT_TIKTOK_REGISTER_IP_COOLDOWN_HOURS = 24
+const DEFAULT_TIKTOK_REGISTER_IP_MAX_PROFILES = 1
+const DEFAULT_NURTURE_MINIMUM_HOURS_AFTER_REGISTER = 24
+const DEFAULT_OPERATION_MINIMUM_HOURS_AFTER_NURTURE = 72
 const GOOGLE_PROXY_BYPASS_LIST = [
   '*.google.com',
   '*.google.com.*',
@@ -261,6 +293,24 @@ function getProfileStorageStatePath(profileId: string): string {
   return path.join(getProfilePath(app, profileId), 'storageState.json')
 }
 
+function ensureWorkspaceLayoutForProfileId(profileId: string): ProfileRecord {
+  let profile = requireDatabase().getProfileById(profileId)
+  if (!profile) {
+    throw new Error('Profile not found')
+  }
+  const workspace = ensureWorkspaceLayoutForProfile(app, profile, (nextWorkspace) => {
+    profile = persistProfile({
+      ...profile!,
+      workspace: nextWorkspace,
+    })
+  })
+  profile = requireDatabase().getProfileById(profileId) ?? {
+    ...profile,
+    workspace,
+  }
+  return profile
+}
+
 function normalizeStorageState(stateJson: unknown): BrowserStorageState | null {
   if (!stateJson || typeof stateJson !== 'object') {
     return null
@@ -274,6 +324,7 @@ function hashStorageState(stateJson: unknown): string {
 
 async function readProfileStorageStateFromDisk(profileId: string): Promise<BrowserStorageState | null> {
   try {
+    ensureWorkspaceLayoutForProfileId(profileId)
     const content = await readFile(getProfileStorageStatePath(profileId), 'utf8')
     return normalizeStorageState(JSON.parse(content))
   } catch {
@@ -282,6 +333,7 @@ async function readProfileStorageStateFromDisk(profileId: string): Promise<Brows
 }
 
 async function writeProfileStorageStateToDisk(profileId: string, stateJson: unknown): Promise<void> {
+  ensureWorkspaceLayoutForProfileId(profileId)
   const profilePath = getProfilePath(app, profileId)
   mkdirSync(profilePath, { recursive: true })
   await writeFile(getProfileStorageStatePath(profileId), JSON.stringify(stateJson, null, 2), 'utf8')
@@ -320,6 +372,317 @@ async function fetchRemoteProfileStorageState(profileId: string): Promise<Contro
   }
   const payload = await requestControlPlane(`/api/profile-storage-state/${encodeURIComponent(profileId)}`)
   return (payload.storageState || null) as ControlPlaneStorageState | null
+}
+
+async function syncWorkspaceSnapshotToControlPlane(snapshot: WorkspaceSnapshotRecord): Promise<void> {
+  if (!getDesktopAuthState().authenticated) {
+    return
+  }
+  await requestControlPlane(
+    `/api/workspace-snapshots/${encodeURIComponent(snapshot.profileId)}/${encodeURIComponent(snapshot.snapshotId)}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(snapshot),
+    },
+  )
+}
+
+async function fetchWorkspaceSnapshotFromControlPlane(
+  profileId: string,
+  snapshotId: string,
+): Promise<WorkspaceSnapshotRecord | null> {
+  if (!getDesktopAuthState().authenticated) {
+    return null
+  }
+  const payload = await requestControlPlane(
+    `/api/workspace-snapshots/${encodeURIComponent(profileId)}/${encodeURIComponent(snapshotId)}`,
+  )
+  return (payload.snapshot || null) as WorkspaceSnapshotRecord | null
+}
+
+async function syncWorkspaceSummaryToControlPlane(profile: ProfileRecord): Promise<void> {
+  if (!getDesktopAuthState().authenticated || !profile.workspace) {
+    return
+  }
+  await requestControlPlane(`/api/profiles/${encodeURIComponent(profile.id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      workspace: profile.workspace,
+    }),
+  })
+}
+
+async function createWorkspaceSnapshotForProfile(profileId: string): Promise<WorkspaceSnapshotRecord> {
+  let profile = ensureWorkspaceLayoutForProfileId(profileId)
+  const snapshot = await createWorkspaceSnapshot(profile, {
+    storageStatePath: getProfileStorageStatePath(profileId),
+    storageStateSource: getDesktopAuthState().authenticated ? 'desktop' : 'local-disk',
+  })
+  profile = persistProfile({
+    ...profile,
+    workspace: {
+      ...profile.workspace!,
+      snapshotSummary: {
+        ...profile.workspace!.snapshotSummary,
+        lastSnapshotId: snapshot.snapshotId,
+        lastSnapshotAt: snapshot.createdAt,
+      },
+    },
+  })
+  void syncWorkspaceSummaryToControlPlane(profile).catch((error) => {
+    audit('workspace_summary_sync_failed', {
+      profileId,
+      snapshotId: snapshot.snapshotId,
+      err: error instanceof Error ? error.message : String(error),
+    })
+  })
+  void syncWorkspaceSnapshotToControlPlane(snapshot).catch((error) => {
+    audit('workspace_snapshot_sync_failed', {
+      profileId,
+      snapshotId: snapshot.snapshotId,
+      err: error instanceof Error ? error.message : String(error),
+    })
+  })
+  return snapshot
+}
+
+async function listWorkspaceSnapshotsForProfile(profileId: string): Promise<WorkspaceSnapshotRecord[]> {
+  const profile = ensureWorkspaceLayoutForProfileId(profileId)
+  return listWorkspaceSnapshots(profile)
+}
+
+async function restoreWorkspaceSnapshotForProfile(
+  profileId: string,
+  snapshotId: string,
+  recoveryReason = `restore:${snapshotId}`,
+): Promise<ProfileRecord> {
+  await stopRuntime(profileId)
+  const profile = ensureWorkspaceLayoutForProfileId(profileId)
+  const restoreResult = await restoreWorkspaceSnapshotRecord(profile, snapshotId, {
+    storageStatePath: getProfileStorageStatePath(profileId),
+    recoveryReason,
+    fetchRemoteSnapshot: fetchWorkspaceSnapshotFromControlPlane,
+  })
+  const persisted = persistProfile({
+    ...restoreResult.profile,
+    fingerprintConfig: {
+      ...restoreResult.profile.fingerprintConfig,
+      runtimeMetadata: {
+        ...restoreResult.profile.fingerprintConfig.runtimeMetadata,
+        lastStorageStateVersion: Number(restoreResult.snapshot.storageState.version || 0),
+        lastStorageStateSyncedAt: String(restoreResult.snapshot.storageState.updatedAt || ''),
+        lastStorageStateDeviceId: String(restoreResult.snapshot.storageState.deviceId || ''),
+        lastStorageStateSyncStatus: 'synced',
+        lastStorageStateSyncMessage: '已从 workspace snapshot 恢复登录态',
+      },
+    },
+  })
+  const gateResult = validateWorkspaceGate(
+    persisted,
+    requireDatabase()
+      .listProfiles()
+      .map((item) => (item.id === persisted.id ? persisted : item)),
+  )
+  let gatedProfile = persistProfile({
+    ...persisted,
+    workspace: gateResult.workspace,
+  })
+  gatedProfile = await refreshLastKnownGoodSnapshotStatus(gatedProfile)
+  const restoredSnapshot =
+    (await getWorkspaceSnapshotById(gatedProfile, snapshotId)) ?? restoreResult.snapshot
+  void syncWorkspaceSummaryToControlPlane(gatedProfile).catch((error) => {
+    audit('workspace_restore_summary_sync_failed', {
+      profileId,
+      snapshotId,
+      err: error instanceof Error ? error.message : String(error),
+    })
+  })
+  void syncWorkspaceSnapshotToControlPlane(restoredSnapshot).catch((error) => {
+    audit('workspace_restore_snapshot_sync_failed', {
+      profileId,
+      snapshotId,
+      err: error instanceof Error ? error.message : String(error),
+    })
+  })
+  if (gateResult.status === 'block') {
+    throw new Error(
+      `Workspace snapshot ${snapshotId} was restored, but post-restore validation failed: ${gateResult.messages.join(' ')}`,
+    )
+  }
+  return gatedProfile
+}
+
+async function rollbackWorkspaceSnapshotForProfile(profileId: string): Promise<ProfileRecord> {
+  await stopRuntime(profileId)
+  const profile = ensureWorkspaceLayoutForProfileId(profileId)
+  const rollbackResult = await rollbackWorkspaceToLastKnownGoodRecord(profile, {
+    storageStatePath: getProfileStorageStatePath(profileId),
+    fetchRemoteSnapshot: fetchWorkspaceSnapshotFromControlPlane,
+  })
+  const snapshotId = rollbackResult.snapshot.snapshotId
+  const persisted = persistProfile({
+    ...rollbackResult.profile,
+    fingerprintConfig: {
+      ...rollbackResult.profile.fingerprintConfig,
+      runtimeMetadata: {
+        ...rollbackResult.profile.fingerprintConfig.runtimeMetadata,
+        lastStorageStateVersion: Number(rollbackResult.snapshot.storageState.version || 0),
+        lastStorageStateSyncedAt: String(rollbackResult.snapshot.storageState.updatedAt || ''),
+        lastStorageStateDeviceId: String(rollbackResult.snapshot.storageState.deviceId || ''),
+        lastStorageStateSyncStatus: 'synced',
+        lastStorageStateSyncMessage: '已回滚到 last known good snapshot 的登录态',
+      },
+    },
+  })
+  const gateResult = validateWorkspaceGate(
+    persisted,
+    requireDatabase()
+      .listProfiles()
+      .map((item) => (item.id === persisted.id ? persisted : item)),
+  )
+  let gatedProfile = persistProfile({
+    ...persisted,
+    workspace: gateResult.workspace,
+  })
+  gatedProfile = await refreshLastKnownGoodSnapshotStatus(gatedProfile)
+  const restoredSnapshot =
+    (await getWorkspaceSnapshotById(gatedProfile, snapshotId)) ?? rollbackResult.snapshot
+  void syncWorkspaceSummaryToControlPlane(gatedProfile).catch((error) => {
+    audit('workspace_rollback_summary_sync_failed', {
+      profileId,
+      snapshotId,
+      err: error instanceof Error ? error.message : String(error),
+    })
+  })
+  void syncWorkspaceSnapshotToControlPlane(restoredSnapshot).catch((error) => {
+    audit('workspace_rollback_snapshot_sync_failed', {
+      profileId,
+      snapshotId,
+      err: error instanceof Error ? error.message : String(error),
+    })
+  })
+  if (gateResult.status === 'block') {
+    throw new Error(
+      `Workspace snapshot ${snapshotId} was rolled back, but post-restore validation failed: ${gateResult.messages.join(' ')}`,
+    )
+  }
+  return gatedProfile
+}
+
+async function markWorkspaceSnapshotAsLastKnownGood(
+  profileId: string,
+  snapshotId: string,
+  validatedAt: string,
+): Promise<ProfileRecord | null> {
+  let profile = requireDatabase().getProfileById(profileId)
+  if (!profile?.workspace) {
+    return null
+  }
+  if (
+    profile.workspace.healthSummary.status !== 'healthy' ||
+    profile.workspace.consistencySummary.status === 'block'
+  ) {
+    return profile
+  }
+  const currentStorageStateJson = await readProfileStorageStateFromDisk(profileId)
+  const currentStorageState = {
+    version: Number(profile.fingerprintConfig.runtimeMetadata.lastStorageStateVersion || 0),
+    stateHash: currentStorageStateJson ? hashStorageState(currentStorageStateJson) : '',
+    updatedAt: profile.fingerprintConfig.runtimeMetadata.lastStorageStateSyncedAt || '',
+    deviceId: profile.fingerprintConfig.runtimeMetadata.lastStorageStateDeviceId || '',
+    source: getDesktopAuthState().authenticated ? 'desktop' : 'local-disk',
+  }
+  const currentSnapshots = await listWorkspaceSnapshots(profile)
+  const targetSnapshot = currentSnapshots.find((item) => item.snapshotId === snapshotId)
+  if (!targetSnapshot || !doesWorkspaceSnapshotMatchProfile(targetSnapshot, profile, currentStorageState)) {
+    return profile
+  }
+  const updatedSnapshot = await updateWorkspaceSnapshotValidation(profile, snapshotId, validatedAt)
+  if (!updatedSnapshot) {
+    return profile
+  }
+  profile = persistProfile({
+    ...profile,
+    workspace: {
+      ...profile.workspace,
+      snapshotSummary: {
+        ...profile.workspace.snapshotSummary,
+        lastSnapshotId: updatedSnapshot.snapshotId,
+        lastSnapshotAt: updatedSnapshot.createdAt,
+        lastKnownGoodSnapshotId: updatedSnapshot.snapshotId,
+        lastKnownGoodSnapshotAt: validatedAt,
+        lastKnownGoodStatus: 'valid',
+        lastKnownGoodInvalidatedAt: '',
+        lastKnownGoodInvalidationReason: '',
+      },
+    },
+  })
+  void syncWorkspaceSummaryToControlPlane(profile).catch((error) => {
+    audit('workspace_summary_mark_good_sync_failed', {
+      profileId,
+      snapshotId,
+      err: error instanceof Error ? error.message : String(error),
+    })
+  })
+  void syncWorkspaceSnapshotToControlPlane(updatedSnapshot).catch((error) => {
+    audit('workspace_snapshot_mark_good_sync_failed', {
+      profileId,
+      snapshotId,
+      err: error instanceof Error ? error.message : String(error),
+    })
+  })
+  return profile
+}
+
+async function refreshLastKnownGoodSnapshotStatus(profile: ProfileRecord): Promise<ProfileRecord> {
+  if (!profile.workspace) {
+    return profile
+  }
+  const currentStorageStateJson = await readProfileStorageStateFromDisk(profile.id)
+  const currentStorageState = {
+    version: Number(profile.fingerprintConfig.runtimeMetadata.lastStorageStateVersion || 0),
+    stateHash: currentStorageStateJson ? hashStorageState(currentStorageStateJson) : '',
+    updatedAt: profile.fingerprintConfig.runtimeMetadata.lastStorageStateSyncedAt || '',
+    deviceId: profile.fingerprintConfig.runtimeMetadata.lastStorageStateDeviceId || '',
+    source: getDesktopAuthState().authenticated ? 'desktop' : 'local-disk',
+  }
+  const assessment = await evaluateLastKnownGoodSnapshot(profile, {
+    storageState: currentStorageState,
+    fetchRemoteSnapshot: fetchWorkspaceSnapshotFromControlPlane,
+  })
+  const nextSnapshotSummary =
+    assessment.status === 'invalid'
+      ? applyLastKnownGoodAssessment(profile.workspace.snapshotSummary, {
+          status: 'invalid',
+          reason: assessment.reason,
+          invalidatedAt: new Date().toISOString(),
+        })
+      : applyLastKnownGoodAssessment(profile.workspace.snapshotSummary, {
+          status: assessment.status,
+          reason: assessment.reason,
+        })
+  const changed =
+    nextSnapshotSummary.lastKnownGoodStatus !== profile.workspace.snapshotSummary.lastKnownGoodStatus ||
+    nextSnapshotSummary.lastKnownGoodInvalidatedAt !== profile.workspace.snapshotSummary.lastKnownGoodInvalidatedAt ||
+    nextSnapshotSummary.lastKnownGoodInvalidationReason !==
+      profile.workspace.snapshotSummary.lastKnownGoodInvalidationReason
+  if (!changed) {
+    return profile
+  }
+  const persisted = persistProfile({
+    ...profile,
+    workspace: {
+      ...profile.workspace,
+      snapshotSummary: nextSnapshotSummary,
+    },
+  })
+  void syncWorkspaceSummaryToControlPlane(persisted).catch((error) => {
+    audit('workspace_summary_refresh_good_sync_failed', {
+      profileId: profile.id,
+      err: error instanceof Error ? error.message : String(error),
+    })
+  })
+  return persisted
 }
 
 async function saveAllElectronSessions(): Promise<void> {
@@ -1190,6 +1553,7 @@ type ControlPlaneProfile = {
   proxyFingerprintHash?: string
   lastQuickIsolationCheck?: TrustedIsolationCheck | null
   trustedLaunchSnapshot?: TrustedLaunchSnapshot | null
+  workspace?: ProfileRecord['workspace'] | null
 }
 
 function normalizeProfileName(name: string | undefined): string {
@@ -1459,6 +1823,7 @@ function resolveChromiumMajorForProfile(profile: ProfileRecord): string {
 
 function buildConfigFingerprintHash(profile: ProfileRecord): string {
   return hashStructuredPayload({
+    environmentPurpose: profile.environmentPurpose,
     userAgent: profile.fingerprintConfig.userAgent,
     operatingSystem: profile.fingerprintConfig.advanced.operatingSystem,
     browserVersion: profile.fingerprintConfig.advanced.browserVersion,
@@ -1469,6 +1834,7 @@ function buildConfigFingerprintHash(profile: ProfileRecord): string {
     deviceMode: profile.fingerprintConfig.advanced.deviceMode,
     startupPlatform: profile.fingerprintConfig.basicSettings.platform,
     startupUrl: resolveProfileStartupUrl(profile),
+    deviceProfile: profile.deviceProfile,
   })
 }
 
@@ -1668,17 +2034,32 @@ function buildFingerprintFromRemoteProfile(
   return next
 }
 
-function mapRemoteProfileToLocalInput(remoteProfile: ControlPlaneProfile): UpdateProfileInput {
+function mapRemoteProfileToLocalInput(
+  remoteProfile: ControlPlaneProfile,
+  localFallback?: Partial<UpdateProfileInput | ProfileRecord> | null,
+): UpdateProfileInput {
   const existing = requireDatabase().getProfileById(remoteProfile.id)
   const matchedSavedProxy = findMatchingSavedProxyForRemoteProfile(remoteProfile, existing)
+  const fingerprintConfig = buildFingerprintFromRemoteProfile(remoteProfile, existing)
   return {
     id: remoteProfile.id,
     name: remoteProfile.name || 'Remote Profile',
     proxyId: matchedSavedProxy?.id || null,
-    groupName: remoteProfile.groupId || existing?.groupName || '',
-    tags: Array.isArray(remoteProfile.tags) ? remoteProfile.tags : existing?.tags || [],
-    notes: existing?.notes || '',
-    fingerprintConfig: buildFingerprintFromRemoteProfile(remoteProfile, existing),
+    groupName: remoteProfile.groupId || localFallback?.groupName || existing?.groupName || '',
+    tags: Array.isArray(remoteProfile.tags) ? remoteProfile.tags : localFallback?.tags || existing?.tags || [],
+    notes: localFallback?.notes || existing?.notes || '',
+    environmentPurpose:
+      localFallback?.environmentPurpose || existing?.environmentPurpose || DEFAULT_ENVIRONMENT_PURPOSE,
+    deviceProfile: createDeviceProfileFromFingerprint(
+      fingerprintConfig,
+      localFallback?.deviceProfile?.createdAt ||
+        existing?.deviceProfile?.createdAt ||
+        existing?.createdAt ||
+        new Date().toISOString(),
+      localFallback?.deviceProfile || existing?.deviceProfile,
+    ),
+    fingerprintConfig,
+    workspace: remoteProfile.workspace ?? localFallback?.workspace ?? existing?.workspace ?? null,
   }
 }
 
@@ -1705,12 +2086,16 @@ function mapLocalProfileToRemotePayload(profile: UpdateProfileInput | ProfileRec
     proxyFingerprintHash: profile.fingerprintConfig.runtimeMetadata.proxyFingerprintHash,
     lastQuickIsolationCheck: profile.fingerprintConfig.runtimeMetadata.lastQuickIsolationCheck,
     trustedLaunchSnapshot: profile.fingerprintConfig.runtimeMetadata.trustedLaunchSnapshot,
+    workspace: profile.workspace ?? null,
   }
 }
 
-function syncRemoteProfileIntoLocal(remoteProfile: ControlPlaneProfile): ProfileRecord {
+function syncRemoteProfileIntoLocal(
+  remoteProfile: ControlPlaneProfile,
+  localFallback?: Partial<UpdateProfileInput | ProfileRecord> | null,
+): ProfileRecord {
   const database = requireDatabase()
-  const localInput = mapRemoteProfileToLocalInput(remoteProfile)
+  const localInput = mapRemoteProfileToLocalInput(remoteProfile, localFallback)
   const profile = database.updateProfile(localInput)
   database.setProfileStatus(profile.id, mapControlPlaneStatus(remoteProfile.status))
   return database.getProfileById(profile.id) || profile
@@ -2375,6 +2760,15 @@ function parseBundle(content: string): ExportBundle {
     proxies: parsed.proxies,
     templates: parsed.templates,
     cloudPhones: Array.isArray(parsed.cloudPhones) ? parsed.cloudPhones : [],
+    settings:
+      parsed.settings && typeof parsed.settings === 'object'
+        ? (parsed.settings as SettingsPayload)
+        : {},
+    workspaceSnapshots: Array.isArray(parsed.workspaceSnapshots) ? parsed.workspaceSnapshots : [],
+    workspaceManifest:
+      parsed.workspaceManifest && typeof parsed.workspaceManifest === 'object'
+        ? parsed.workspaceManifest
+        : undefined,
   }
 }
 
@@ -2436,6 +2830,155 @@ function getMaxLaunchRetries(): number {
   return getRuntimeNumberSetting('runtimeMaxLaunchRetries', DEFAULT_LAUNCH_RETRIES)
 }
 
+function getRegisterIpCooldownHours(): number {
+  return getRuntimeNumberSetting('registerIpCooldownHours', DEFAULT_REGISTER_IP_COOLDOWN_HOURS)
+}
+
+function getRegisterIpCooldownMaxProfiles(): number {
+  return getRuntimeNumberSetting('registerIpCooldownMaxProfiles', DEFAULT_REGISTER_IP_MAX_PROFILES)
+}
+
+function getPlatformSpecificRegisterCooldown(platform: string): {
+  platform: string
+  withinHours: number
+  maxProfiles: number
+} | null {
+  const normalized = String(platform || '').trim().toLowerCase()
+  if (normalized === 'linkedin') {
+    return {
+      platform: 'LinkedIn',
+      withinHours: getRuntimeNumberSetting(
+        'linkedinRegisterIpCooldownHours',
+        DEFAULT_LINKEDIN_REGISTER_IP_COOLDOWN_HOURS,
+      ),
+      maxProfiles: getRuntimeNumberSetting(
+        'linkedinRegisterIpCooldownMaxProfiles',
+        DEFAULT_LINKEDIN_REGISTER_IP_MAX_PROFILES,
+      ),
+    }
+  }
+  if (normalized === 'tiktok') {
+    return {
+      platform: 'TikTok',
+      withinHours: getRuntimeNumberSetting(
+        'tiktokRegisterIpCooldownHours',
+        DEFAULT_TIKTOK_REGISTER_IP_COOLDOWN_HOURS,
+      ),
+      maxProfiles: getRuntimeNumberSetting(
+        'tiktokRegisterIpCooldownMaxProfiles',
+        DEFAULT_TIKTOK_REGISTER_IP_MAX_PROFILES,
+      ),
+    }
+  }
+  return null
+}
+
+function getLifecyclePolicyContext() {
+  return {
+    nurtureMinimumHoursAfterRegister: getRuntimeNumberSetting(
+      'nurtureMinimumHoursAfterRegister',
+      DEFAULT_NURTURE_MINIMUM_HOURS_AFTER_REGISTER,
+    ),
+    operationMinimumHoursAfterNurture: getRuntimeNumberSetting(
+      'operationMinimumHoursAfterNurture',
+      DEFAULT_OPERATION_MINIMUM_HOURS_AFTER_NURTURE,
+    ),
+  }
+}
+
+function getRegistrationCooldownContext(profile: ProfileRecord, check: NetworkHealthResult) {
+  if (profile.environmentPurpose !== 'register' || !check.ok || !check.ip) {
+    return undefined
+  }
+  const withinHours = getRegisterIpCooldownHours()
+  const maxProfiles = getRegisterIpCooldownMaxProfiles()
+  const platformCooldown = getPlatformSpecificRegisterCooldown(
+    profile.fingerprintConfig.basicSettings.platform,
+  )
+  const recentUsages = requireDatabase().listRecentIpUsageByEgressIp({
+    egressIp: check.ip,
+    withinHours,
+    environmentPurpose: 'register',
+    usageKind: 'register-launch',
+    excludeProfileId: profile.id,
+    successOnly: true,
+  })
+  const platformRecentUsages =
+    platformCooldown
+      ? requireDatabase().listRecentIpUsageByEgressIp({
+          egressIp: check.ip,
+          withinHours: platformCooldown.withinHours,
+          environmentPurpose: 'register',
+          platform: profile.fingerprintConfig.basicSettings.platform,
+          usageKind: 'register-launch',
+          excludeProfileId: profile.id,
+          successOnly: true,
+        })
+      : []
+  return {
+    withinHours,
+    maxProfiles,
+    recentUsages,
+    platform: platformCooldown?.platform || '',
+    platformWithinHours: platformCooldown?.withinHours || withinHours,
+    platformMaxProfiles: platformCooldown?.maxProfiles || maxProfiles,
+    platformRecentUsages,
+  }
+}
+
+function recordProfileIpUsage(profile: ProfileRecord, check: NetworkHealthResult, startupNavigationPassed: boolean): void {
+  if (!check.ip) {
+    return
+  }
+  requireDatabase().createIpUsage({
+    profileId: profile.id,
+    proxyId: profile.proxyId,
+    environmentPurpose: profile.environmentPurpose,
+    platform: profile.fingerprintConfig.basicSettings.platform,
+    usageKind: profile.environmentPurpose === 'register' ? 'register-launch' : 'launch',
+    egressIp: check.ip,
+    country: check.country,
+    region: check.region,
+    city: check.city,
+    timezone: check.timezone,
+    language: check.languageHint,
+    geolocation: check.geolocation,
+    success: startupNavigationPassed,
+    message: startupNavigationPassed ? 'Profile startup navigation completed' : 'Profile startup navigation failed',
+  })
+}
+
+function applyPurposeTransitionMetadata(
+  nextInput: UpdateProfileInput,
+  existing: ProfileRecord | null,
+): UpdateProfileInput {
+  if (!existing || nextInput.environmentPurpose === existing.environmentPurpose) {
+    return nextInput
+  }
+  const now = new Date().toISOString()
+  const nextPurpose = nextInput.environmentPurpose ?? existing.environmentPurpose
+  return {
+    ...nextInput,
+    fingerprintConfig: {
+      ...nextInput.fingerprintConfig,
+      runtimeMetadata: {
+        ...nextInput.fingerprintConfig.runtimeMetadata,
+        lastPurposeTransitionAt: now,
+        lastPurposeTransitionFrom: existing.environmentPurpose,
+        lastPurposeTransitionTo: nextPurpose,
+        lastNurtureTransitionAt:
+          nextPurpose === 'nurture'
+            ? now
+            : nextInput.fingerprintConfig.runtimeMetadata.lastNurtureTransitionAt,
+        lastOperationTransitionAt:
+          nextPurpose === 'operation'
+            ? now
+            : nextInput.fingerprintConfig.runtimeMetadata.lastOperationTransitionAt,
+      },
+    },
+  }
+}
+
 function getRuntimeHostInfo() {
   const settings = getSettings()
   const kind = resolveRequestedRuntimeKind(settings)
@@ -2452,6 +2995,10 @@ function getRuntimeHostInfo() {
 }
 
 function persistProfile(profile: ProfileRecord): ProfileRecord {
+  const fingerprintConfig = syncFingerprintConfigWithWorkspaceEnvironment(
+    profile.fingerprintConfig,
+    profile.workspace,
+  )
   return requireDatabase().updateProfile({
     id: profile.id,
     name: profile.name,
@@ -2459,7 +3006,14 @@ function persistProfile(profile: ProfileRecord): ProfileRecord {
     groupName: profile.groupName,
     tags: profile.tags,
     notes: profile.notes,
-    fingerprintConfig: profile.fingerprintConfig,
+    environmentPurpose: profile.environmentPurpose,
+    deviceProfile: createDeviceProfileFromFingerprint(
+      fingerprintConfig,
+      profile.deviceProfile?.createdAt || profile.createdAt,
+      profile.deviceProfile,
+    ),
+    fingerprintConfig,
+    workspace: profile.workspace ?? null,
   })
 }
 
@@ -2520,6 +3074,10 @@ async function applyResolvedNetworkProfileToPayload(
   const check = await checkNetworkHealth(
     {
       ...payload,
+      environmentPurpose: payload.environmentPurpose || DEFAULT_ENVIRONMENT_PURPOSE,
+      deviceProfile:
+        payload.deviceProfile ||
+        createDeviceProfileFromFingerprint(payload.fingerprintConfig, new Date().toISOString()),
       status: 'stopped',
       lastStartedAt: null,
       createdAt: new Date().toISOString(),
@@ -2539,6 +3097,10 @@ async function applyResolvedNetworkProfileToPayload(
   const resolved = applyNetworkDerivedFingerprint(
     {
       ...payload,
+      environmentPurpose: payload.environmentPurpose || DEFAULT_ENVIRONMENT_PURPOSE,
+      deviceProfile:
+        payload.deviceProfile ||
+        createDeviceProfileFromFingerprint(payload.fingerprintConfig, new Date().toISOString()),
       status: 'stopped',
       lastStartedAt: null,
       createdAt: new Date().toISOString(),
@@ -2573,8 +3135,8 @@ async function runProxyPreflight(
   database: DatabaseService,
 ): Promise<{ proxy: ProxyRecord | null; check: NetworkHealthResult }> {
   const originalProxy = resolveProfileProxy(profile, database)
-  let proxy = toCandidateProxy(originalProxy, toEntryTransport(originalProxy))
-  let check = await checkNetworkHealth(profile, proxy)
+  const proxy = toCandidateProxy(originalProxy, toEntryTransport(originalProxy))
+  const check = await checkNetworkHealth(profile, proxy)
 
   updateRuntimeMetadata(profile, {
     lastResolvedIp: check.ip,
@@ -2637,8 +3199,30 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
   if (runtimeContexts.has(profileId)) {
     return
   }
+  profile = ensureWorkspaceLayoutForProfileId(profileId)
+  const workspaceGate = validateWorkspaceGate(profile, database.listProfiles())
+  profile = persistProfile({
+    ...profile,
+    workspace: workspaceGate.workspace,
+  })
+  profile = await refreshLastKnownGoodSnapshotStatus(profile)
+  if (workspaceGate.status === 'block') {
+    profile = updateRuntimeMetadata(profile, {
+      lastValidationLevel: 'block',
+      lastValidationMessages: workspaceGate.messages,
+      launchValidationStage: 'idle',
+    })
+    throw new Error(workspaceGate.messages.join(' '))
+  }
+  if (workspaceGate.status === 'warn') {
+    profile = updateRuntimeMetadata(profile, {
+      lastValidationLevel: 'warn',
+      lastValidationMessages: workspaceGate.messages,
+      launchValidationStage: 'idle',
+    })
+  }
   const proxy = resolveProfileProxy(profile, database)
-  const validation = validateProfileForLaunch(profile, proxy)
+  const validation = validateProfileReadiness(profile, proxy, undefined, undefined, getLifecyclePolicyContext())
   const configFingerprintHash = buildConfigFingerprintHash(profile)
   const proxyFingerprintHash = buildProxyFingerprintHash(profile, proxy)
   const existingSnapshot = profile.fingerprintConfig.runtimeMetadata.trustedLaunchSnapshot
@@ -2716,6 +3300,31 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     })
   }
 
+  const registrationCooldown = getRegistrationCooldownContext(profile, check)
+  const readinessValidation = validateProfileReadiness(
+    profile,
+    resolvedProxy,
+    check,
+    registrationCooldown,
+    getLifecyclePolicyContext(),
+  )
+  const registrationRisk = assessRegistrationRisk(
+    profile,
+    readinessValidation,
+    check,
+    registrationCooldown,
+  )
+  profile = updateRuntimeMetadata(profile, {
+    lastValidationLevel: readinessValidation.level,
+    lastValidationMessages: readinessValidation.messages,
+    lastRegistrationRiskScore: registrationRisk.score,
+    lastRegistrationRiskLevel: registrationRisk.level,
+    lastRegistrationRiskFactors: registrationRisk.factors,
+  })
+  if (readinessValidation.level === 'block') {
+    throw new Error(readinessValidation.messages.join(' '))
+  }
+
   if (scheduler.isCancelled(profileId)) {
     throw new Error('Launch cancelled')
   }
@@ -2755,7 +3364,14 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
 
   const directoryInfo = getProfileDirectoryInfo(app)
   ensureProfileDirectory(directoryInfo.profilesDir)
-  const userDataDir = getProfilePath(app, profileId)
+  profile = ensureWorkspaceLayoutForProfileId(profileId)
+  const settings = database.getSettings()
+  const fingerprint = profile.fingerprintConfig
+  const workspaceLaunch = resolveWorkspaceLaunchConfig(
+    profile,
+    !fingerprint.commonSettings.hardwareAcceleration,
+  )
+  const userDataDir = workspaceLaunch.userDataDir
   mkdirSync(userDataDir, { recursive: true })
   await downloadProfileStorageStateFromControlPlane(profileId)
   const runtimeHost = await runtimeHostManager.startEnvironment(profileId, userDataDir, getSettings())
@@ -2766,22 +3382,14 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     reason: runtimeHost.reason,
   })
 
-  const settings = database.getSettings()
-  const fingerprint = profile.fingerprintConfig
-  const locale = parseLocale(fingerprint.language)
-  const viewport = normalizeResolution(
-    fingerprint.advanced.windowWidth && fingerprint.advanced.windowHeight
-      ? `${fingerprint.advanced.windowWidth}x${fingerprint.advanced.windowHeight}`
-      : fingerprint.resolution,
-  )
   const executablePath = resolveChromiumExecutable()
 
   const launchOptions: Parameters<typeof chromium.launchPersistentContext>[1] = {
     headless: false,
     executablePath,
-    viewport,
-    locale,
-    timezoneId: fingerprint.timezone || DEFAULT_TIMEZONE_FALLBACK,
+    viewport: workspaceLaunch.viewport,
+    locale: workspaceLaunch.locale,
+    timezoneId: workspaceLaunch.timezoneId || DEFAULT_TIMEZONE_FALLBACK,
     userAgent: fingerprint.userAgent,
     ignoreHTTPSErrors: true,
     geolocation: parseGeolocation(fingerprint.advanced.geolocation),
@@ -2789,11 +3397,9 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       fingerprint.advanced.geolocationPermission === 'allow' && parseGeolocation(fingerprint.advanced.geolocation)
         ? ['geolocation']
         : [],
-    args: buildRuntimeArgs(
-      fingerprint.webrtcMode,
-      fingerprint.advanced.launchArgs,
-      !fingerprint.commonSettings.hardwareAcceleration,
-    ),
+    args: workspaceLaunch.launchArgs,
+    acceptDownloads: true,
+    downloadsPath: workspaceLaunch.downloadsDir,
   }
 
   const proxyConfig = proxyToPlaywrightConfig(resolvedProxy)
@@ -2814,6 +3420,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     messages: diagnostics.messages,
   })
 
+  // Launch reads userDataDir and runtime config from workspace only. Legacy fingerprint fields are mirrors.
   const context = await chromium.launchPersistentContext(userDataDir, launchOptions)
   if (scheduler.isCancelled(profileId)) {
     await context.close()
@@ -2834,6 +3441,27 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     profileId,
   )
   await context.addInitScript(buildFingerprintInitScript(profile.id, profile.fingerprintConfig))
+  let latestWorkspaceSnapshot: WorkspaceSnapshotRecord | null = null
+  try {
+    const existingSnapshots = await listWorkspaceSnapshotsForProfile(profileId)
+    const localStorageState = await readProfileStorageStateFromDisk(profileId)
+    const currentStorageState = {
+      version: Number(profile.fingerprintConfig.runtimeMetadata.lastStorageStateVersion || 0),
+      stateHash: localStorageState ? hashStorageState(localStorageState) : '',
+      updatedAt: profile.fingerprintConfig.runtimeMetadata.lastStorageStateSyncedAt || '',
+      deviceId: profile.fingerprintConfig.runtimeMetadata.lastStorageStateDeviceId || '',
+      source: getDesktopAuthState().authenticated ? 'desktop' : 'local-disk',
+    }
+    const matchedSnapshot = existingSnapshots.find((snapshot) =>
+      doesWorkspaceSnapshotMatchProfile(snapshot, profile, currentStorageState),
+    )
+    latestWorkspaceSnapshot = matchedSnapshot ?? (await createWorkspaceSnapshotForProfile(profileId))
+  } catch (error) {
+    audit('workspace_snapshot_create_failed', {
+      profileId,
+      err: error instanceof Error ? error.message : String(error),
+    })
+  }
 
   const persistStateOnLastPageClose = (pageToWatch: import('playwright').Page) => {
     pageToWatch.on('close', () => {
@@ -2879,7 +3507,16 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       waitUntil: 'domcontentloaded',
     })
     startupNavigationPassed = true
+    if (profile.environmentPurpose === 'register') {
+      profile = updateRuntimeMetadata(profile, {
+        lastRegisterLaunchAt: new Date().toISOString(),
+      })
+    }
+    recordProfileIpUsage(profile, check, startupNavigationPassed)
   } finally {
+    if (!startupNavigationPassed) {
+      recordProfileIpUsage(profile, check, startupNavigationPassed)
+    }
     const latestProfile = database.getProfileById(profileId) ?? profile
     const latestSnapshot = latestProfile.fingerprintConfig.runtimeMetadata.trustedLaunchSnapshot
     const nextSnapshot = latestSnapshot
@@ -2896,6 +3533,13 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       trustedSnapshotStatus: nextSnapshot?.status || latestProfile.fingerprintConfig.runtimeMetadata.trustedSnapshotStatus,
       trustedLaunchSnapshot: nextSnapshot,
     })
+    if (startupNavigationPassed && latestWorkspaceSnapshot) {
+      await markWorkspaceSnapshotAsLastKnownGood(
+        profileId,
+        latestWorkspaceSnapshot.snapshotId,
+        new Date().toISOString(),
+      )
+    }
     void syncProfileLaunchTrustToControlPlane(persisted)
   }
 }
@@ -3655,7 +4299,7 @@ async function registerIpcHandlers(): Promise<void> {
         method: 'POST',
         body: JSON.stringify(mapLocalProfileToRemotePayload(payload)),
       })
-      profile = syncRemoteProfileIntoLocal((remotePayload.profile || {}) as ControlPlaneProfile)
+      profile = syncRemoteProfileIntoLocal((remotePayload.profile || {}) as ControlPlaneProfile, payload)
     } else {
       profile = requireDatabase().createProfile(payload)
     }
@@ -3665,9 +4309,13 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('profiles.update', async (_event, input: UpdateProfileInput) => {
     ensureWritable('profiles.update')
-    const payload = await applyResolvedNetworkProfileToPayload(
-      createProfilePayload(input, createDefaultFingerprint),
-      requireDatabase(),
+    const existingProfile = requireDatabase().getProfileById(input.id)
+    const payload = applyPurposeTransitionMetadata(
+      await applyResolvedNetworkProfileToPayload(
+        createProfilePayload(input, createDefaultFingerprint),
+        requireDatabase(),
+      ),
+      existingProfile,
     )
     assertProfileNameUniqueOrThrow(payload.name, payload.id)
     let profile: ProfileRecord
@@ -3677,7 +4325,7 @@ async function registerIpcHandlers(): Promise<void> {
           method: 'PATCH',
           body: JSON.stringify(mapLocalProfileToRemotePayload(payload)),
         })
-        profile = syncRemoteProfileIntoLocal((remotePayload.profile || {}) as ControlPlaneProfile)
+        profile = syncRemoteProfileIntoLocal((remotePayload.profile || {}) as ControlPlaneProfile, payload)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         if (/profile not found/i.test(message)) {
@@ -3688,7 +4336,7 @@ async function registerIpcHandlers(): Promise<void> {
           if (payload.id !== String((remotePayload.profile as ControlPlaneProfile | undefined)?.id || payload.id)) {
             requireDatabase().deleteProfile(payload.id)
           }
-          profile = syncRemoteProfileIntoLocal((remotePayload.profile || {}) as ControlPlaneProfile)
+          profile = syncRemoteProfileIntoLocal((remotePayload.profile || {}) as ControlPlaneProfile, payload)
         } else {
           throw error
         }
@@ -3727,6 +4375,7 @@ async function registerIpcHandlers(): Promise<void> {
     return profile
   })
   ipcMain.handle('profiles.revealDirectory', async (_event, profileId: string) => {
+    ensureWorkspaceLayoutForProfileId(profileId)
     const profilePath = getProfilePath(app, profileId)
     await shell.openPath(profilePath)
   })
@@ -3836,6 +4485,21 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('runtime.getStatus', async () => getRuntimeStatusSnapshot())
   ipcMain.handle('runtime.getHostInfo', async () => getRuntimeHostInfo())
+  ipcMain.handle('workspace.snapshots.list', async (_event, profileId: string) => {
+    return listWorkspaceSnapshotsForProfile(profileId)
+  })
+  ipcMain.handle('workspace.snapshots.create', async (_event, profileId: string) => {
+    ensureWritable('workspace.snapshots.create')
+    return createWorkspaceSnapshotForProfile(profileId)
+  })
+  ipcMain.handle('workspace.snapshots.restore', async (_event, profileId: string, snapshotId: string) => {
+    ensureWritable('workspace.snapshots.restore')
+    return restoreWorkspaceSnapshotForProfile(profileId, snapshotId)
+  })
+  ipcMain.handle('workspace.snapshots.rollback', async (_event, profileId: string) => {
+    ensureWritable('workspace.snapshots.rollback')
+    return rollbackWorkspaceSnapshotForProfile(profileId)
+  })
 
   ipcMain.handle('logs.list', async () => requireDatabase().listLogs())
   ipcMain.handle('logs.clear', async () => requireDatabase().clearLogs())
@@ -3848,7 +4512,7 @@ async function registerIpcHandlers(): Promise<void> {
     logEvent('info', 'system', 'Updated application settings', null)
     return data
   })
-  ipcMain.handle('data.previewBundle', async () => requireDatabase().exportBundle())
+  ipcMain.handle('data.previewBundle', async () => buildExportBundleV2(requireDatabase()))
   ipcMain.handle('data.exportBundle', async () => {
     const win = BrowserWindow.getFocusedWindow() ?? mainWindow
     const selected = win
@@ -3865,7 +4529,7 @@ async function registerIpcHandlers(): Promise<void> {
     if (selected.canceled || !selected.filePath) {
       return null
     }
-    const bundle = requireDatabase().exportBundle()
+    const bundle = await buildExportBundleV2(requireDatabase())
     await writeFile(selected.filePath, JSON.stringify(bundle, null, 2), 'utf8')
     logEvent('info', 'system', 'Exported local configuration bundle', null)
     return selected.filePath
@@ -3889,7 +4553,8 @@ async function registerIpcHandlers(): Promise<void> {
     }
     const content = await readFile(selected.filePaths[0], 'utf8')
     const bundle = parseBundle(content)
-    const result = requireDatabase().importBundle(bundle)
+    const baseResult = requireDatabase().importBundle(bundle)
+    const result = await importWorkspaceSnapshotsFromBundle(app, requireDatabase(), bundle, baseResult)
     logEvent('info', 'system', 'Imported local configuration bundle', null)
     return result
   })

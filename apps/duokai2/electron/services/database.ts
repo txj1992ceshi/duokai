@@ -3,13 +3,23 @@ import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import Database from 'better-sqlite3'
 import type { App } from 'electron'
-import { cloneName, createDefaultFingerprint, normalizeFingerprintConfig } from './factories'
+import { createDeviceProfileFromFingerprint, DEFAULT_ENVIRONMENT_PURPOSE } from './deviceProfile'
+import {
+  cloneProfileRecordForNewId,
+  createDefaultFingerprint,
+  normalizeFingerprintConfig,
+  normalizeWorkspaceDescriptor,
+} from './factories'
 import type {
   CloudPhoneRecord,
   DashboardSummary,
+  DeviceProfile,
+  EnvironmentPurpose,
   ExportBundle,
   FingerprintConfig,
   ImportResult,
+  IpUsageKind,
+  IpUsageRecord,
   LogEntry,
   LogLevel,
   ProfileRecord,
@@ -30,12 +40,15 @@ type ProfileRow = {
   proxy_id: string | null
   group_name: string
   notes: string
+  environment_purpose: EnvironmentPurpose | null
+  device_profile: string | null
   status: ProfileRecord['status']
   last_started_at: string | null
   created_at: string
   updated_at: string
   tags: string
   fingerprint_config: string
+  workspace_json: string | null
 }
 
 type TemplateRow = {
@@ -43,11 +56,13 @@ type TemplateRow = {
   name: string
   proxy_id: string | null
   group_name: string
+  environment_purpose: EnvironmentPurpose | null
   notes: string
   created_at: string
   updated_at: string
   tags: string
   fingerprint_config: string
+  workspace_template: string | null
 }
 
 type ProxyRow = {
@@ -70,6 +85,25 @@ type LogRow = {
   category: LogEntry['category']
   message: string
   profile_id: string | null
+  created_at: string
+}
+
+type IpUsageRow = {
+  id: string
+  profile_id: string
+  proxy_id: string | null
+  environment_purpose: EnvironmentPurpose
+  platform: string
+  usage_kind: IpUsageKind
+  egress_ip: string
+  country: string
+  region: string
+  city: string
+  timezone: string
+  language: string
+  geolocation: string
+  success: number
+  message: string
   created_at: string
 }
 
@@ -126,7 +160,10 @@ export class DatabaseService {
         group_name TEXT NOT NULL,
         tags TEXT NOT NULL,
         notes TEXT NOT NULL,
+        environment_purpose TEXT NOT NULL DEFAULT 'operation',
+        device_profile TEXT,
         fingerprint_config TEXT NOT NULL,
+        workspace_json TEXT NOT NULL DEFAULT '{}',
         status TEXT NOT NULL,
         last_started_at TEXT,
         created_at TEXT NOT NULL,
@@ -138,9 +175,11 @@ export class DatabaseService {
         name TEXT NOT NULL,
         proxy_id TEXT,
         group_name TEXT NOT NULL,
+        environment_purpose TEXT NOT NULL DEFAULT 'operation',
         tags TEXT NOT NULL,
         notes TEXT NOT NULL,
         fingerprint_config TEXT NOT NULL,
+        workspace_template TEXT NOT NULL DEFAULT '{}',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -197,12 +236,36 @@ export class DatabaseService {
         created_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS ip_usage_history (
+        id TEXT PRIMARY KEY,
+        profile_id TEXT NOT NULL,
+        proxy_id TEXT,
+        environment_purpose TEXT NOT NULL,
+        platform TEXT NOT NULL DEFAULT '',
+        usage_kind TEXT NOT NULL,
+        egress_ip TEXT NOT NULL,
+        country TEXT NOT NULL,
+        region TEXT NOT NULL,
+        city TEXT NOT NULL,
+        timezone TEXT NOT NULL,
+        language TEXT NOT NULL,
+        geolocation TEXT NOT NULL,
+        success INTEGER NOT NULL,
+        message TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
     `)
+    this.ensureColumn('profiles', 'environment_purpose', `TEXT NOT NULL DEFAULT 'operation'`)
+    this.ensureColumn('profiles', 'device_profile', `TEXT`)
+    this.ensureColumn('profiles', 'workspace_json', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('profiles', 'sync_version', `INTEGER NOT NULL DEFAULT 0`)
+    this.ensureColumn('templates', 'environment_purpose', `TEXT NOT NULL DEFAULT 'operation'`)
+    this.ensureColumn('templates', 'workspace_template', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('templates', 'sync_version', `INTEGER NOT NULL DEFAULT 0`)
     this.ensureColumn('proxies', 'sync_version', `INTEGER NOT NULL DEFAULT 0`)
     this.ensureColumn('cloud_phones', 'sync_version', `INTEGER NOT NULL DEFAULT 0`)
@@ -210,6 +273,8 @@ export class DatabaseService {
     this.ensureColumn('cloud_phones', 'provider_config', `TEXT NOT NULL DEFAULT '{}'`)
     this.ensureColumn('cloud_phones', 'proxy_ref_mode', `TEXT NOT NULL DEFAULT 'custom'`)
     this.ensureColumn('cloud_phones', 'proxy_id', `TEXT`)
+    this.ensureColumn('ip_usage_history', 'platform', `TEXT NOT NULL DEFAULT ''`)
+    this.backfillProfileMetadata()
   }
 
   private ensureColumn(table: string, column: string, definition: string): void {
@@ -244,10 +309,57 @@ export class DatabaseService {
     stmt.run('runtimeMaxConcurrentStarts', '2')
     stmt.run('runtimeMaxActiveProfiles', '6')
     stmt.run('runtimeMaxLaunchRetries', '2')
+    stmt.run('registerIpCooldownHours', '24')
+    stmt.run('registerIpCooldownMaxProfiles', '1')
+    stmt.run('linkedinRegisterIpCooldownHours', '72')
+    stmt.run('linkedinRegisterIpCooldownMaxProfiles', '1')
+    stmt.run('tiktokRegisterIpCooldownHours', '24')
+    stmt.run('tiktokRegisterIpCooldownMaxProfiles', '1')
+    stmt.run('nurtureMinimumHoursAfterRegister', '24')
+    stmt.run('operationMinimumHoursAfterNurture', '72')
     stmt.run('localEmulatorAdbPath', 'adb')
   }
 
+  private backfillProfileMetadata(): void {
+    const rows = this.db.prepare(`SELECT id, fingerprint_config, created_at, environment_purpose, device_profile, workspace_json FROM profiles`).all() as Array<{
+      id: string
+      fingerprint_config: string
+      created_at: string
+      environment_purpose: string | null
+      device_profile: string | null
+      workspace_json: string | null
+    }>
+    const stmt = this.db.prepare(
+      `UPDATE profiles SET environment_purpose = ?, device_profile = ?, workspace_json = ?, updated_at = ? WHERE id = ?`,
+    )
+    const now = new Date().toISOString()
+    const transaction = this.db.transaction((items: typeof rows) => {
+      for (const row of items) {
+        const fingerprintConfig = normalizeFingerprintConfig(JSON.parse(row.fingerprint_config) as FingerprintConfig)
+        const purpose = (row.environment_purpose as EnvironmentPurpose | null) || DEFAULT_ENVIRONMENT_PURPOSE
+        const deviceProfile =
+          row.device_profile ?
+            createDeviceProfileFromFingerprint(
+              fingerprintConfig,
+              row.created_at,
+              JSON.parse(row.device_profile) as DeviceProfile,
+            )
+          : createDeviceProfileFromFingerprint(fingerprintConfig, row.created_at)
+        const existingWorkspace =
+          row.workspace_json && row.workspace_json.trim().length > 0 ?
+            (JSON.parse(row.workspace_json) as Partial<ProfileRecord['workspace']>)
+          : null
+        const workspace = normalizeWorkspaceDescriptor(existingWorkspace, row.id, fingerprintConfig)
+        stmt.run(purpose, JSON.stringify(deviceProfile), JSON.stringify(workspace), now, row.id)
+      }
+    })
+    transaction(rows)
+  }
+
   private mapProfile(row: ProfileRow): ProfileRecord {
+    const fingerprintConfig = normalizeFingerprintConfig(
+      JSON.parse(row.fingerprint_config) as FingerprintConfig,
+    )
     return {
       id: row.id,
       name: row.name,
@@ -255,8 +367,21 @@ export class DatabaseService {
       groupName: row.group_name,
       tags: JSON.parse(row.tags) as string[],
       notes: row.notes,
-      fingerprintConfig: normalizeFingerprintConfig(
-        JSON.parse(row.fingerprint_config) as FingerprintConfig,
+      environmentPurpose: row.environment_purpose || DEFAULT_ENVIRONMENT_PURPOSE,
+      deviceProfile: row.device_profile
+        ? createDeviceProfileFromFingerprint(
+            fingerprintConfig,
+            row.created_at,
+            JSON.parse(row.device_profile) as DeviceProfile,
+          )
+        : createDeviceProfileFromFingerprint(fingerprintConfig, row.created_at),
+      fingerprintConfig,
+      workspace: normalizeWorkspaceDescriptor(
+        row.workspace_json && row.workspace_json.trim().length > 0 ?
+          (JSON.parse(row.workspace_json) as Partial<ProfileRecord['workspace']>)
+        : null,
+        row.id,
+        fingerprintConfig,
       ),
       status: row.status,
       lastStartedAt: row.last_started_at,
@@ -271,11 +396,16 @@ export class DatabaseService {
       name: row.name,
       proxyId: row.proxy_id,
       groupName: row.group_name,
+      environmentPurpose: row.environment_purpose || DEFAULT_ENVIRONMENT_PURPOSE,
       tags: JSON.parse(row.tags) as string[],
       notes: row.notes,
       fingerprintConfig: normalizeFingerprintConfig(
         JSON.parse(row.fingerprint_config) as FingerprintConfig,
       ),
+      workspaceTemplate:
+        row.workspace_template && row.workspace_template.trim().length > 0 ?
+          (JSON.parse(row.workspace_template) as TemplateRecord['workspaceTemplate'])
+        : null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }
@@ -304,6 +434,27 @@ export class DatabaseService {
       category: row.category,
       message: row.message,
       profileId: row.profile_id,
+      createdAt: row.created_at,
+    }
+  }
+
+  private mapIpUsage(row: IpUsageRow): IpUsageRecord {
+    return {
+      id: row.id,
+      profileId: row.profile_id,
+      proxyId: row.proxy_id,
+      environmentPurpose: row.environment_purpose,
+      platform: row.platform || '',
+      usageKind: row.usage_kind,
+      egressIp: row.egress_ip,
+      country: row.country,
+      region: row.region,
+      city: row.city,
+      timezone: row.timezone,
+      language: row.language,
+      geolocation: row.geolocation,
+      success: Boolean(row.success),
+      message: row.message,
       createdAt: row.created_at,
     }
   }
@@ -341,12 +492,14 @@ export class DatabaseService {
 
   private insertProfile(input: UpdateProfileInput, status: ProfileRecord['status'] = 'stopped'): void {
     const now = new Date().toISOString()
+    const fingerprintConfig = input.fingerprintConfig ?? createDefaultFingerprint()
+    const workspace = normalizeWorkspaceDescriptor(input.workspace, input.id, fingerprintConfig)
     this.db
       .prepare(
         `INSERT INTO profiles (
-          id, name, proxy_id, group_name, tags, notes, fingerprint_config,
+          id, name, proxy_id, group_name, tags, notes, environment_purpose, device_profile, fingerprint_config, workspace_json,
           status, last_started_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.id,
@@ -355,7 +508,13 @@ export class DatabaseService {
         input.groupName,
         JSON.stringify(input.tags),
         input.notes,
-        JSON.stringify(input.fingerprintConfig ?? createDefaultFingerprint()),
+        input.environmentPurpose ?? DEFAULT_ENVIRONMENT_PURPOSE,
+        JSON.stringify(
+          input.deviceProfile ??
+            createDeviceProfileFromFingerprint(fingerprintConfig, now),
+        ),
+        JSON.stringify(fingerprintConfig),
+        JSON.stringify(workspace),
         status,
         null,
         now,
@@ -368,17 +527,19 @@ export class DatabaseService {
     this.db
       .prepare(
         `INSERT INTO templates (
-          id, name, proxy_id, group_name, tags, notes, fingerprint_config, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          id, name, proxy_id, group_name, environment_purpose, tags, notes, fingerprint_config, workspace_template, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.id,
         input.name,
         input.proxyId,
         input.groupName,
+        input.environmentPurpose ?? DEFAULT_ENVIRONMENT_PURPOSE,
         JSON.stringify(input.tags),
         input.notes,
         JSON.stringify(input.fingerprintConfig ?? createDefaultFingerprint()),
+        JSON.stringify(input.workspaceTemplate ?? null),
         now,
         now,
       )
@@ -586,7 +747,7 @@ export class DatabaseService {
     this.db
       .prepare(
         `UPDATE profiles
-         SET name = ?, proxy_id = ?, group_name = ?, tags = ?, notes = ?, fingerprint_config = ?, updated_at = ?
+         SET name = ?, proxy_id = ?, group_name = ?, tags = ?, notes = ?, environment_purpose = ?, device_profile = ?, fingerprint_config = ?, workspace_json = ?, updated_at = ?
          WHERE id = ?`,
       )
       .run(
@@ -595,7 +756,19 @@ export class DatabaseService {
         input.groupName,
         JSON.stringify(input.tags),
         input.notes,
+        input.environmentPurpose ?? existing.environmentPurpose ?? DEFAULT_ENVIRONMENT_PURPOSE,
+        JSON.stringify(
+          input.deviceProfile ??
+            createDeviceProfileFromFingerprint(
+              input.fingerprintConfig,
+              existing.deviceProfile?.createdAt || existing.createdAt,
+              existing.deviceProfile,
+            ),
+        ),
         JSON.stringify(input.fingerprintConfig),
+        JSON.stringify(
+          normalizeWorkspaceDescriptor(input.workspace ?? existing.workspace, input.id, input.fingerprintConfig),
+        ),
         new Date().toISOString(),
         input.id,
       )
@@ -603,13 +776,16 @@ export class DatabaseService {
   }
 
   deleteProfile(id: string): void {
+    this.db.prepare(`DELETE FROM ip_usage_history WHERE profile_id = ?`).run(id)
     this.db.prepare(`DELETE FROM profiles WHERE id = ?`).run(id)
   }
 
   bulkDeleteProfiles(profileIds: string[]): void {
+    const historyStmt = this.db.prepare(`DELETE FROM ip_usage_history WHERE profile_id = ?`)
     const stmt = this.db.prepare(`DELETE FROM profiles WHERE id = ?`)
     const transaction = this.db.transaction((ids: string[]) => {
       for (const profileId of ids) {
+        historyStmt.run(profileId)
         stmt.run(profileId)
       }
     })
@@ -635,15 +811,7 @@ export class DatabaseService {
       throw new Error('Profile not found')
     }
 
-    return this.createProfile({
-      id: randomUUID(),
-      name: cloneName(existing.name),
-      proxyId: existing.proxyId,
-      groupName: existing.groupName,
-      tags: existing.tags,
-      notes: existing.notes,
-      fingerprintConfig: existing.fingerprintConfig,
-    })
+    return this.createProfile(cloneProfileRecordForNewId(existing, randomUUID()))
   }
 
   setProfileStatus(id: string, status: ProfileRecord['status']): void {
@@ -685,16 +853,18 @@ export class DatabaseService {
     this.db
       .prepare(
         `UPDATE templates
-         SET name = ?, proxy_id = ?, group_name = ?, tags = ?, notes = ?, fingerprint_config = ?, updated_at = ?
+         SET name = ?, proxy_id = ?, group_name = ?, environment_purpose = ?, tags = ?, notes = ?, fingerprint_config = ?, workspace_template = ?, updated_at = ?
          WHERE id = ?`,
       )
       .run(
         input.name,
         input.proxyId,
         input.groupName,
+        input.environmentPurpose ?? existing.environmentPurpose ?? DEFAULT_ENVIRONMENT_PURPOSE,
         JSON.stringify(input.tags),
         input.notes,
         JSON.stringify(input.fingerprintConfig),
+        JSON.stringify(input.workspaceTemplate ?? existing.workspaceTemplate ?? null),
         new Date().toISOString(),
         input.id,
       )
@@ -716,6 +886,7 @@ export class DatabaseService {
       name: this.getUniqueName(profile.name, new Set(this.listTemplates().map((item) => item.name))),
       proxyId: profile.proxyId,
       groupName: profile.groupName,
+      environmentPurpose: profile.environmentPurpose,
       tags: profile.tags,
       notes: profile.notes,
       fingerprintConfig: profile.fingerprintConfig,
@@ -803,6 +974,92 @@ export class DatabaseService {
       .run(randomUUID(), input.level, input.category, input.message, input.profileId, new Date().toISOString())
   }
 
+  createIpUsage(input: {
+    profileId: string
+    proxyId: string | null
+    environmentPurpose: EnvironmentPurpose
+    platform: string
+    usageKind: IpUsageKind
+    egressIp: string
+    country: string
+    region: string
+    city: string
+    timezone: string
+    language: string
+    geolocation: string
+    success: boolean
+    message: string
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO ip_usage_history (
+          id, profile_id, proxy_id, environment_purpose, platform, usage_kind, egress_ip, country, region, city,
+          timezone, language, geolocation, success, message, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        randomUUID(),
+        input.profileId,
+        input.proxyId,
+        input.environmentPurpose,
+        input.platform,
+        input.usageKind,
+        input.egressIp,
+        input.country,
+        input.region,
+        input.city,
+        input.timezone,
+        input.language,
+        input.geolocation,
+        input.success ? 1 : 0,
+        input.message,
+        new Date().toISOString(),
+      )
+  }
+
+  listRecentIpUsageByEgressIp(params: {
+    egressIp: string
+    withinHours: number
+    environmentPurpose?: EnvironmentPurpose
+    platform?: string
+    usageKind?: IpUsageKind
+    excludeProfileId?: string
+    successOnly?: boolean
+  }): IpUsageRecord[] {
+    const clauses = ['egress_ip = ?', `datetime(created_at) >= datetime('now', ?) `]
+    const values: Array<string | number> = [
+      params.egressIp,
+      `-${Math.max(1, Math.floor(params.withinHours || 24))} hours`,
+    ]
+
+    if (params.environmentPurpose) {
+      clauses.push('environment_purpose = ?')
+      values.push(params.environmentPurpose)
+    }
+    if (params.platform) {
+      clauses.push('platform = ?')
+      values.push(params.platform)
+    }
+    if (params.usageKind) {
+      clauses.push('usage_kind = ?')
+      values.push(params.usageKind)
+    }
+    if (params.excludeProfileId) {
+      clauses.push('profile_id != ?')
+      values.push(params.excludeProfileId)
+    }
+    if (params.successOnly) {
+      clauses.push('success = 1')
+    }
+
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM ip_usage_history WHERE ${clauses.join(' AND ')} ORDER BY datetime(created_at) DESC`,
+      )
+      .all(...values) as IpUsageRow[]
+    return rows.map((row) => this.mapIpUsage(row))
+  }
+
   getSettings(): SettingsPayload {
     const rows = this.db.prepare(`SELECT * FROM settings`).all() as { key: string; value: string }[]
     return rows.reduce<SettingsPayload>((acc, row) => {
@@ -827,12 +1084,13 @@ export class DatabaseService {
 
   exportBundle(): ExportBundle {
     return {
-      version: 1,
+      version: 2,
       exportedAt: new Date().toISOString(),
       profiles: this.listProfiles(),
       proxies: this.listProxies(),
       templates: this.listTemplates(),
       cloudPhones: this.listCloudPhones(),
+      settings: this.getSettings(),
     }
   }
 
@@ -883,7 +1141,10 @@ export class DatabaseService {
             groupName: profile.groupName,
             tags: profile.tags,
             notes: profile.notes,
+            environmentPurpose: profile.environmentPurpose,
+            deviceProfile: profile.deviceProfile,
             fingerprintConfig: profile.fingerprintConfig,
+            workspace: profile.workspace ?? null,
           },
           profile.status || 'stopped',
         )
@@ -895,9 +1156,11 @@ export class DatabaseService {
           name: template.name,
           proxyId: template.proxyId,
           groupName: template.groupName,
+          environmentPurpose: template.environmentPurpose,
           tags: template.tags,
           notes: template.notes,
           fingerprintConfig: template.fingerprintConfig,
+          workspaceTemplate: template.workspaceTemplate ?? null,
         })
       }
 
@@ -966,6 +1229,7 @@ export class DatabaseService {
     const existingTemplateIds = new Set(this.listTemplates().map((item) => item.id))
     const existingCloudPhoneIds = new Set(this.listCloudPhones().map((item) => item.id))
     const importedProxyIdMap = new Map<string, string>()
+    const importedProfileIdMap: Record<string, string> = {}
 
     let proxiesImported = 0
     let profilesImported = 0
@@ -1019,10 +1283,14 @@ export class DatabaseService {
             groupName: profile.groupName,
             tags: profile.tags,
             notes: profile.notes,
+            environmentPurpose: profile.environmentPurpose,
+            deviceProfile: profile.deviceProfile,
             fingerprintConfig: profile.fingerprintConfig,
+            workspace: profile.workspace ?? null,
           },
           profile.status ?? 'stopped',
         )
+        importedProfileIdMap[profile.id] = nextId
         existingProfileIds.add(nextId)
         existingProfileNames.add(nextName)
         profilesImported += 1
@@ -1047,9 +1315,11 @@ export class DatabaseService {
           name: nextName,
           proxyId,
           groupName: template.groupName,
+          environmentPurpose: template.environmentPurpose,
           tags: template.tags,
           notes: template.notes,
           fingerprintConfig: template.fingerprintConfig,
+          workspaceTemplate: template.workspaceTemplate ?? null,
         })
         existingTemplateIds.add(nextId)
         existingTemplateNames.add(nextName)
@@ -1096,10 +1366,28 @@ export class DatabaseService {
         existingCloudPhoneNames.add(nextName)
         cloudPhonesImported += 1
       }
+
+      if (bundle.settings) {
+        const settingsStmt = this.db.prepare(
+          `INSERT INTO settings (key, value) VALUES (?, ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+        )
+        for (const [key, value] of Object.entries(bundle.settings)) {
+          settingsStmt.run(key, String(value))
+        }
+      }
     })
 
     transaction()
-    return { profilesImported, proxiesImported, templatesImported, cloudPhonesImported, warnings }
+    return {
+      profilesImported,
+      proxiesImported,
+      templatesImported,
+      cloudPhonesImported,
+      workspaceSnapshotsImported: 0,
+      warnings,
+      profileIdMap: importedProfileIdMap,
+    }
   }
 
   getDashboardSummary(): DashboardSummary {

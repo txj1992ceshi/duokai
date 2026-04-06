@@ -207,3 +207,29 @@ export function getExpectationMismatchMessage(
   }
   return '';
 }
+
+export function formatWorkspaceSnapshotSummary(
+  profile: Pick<Profile, 'workspace'>
+) {
+  const summary = profile.workspace?.snapshotSummary;
+  if (!summary) {
+    return '尚未补齐 workspace 摘要';
+  }
+
+  const parts: string[] = [];
+  if (summary.lastSnapshotAt) {
+    parts.push(`最近快照 ${new Date(summary.lastSnapshotAt).toLocaleString()}`);
+  }
+  if (summary.lastKnownGoodSnapshotAt) {
+    parts.push(`最近可用基线 ${new Date(summary.lastKnownGoodSnapshotAt).toLocaleString()}`);
+  }
+  if (summary.lastKnownGoodStatus === 'invalid') {
+    parts.push(`可用基线已失效${summary.lastKnownGoodInvalidationReason ? ` (${summary.lastKnownGoodInvalidationReason})` : ''}`);
+  }
+
+  if (parts.length === 0) {
+    return '暂无 workspace 快照';
+  }
+
+  return parts.join(' · ');
+}

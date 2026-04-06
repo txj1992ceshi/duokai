@@ -67,6 +67,10 @@ const ProfileSchema = new Schema(
       type: Schema.Types.Mixed,
       default: null,
     },
+    workspace: {
+      type: Schema.Types.Mixed,
+      default: null,
+    },
   },
   {
     timestamps: true,

@@ -519,6 +519,98 @@
   line-height: 1.55;
 }
 
+.workspace-snapshots-panel {
+  margin: 10px 0 24px;
+  padding: 18px 20px 20px;
+  border-radius: 22px;
+  background: #f4f8fd;
+  border: 1px solid rgba(17, 56, 102, 0.08);
+}
+
+.workspace-snapshot-subtitle {
+  margin: 8px 0 0;
+}
+
+.workspace-snapshot-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.workspace-snapshot-summary-card {
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(17, 56, 102, 0.08);
+  display: grid;
+  gap: 6px;
+}
+
+.workspace-snapshot-summary-card span,
+.workspace-snapshot-summary-card small {
+  color: #5a708d;
+}
+
+.workspace-snapshot-summary-card strong {
+  color: #0b223b;
+  word-break: break-word;
+}
+
+.workspace-snapshot-list {
+  display: grid;
+  gap: 12px;
+}
+
+.workspace-snapshot-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(17, 56, 102, 0.08);
+}
+
+.workspace-snapshot-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.workspace-snapshot-main p {
+  margin: 0;
+  color: #4b6280;
+}
+
+.workspace-snapshot-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.workspace-snapshot-header strong {
+  color: #081827;
+  word-break: break-word;
+}
+
+.workspace-snapshot-status {
+  margin-top: 0;
+}
+
+.workspace-snapshot-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 0 auto;
+}
+
+.workspace-snapshot-empty {
+  margin: 0;
+}
+
 .profile-group + .profile-group {
   margin-top: 22px;
 }
@@ -1233,6 +1325,19 @@ button.danger {
 
   .log-row {
     grid-template-columns: 1fr;
+  }
+
+  .workspace-snapshot-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace-snapshot-row {
+    flex-direction: column;
+  }
+
+  .workspace-snapshot-actions {
+    width: 100%;
+    justify-content: flex-start;
   }
 }
 

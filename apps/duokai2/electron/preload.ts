@@ -110,6 +110,15 @@ const api: DesktopApi = {
     getStatus: () => ipcRenderer.invoke('runtime.getStatus'),
     getHostInfo: () => ipcRenderer.invoke('runtime.getHostInfo'),
   },
+  workspace: {
+    snapshots: {
+      list: (profileId: string) => ipcRenderer.invoke('workspace.snapshots.list', profileId),
+      create: (profileId: string) => ipcRenderer.invoke('workspace.snapshots.create', profileId),
+      restore: (profileId: string, snapshotId: string) =>
+        ipcRenderer.invoke('workspace.snapshots.restore', profileId, snapshotId),
+      rollback: (profileId: string) => ipcRenderer.invoke('workspace.snapshots.rollback', profileId),
+    },
+  },
   logs: {
     list: () => ipcRenderer.invoke('logs.list'),
     clear: () => ipcRenderer.invoke('logs.clear'),

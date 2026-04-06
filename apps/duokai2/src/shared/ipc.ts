@@ -30,6 +30,7 @@ import type {
   UpdateProfileInput,
   UpdateProxyInput,
   UpdateTemplateInput,
+  WorkspaceSnapshotRecord,
 } from './types'
 
 export interface DesktopApi {
@@ -135,6 +136,14 @@ export interface DesktopApi {
     stop: (profileId: string) => Promise<void>
     getStatus: () => Promise<RuntimeStatus>
     getHostInfo: () => Promise<RuntimeHostInfo>
+  }
+  workspace: {
+    snapshots: {
+      list: (profileId: string) => Promise<WorkspaceSnapshotRecord[]>
+      create: (profileId: string) => Promise<WorkspaceSnapshotRecord>
+      restore: (profileId: string, snapshotId: string) => Promise<ProfileRecord>
+      rollback: (profileId: string) => Promise<ProfileRecord>
+    }
   }
   logs: {
     list: () => Promise<LogEntry[]>

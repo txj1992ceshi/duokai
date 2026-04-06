@@ -1,5 +1,149 @@
 import { normalizeSubscriptionShape } from './subscription.js';
 
+const WORKSPACE_ALLOWED_OVERRIDES = [
+  'timezone',
+  'browserLanguage',
+  'resolution',
+  'downloadsDirAlias',
+  'nonCriticalLaunchArgs',
+] as const;
+
+const WORKSPACE_BLOCKED_OVERRIDES = [
+  'browserFamily',
+  'profileDir',
+  'extensionsDirRoot',
+  'webrtcHardPolicy',
+  'ipv6HardPolicy',
+  'browserMajorVersionRange',
+] as const;
+
+function normalizeDeclaredOverrides(input: unknown) {
+  const result: Record<string, string | string[]> = {};
+  if (!input || typeof input !== 'object') {
+    return result;
+  }
+  for (const key of WORKSPACE_ALLOWED_OVERRIDES) {
+    const value = (input as Record<string, unknown>)[key];
+    if (typeof value === 'string') {
+      result[key] = value;
+    } else if (Array.isArray(value)) {
+      result[key] = value.map((item) => String(item));
+    }
+  }
+  return result;
+}
+
+export function normalizeWorkspacePayload(
+  profileId: string,
+  workspace: unknown
+) {
+  const source =
+    workspace && typeof workspace === 'object'
+      ? (workspace as Record<string, unknown>)
+      : {};
+  const templateBinding =
+    source.templateBinding && typeof source.templateBinding === 'object'
+      ? (source.templateBinding as Record<string, unknown>)
+      : {};
+  const legacyTemplateRevision = String(source.templateRevision || '').trim();
+  const legacyTemplateFingerprintHash = String(source.templateFingerprintHash || '').trim();
+  const templateRevision =
+    String(templateBinding.templateRevision || legacyTemplateRevision || '').trim() || 'legacy-profile-v1';
+  const templateFingerprintHash =
+    String(templateBinding.templateFingerprintHash || legacyTemplateFingerprintHash || '').trim();
+  const templateId = String(templateBinding.templateId || source.templateId || '').trim();
+  return {
+    identityProfileId: profileId,
+    version: Number(source.version || 1) || 1,
+    migrationState: String(source.migrationState || 'not_started').trim() || 'not_started',
+    migrationCheckpoints: Array.isArray(source.migrationCheckpoints)
+      ? source.migrationCheckpoints
+      : [],
+    templateBinding: {
+      templateId,
+      templateRevision,
+      // Runtime consistency validation must prefer templateFingerprintHash.
+      templateFingerprintHash,
+    },
+    allowedOverrides: [...WORKSPACE_ALLOWED_OVERRIDES],
+    blockedOverrides: [...WORKSPACE_BLOCKED_OVERRIDES],
+    declaredOverrides: normalizeDeclaredOverrides(source.declaredOverrides),
+    resolvedEnvironment:
+      source.resolvedEnvironment && typeof source.resolvedEnvironment === 'object'
+        ? source.resolvedEnvironment
+        : null,
+    paths:
+      source.paths && typeof source.paths === 'object'
+        ? source.paths
+        : null,
+    healthSummary:
+      source.healthSummary && typeof source.healthSummary === 'object'
+        ? source.healthSummary
+        : source.health && typeof source.health === 'object'
+          ? source.health
+        : null,
+    consistencySummary:
+      source.consistencySummary && typeof source.consistencySummary === 'object'
+        ? {
+            ...(source.consistencySummary as Record<string, unknown>),
+            templateRevision,
+            templateFingerprintHash,
+          }
+        : source.consistency && typeof source.consistency === 'object'
+        ? {
+            ...(source.consistency as Record<string, unknown>),
+            templateRevision,
+            templateFingerprintHash,
+          }
+        : {
+            status: 'unknown',
+            messages: [],
+            checkedAt: '',
+            templateRevision,
+            templateFingerprintHash,
+          },
+    snapshotSummary:
+      source.snapshotSummary && typeof source.snapshotSummary === 'object'
+        ? {
+            lastSnapshotId: String((source.snapshotSummary as Record<string, unknown>).lastSnapshotId || ''),
+            lastSnapshotAt: String((source.snapshotSummary as Record<string, unknown>).lastSnapshotAt || ''),
+            lastKnownGoodSnapshotId: String(
+              (source.snapshotSummary as Record<string, unknown>).lastKnownGoodSnapshotId || '',
+            ),
+            lastKnownGoodSnapshotAt: String(
+              (source.snapshotSummary as Record<string, unknown>).lastKnownGoodSnapshotAt || '',
+            ),
+            lastKnownGoodStatus:
+              (source.snapshotSummary as Record<string, unknown>).lastKnownGoodStatus === 'valid' ||
+              (source.snapshotSummary as Record<string, unknown>).lastKnownGoodStatus === 'invalid'
+                ? (source.snapshotSummary as Record<string, unknown>).lastKnownGoodStatus
+                : 'unknown',
+            lastKnownGoodInvalidatedAt: String(
+              (source.snapshotSummary as Record<string, unknown>).lastKnownGoodInvalidatedAt || '',
+            ),
+            lastKnownGoodInvalidationReason: String(
+              (source.snapshotSummary as Record<string, unknown>).lastKnownGoodInvalidationReason || '',
+            ),
+          }
+        : {
+            lastSnapshotId: '',
+            lastSnapshotAt: '',
+            lastKnownGoodSnapshotId: '',
+            lastKnownGoodSnapshotAt: '',
+            lastKnownGoodStatus: 'unknown',
+            lastKnownGoodInvalidatedAt: '',
+            lastKnownGoodInvalidationReason: '',
+          },
+    recovery:
+      source.recovery && typeof source.recovery === 'object'
+        ? source.recovery
+        : {
+            lastRecoveryAt: '',
+            lastRecoveryReason: '',
+          },
+  };
+}
+
 export function serializeUser(user: any) {
   return {
     id: String(user._id),
@@ -28,8 +172,9 @@ export function serializeUser(user: any) {
 }
 
 export function serializeProfile(profile: any, storageStateSynced = false) {
+  const profileId = String(profile._id);
   return {
-    id: String(profile._id),
+    id: profileId,
     userId: String(profile.userId),
     name: profile.name,
     status: profile.status,
@@ -66,6 +211,7 @@ export function serializeProfile(profile: any, storageStateSynced = false) {
     proxyFingerprintHash: profile.proxyFingerprintHash || '',
     lastQuickIsolationCheck: profile.lastQuickIsolationCheck || null,
     trustedLaunchSnapshot: profile.trustedLaunchSnapshot || null,
+    workspace: normalizeWorkspacePayload(profileId, profile.workspace),
     createdAt: profile.createdAt,
     updatedAt: profile.updatedAt,
   };

@@ -28,6 +28,7 @@ import {
   getProfileStorageState,
   saveProfileStorageState,
 } from '@/lib/profile-storage-state-client'
+import { listWorkspaceSnapshots } from '@/lib/workspace-snapshot-client'
 import { useRouter } from 'next/navigation'
 import type { HostEnvironment, ProxyProtocol, ProxyVerificationRecord } from '@/lib/proxyTypes'
 import type {
@@ -39,6 +40,7 @@ import type {
   Profile,
   ProxyListItem,
   Settings,
+  WorkspaceSnapshotRecord,
 } from '@/lib/dashboard-types'
 import {
   formatExpectedTarget,
@@ -259,6 +261,11 @@ export default function Home() {
   const [showBehaviorModal, setShowBehaviorModal] = useState(false);
   const [newBehaviorName, setNewBehaviorName] = useState('');
   const [newBehaviorDesc, setNewBehaviorDesc] = useState('');
+  const [workspaceSnapshotsByProfileId, setWorkspaceSnapshotsByProfileId] = useState<
+    Record<string, WorkspaceSnapshotRecord[]>
+  >({});
+  const [workspaceSnapshotLoadingProfileId, setWorkspaceSnapshotLoadingProfileId] = useState<string | null>(null);
+  const [workspaceSnapshotErrorByProfileId, setWorkspaceSnapshotErrorByProfileId] = useState<Record<string, string>>({});
   const [runtimeOnline, setRuntimeOnline] = useState<boolean | null>(null);
   const runtimeFailureCountRef = useRef(0);
   const [startingProfileIds, setStartingProfileIds] = useState<Record<string, boolean>>({});
@@ -288,6 +295,23 @@ export default function Home() {
       setStorageStateMap(Object.fromEntries(results));
     } catch {
       setStorageStateMap({});
+    }
+  }, []);
+
+  const loadWorkspaceSnapshots = useCallback(async (profileId: string) => {
+    setWorkspaceSnapshotLoadingProfileId(profileId);
+    setWorkspaceSnapshotErrorByProfileId((prev) => ({ ...prev, [profileId]: '' }));
+    try {
+      const snapshots = await listWorkspaceSnapshots(profileId);
+      setWorkspaceSnapshotsByProfileId((prev) => ({ ...prev, [profileId]: snapshots }));
+    } catch (error) {
+      setWorkspaceSnapshotErrorByProfileId((prev) => ({
+        ...prev,
+        [profileId]:
+          error instanceof Error ? error.message : 'Failed to fetch workspace snapshots',
+      }));
+    } finally {
+      setWorkspaceSnapshotLoadingProfileId((current) => (current === profileId ? null : current));
     }
   }, []);
 
@@ -865,6 +889,13 @@ export default function Home() {
     setProxyBrowserResult(profile.proxyVerification || null);
   }
 
+  useEffect(() => {
+    if (!editingProfile?.id) {
+      return;
+    }
+    void loadWorkspaceSnapshots(editingProfile.id);
+  }, [editingProfile?.id, loadWorkspaceSnapshots]);
+
   // New function for testing individual proxy items in the list
   const [testingProxyId, setTestingProxyId] = useState<string | null>(null);
   const handleTestProxyItem = async (p: ProxyListItem) => {
@@ -1332,6 +1363,9 @@ export default function Home() {
         controlPlaneOnly={controlPlaneOnly}
         proxyResult={proxyResult}
         proxyBrowserResult={proxyBrowserResult}
+        workspaceSnapshots={editingProfile ? (workspaceSnapshotsByProfileId[editingProfile.id] || []) : []}
+        workspaceSnapshotsLoading={editingProfile ? workspaceSnapshotLoadingProfileId === editingProfile.id : false}
+        workspaceSnapshotsError={editingProfile ? (workspaceSnapshotErrorByProfileId[editingProfile.id] || '') : ''}
         platformOptions={STARTUP_PLATFORM_OPTIONS}
         onClose={() => { setEditingProfile(null); setProxyResult(null); setProxyBrowserResult(null); }}
         onSubmit={handleSaveProfile}
@@ -1339,6 +1373,11 @@ export default function Home() {
         onCheckProxy={handleCheckProxy}
         onBrowserCheckProxy={handleBrowserCheckProxy}
         onAdoptCurrentProxyResult={handleAdoptCurrentProxyResult}
+        onRefreshWorkspaceSnapshots={() => {
+          if (editingProfile?.id) {
+            void loadWorkspaceSnapshots(editingProfile.id);
+          }
+        }}
         getPlatformUrl={getPlatformUrl}
         buildProxyFromDraft={buildProxyFromDraft}
         formatExpectedTarget={formatExpectedTarget}
