@@ -1,4 +1,4 @@
-import mongoose, { Schema, InferSchemaType, models, model } from 'mongoose';
+import { Schema, InferSchemaType, models, model } from 'mongoose';
 
 const ProfileSchema = new Schema(
   {
@@ -14,6 +14,7 @@ const ProfileSchema = new Schema(
     purpose: { type: String, default: 'operation', index: true },
     runtimeMode: { type: String, default: 'local' },
     proxyBindingMode: { type: String, default: 'dedicated' },
+    ipUsageMode: { type: String, default: 'dedicated', index: true },
     lifecycleState: { type: String, default: 'draft', index: true },
     riskFlags: { type: [String], default: [] },
     cooldownSummary: {
@@ -26,6 +27,8 @@ const ProfileSchema = new Schema(
     },
     fingerprintPresetRef: { type: String, default: '' },
     workspaceManifestRef: { type: String, default: '' },
+    proxyAssetId: { type: String, default: '', index: true },
+    activeLeaseId: { type: String, default: '', index: true },
     ownerLabel: { type: String, default: '' },
     status: {
       type: String,

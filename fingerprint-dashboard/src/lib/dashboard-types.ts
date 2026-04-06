@@ -7,6 +7,8 @@ import type {
 export type PlatformKind = 'tiktok' | 'linkedin' | 'facebook' | '';
 export type RuntimeMode = 'local' | 'strong-local' | 'vm' | 'container';
 export type ProxyBindingMode = 'dedicated' | 'reusable';
+export type IpUsageMode = 'dedicated' | 'shared';
+export type ProxySharingMode = 'dedicated' | 'shared' | 'hybrid';
 
 export type WorkspaceAllowedOverrideKey =
   | 'timezone'
@@ -176,6 +178,7 @@ export interface Profile {
   purpose?: 'register' | 'nurture' | 'operation';
   runtimeMode?: RuntimeMode;
   proxyBindingMode?: ProxyBindingMode;
+  ipUsageMode?: IpUsageMode;
   lifecycleState?: string;
   riskFlags?: string[];
   cooldownSummary?: {
@@ -220,6 +223,76 @@ export interface Profile {
     error?: string;
   };
   workspace?: WorkspaceDescriptor | null;
+  proxyAssetId?: string;
+  activeLeaseId?: string;
+  lastLaunchBlock?: {
+    code: string;
+    message: string;
+    detail?: unknown;
+    blockedAt?: string;
+  } | null;
+  proxyAssetSummary?: {
+    id: string;
+    sharingMode: ProxySharingMode;
+    maxProfilesPerIp: number;
+    maxConcurrentRunsPerIp: number;
+    boundProfilesCount: number;
+    activeLeasesCount: number;
+    runningProfilesCount: number;
+    affectedProfileIds: string[];
+  } | null;
+  activeLeaseSummary?: {
+    id: string;
+    state: string;
+    assignedAt?: string | null;
+    releasedAt?: string | null;
+    deviceId?: string;
+    ipUsageMode?: IpUsageMode;
+  } | null;
+  ipUsagePolicy?: {
+    allowedIpUsageModes: IpUsageMode[];
+    defaultIpUsageMode: IpUsageMode;
+    sharedIpMaxProfilesPerIp: number;
+    sharedIpMaxConcurrentRunsPerIp: number;
+  } | null;
+}
+
+export interface ProxyAssetSummary {
+  id: string;
+  name: string;
+  sharingMode: ProxySharingMode;
+  maxProfilesPerIp: number;
+  maxConcurrentRunsPerIp: number;
+  boundProfilesCount: number;
+  activeLeasesCount: number;
+  runningProfilesCount: number;
+  affectedProfileIds: string[];
+}
+
+export interface IpLeaseSummary {
+  id: string;
+  leaseId?: string;
+  profileId: string;
+  proxyAssetId: string;
+  platform: string;
+  purpose: string;
+  ipUsageMode: IpUsageMode;
+  state: string;
+  deviceId: string;
+  assignedAt?: string | null;
+  releasedAt?: string | null;
+}
+
+export interface PlatformPolicySummary {
+  policyId: string;
+  platform: string;
+  purpose: string;
+  proxyPolicy: {
+    allowedIpUsageModes: IpUsageMode[];
+    defaultIpUsageMode: IpUsageMode;
+    sharedIpMaxProfilesPerIp: number;
+    sharedIpMaxConcurrentRunsPerIp: number;
+  };
 }
 
 export type BehaviorAction = {

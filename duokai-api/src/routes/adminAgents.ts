@@ -5,12 +5,16 @@ import { isTaskType } from '../lib/agentTypes.js';
 import { logAdminAction } from '../lib/audit.js';
 import { asyncHandler } from '../lib/http.js';
 import { connectMongo } from '../lib/mongodb.js';
+import { buildProxyAssetUsageMap, serializeProxyAssetWithUsage } from '../lib/proxyAssetUsage.js';
 import { requireAdmin } from '../middlewares/auth.js';
 import { AdminActionLogModel } from '../models/AdminActionLog.js';
 import { AgentModel } from '../models/Agent.js';
 import { AgentConfigStateModel } from '../models/AgentConfigState.js';
 import { AgentSessionModel } from '../models/AgentSession.js';
 import { ControlTaskModel } from '../models/ControlTask.js';
+import { IpLeaseModel } from '../models/IpLease.js';
+import { ProfileModel } from '../models/Profile.js';
+import { ProxyAssetModel } from '../models/ProxyAsset.js';
 import { TaskEventModel } from '../models/TaskEvent.js';
 
 const router = Router();
@@ -601,6 +605,48 @@ router.get(
         createdByUserId: item.createdByUserId || '',
         createdByEmail: item.createdByEmail || '',
       })),
+    });
+  })
+);
+
+router.get(
+  '/proxy-usage',
+  asyncHandler(async (_req, res) => {
+    await connectMongo();
+
+    const [assets, profiles, leases, agents] = await Promise.all([
+      ProxyAssetModel.find({}).sort({ updatedAt: -1 }).lean(),
+      ProfileModel.find({}).select('_id name proxyAssetId ipUsageMode').lean(),
+      IpLeaseModel.find({}).select('proxyAssetId profileId state ipUsageMode').lean(),
+      AgentModel.find({}).select('runtimeStatus').lean(),
+    ]);
+    const runningProfileIds = agents.flatMap((agent) =>
+      Array.isArray(agent.runtimeStatus?.runningProfileIds)
+        ? agent.runtimeStatus.runningProfileIds
+            .map((item: unknown) => String(item || '').trim())
+            .filter(Boolean)
+        : []
+    );
+    const usageMap = buildProxyAssetUsageMap(assets, profiles, leases, runningProfileIds);
+    const nameMap = new Map(profiles.map((profile) => [String(profile._id), String(profile.name || '').trim()]));
+
+    res.json({
+      success: true,
+      proxyAssets: assets.map((asset) => {
+        const serialized = serializeProxyAssetWithUsage(
+          asset as Record<string, unknown>,
+          usageMap.get(String(asset._id))
+        );
+        return {
+          ...serialized,
+          affectedProfiles: Array.isArray(serialized.affectedProfileIds)
+            ? serialized.affectedProfileIds.map((profileId) => ({
+                profileId,
+                name: nameMap.get(profileId) || profileId,
+              }))
+            : [],
+        };
+      }),
     });
   })
 );

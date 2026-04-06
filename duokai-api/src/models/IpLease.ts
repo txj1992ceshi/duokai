@@ -38,6 +38,12 @@ const IpLeaseSchema = new Schema(
       required: true,
       index: true,
     },
+    ipUsageMode: {
+      type: String,
+      enum: ['dedicated', 'shared'],
+      default: 'dedicated',
+      index: true,
+    },
     bindingMode: {
       type: String,
       enum: ['dedicated', 'reusable'],
@@ -66,9 +72,20 @@ const IpLeaseSchema = new Schema(
       default: '',
       trim: true,
     },
+    deviceId: {
+      type: String,
+      default: '',
+      trim: true,
+      index: true,
+    },
     acquiredAt: {
       type: Date,
       default: () => new Date(),
+    },
+    assignedAt: {
+      type: Date,
+      default: () => new Date(),
+      index: true,
     },
     releasedAt: {
       type: Date,

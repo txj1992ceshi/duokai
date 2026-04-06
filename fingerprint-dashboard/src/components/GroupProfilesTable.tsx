@@ -4,6 +4,7 @@ import { ChevronRight, Globe, Loader2, MonitorSmartphone, Pencil, Play, Smartpho
 import AppButton from '@/components/AppButton';
 import EmptyState from '@/components/EmptyState';
 import GlassCard from '@/components/GlassCard';
+import IpUsageSummary from '@/components/IpUsageSummary';
 import ProfileStorageStateEditor from '@/components/ProfileStorageStateEditor';
 import ProfileSyncSummary from '@/components/ProfileSyncSummary';
 import ProxyNodeCell from '@/components/ProxyNodeCell';
@@ -138,6 +139,9 @@ export default function GroupProfilesTable({
                           syncSummaryClass={getSyncSummaryClass(getProfileSyncSummary(profile))}
                           storageStateSynced={!!storageStateMap[profile.id]}
                         />
+                      </div>
+                      <div className="mt-2">
+                        <IpUsageSummary profile={profile} compact />
                       </div>
                     </td>
                     <td className="flex justify-end space-x-1 py-3.5 text-right">

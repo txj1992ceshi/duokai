@@ -46,6 +46,22 @@ const ProxyAssetSchema = new Schema(
       default: 'dedicated',
       index: true,
     },
+    sharingMode: {
+      type: String,
+      enum: ['dedicated', 'shared', 'hybrid'],
+      default: 'dedicated',
+      index: true,
+    },
+    maxProfilesPerIp: {
+      type: Number,
+      default: 1,
+      min: 1,
+    },
+    maxConcurrentRunsPerIp: {
+      type: Number,
+      default: 1,
+      min: 1,
+    },
     status: {
       type: String,
       enum: ['draft', 'active', 'cooldown', 'retired', 'error'],
@@ -102,7 +118,7 @@ const ProxyAssetSchema = new Schema(
   }
 );
 
-ProxyAssetSchema.index({ userId: 1, status: 1, bindingMode: 1, createdAt: -1 });
+ProxyAssetSchema.index({ userId: 1, status: 1, bindingMode: 1, sharingMode: 1, createdAt: -1 });
 
 export type ProxyAssetDocument = InferSchemaType<typeof ProxyAssetSchema>;
 export const ProxyAssetModel =

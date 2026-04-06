@@ -18,6 +18,7 @@ import {
 import AppButton from '@/components/AppButton';
 import AppInput from '@/components/AppInput';
 import AppSelect from '@/components/AppSelect';
+import IpUsageSummary from '@/components/IpUsageSummary';
 import WorkspaceSnapshotPanel from '@/components/WorkspaceSnapshotPanel';
 import type { GroupItem, Profile, WorkspaceSnapshotRecord } from '@/lib/dashboard-types';
 import type {
@@ -91,6 +92,9 @@ export default function EditProfileModal({
   getExpectationMismatchMessage,
 }: Props) {
   if (!profile) return null;
+  const purpose = profile.purpose || 'operation';
+  const ipUsageMode = profile.ipUsageMode || (purpose === 'register' ? 'dedicated' : 'shared');
+  const sharedModeBlockedByPurpose = purpose === 'register' && ipUsageMode === 'shared';
 
   return (
     <div className="absolute inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/80 p-4 backdrop-blur-sm">
@@ -170,6 +174,49 @@ export default function EditProfileModal({
               <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
                 打开环境后，会默认进入当前所选平台。选择“自定义平台”时可填写任意站点地址。
               </p>
+            </div>
+
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
+              <div className="mb-2 flex items-center gap-2 text-xs font-bold text-slate-300">
+                <Network size={14} className="text-cyan-300" />
+                IP 使用模式
+              </div>
+              <AppSelect
+                className="h-11 rounded-xl border-slate-700 bg-slate-900"
+                value={ipUsageMode}
+                onChange={(e) =>
+                  onProfileChange({
+                    ...profile,
+                    ipUsageMode: e.target.value as 'dedicated' | 'shared',
+                  })
+                }
+              >
+                <option value="dedicated">Dedicated IP（1 IP = 1 环境）</option>
+                <option value="shared">Shared IP（1 IP = 多环境）</option>
+              </AppSelect>
+              <div className="mt-2 space-y-1 text-[11px] leading-relaxed">
+                <p className="text-slate-500">
+                  用户可以手动选择模式，但最终是否允许启动，仍由 control plane 按平台策略、代理共享能力、租约和冷却状态统一判定。
+                </p>
+                <p className="text-slate-500">
+                  当前环境用途: <span className="text-slate-300">{purpose}</span>
+                </p>
+                <p className={sharedModeBlockedByPurpose ? 'text-amber-300' : 'text-slate-500'}>
+                  {sharedModeBlockedByPurpose
+                    ? '当前用途为 register。按默认策略，Shared IP 会在启动前被控制面明确拒绝。'
+                    : ipUsageMode === 'shared'
+                      ? 'Shared IP 仅在代理资产支持共享，且未超过 profile/run 上限时才允许启动。'
+                      : 'Dedicated IP 会阻止同一 IP 被其他受保护环境复用。'}
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
+              <div className="mb-2 flex items-center gap-2 text-xs font-bold text-slate-300">
+                <ShieldCheck size={14} className="text-emerald-300" />
+                当前代理能力与占用
+              </div>
+              <IpUsageSummary profile={{ ...profile, ipUsageMode }} />
             </div>
 
             <div>

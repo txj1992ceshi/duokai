@@ -37,7 +37,10 @@ import type {
   CurrentUserSummary,
   DashboardTab,
   GroupItem,
+  IpLeaseSummary,
+  PlatformPolicySummary,
   Profile,
+  ProxyAssetSummary,
   ProxyListItem,
   Settings,
   WorkspaceSnapshotRecord,
@@ -380,16 +383,50 @@ export default function Home() {
 
   const fetchProfiles = useCallback(async () => {
     try {
-      const [resP, resG, resB, resS] = await Promise.all([
+      const [resP, resG, resB, resS, resProxyAssets, resIpLeases, resPolicies] = await Promise.all([
         apiFetch('/api/profiles'),
         apiFetch('/api/groups'),
         apiFetch('/api/behaviors'),
-        apiFetch('/api/settings')
+        apiFetch('/api/settings'),
+        apiFetch('/api/proxy-assets'),
+        apiFetch('/api/ip-leases'),
+        apiFetch('/api/platform-policies'),
       ]);
+      const proxyAssetsPayload = resProxyAssets.ok ? await resProxyAssets.json() : null;
+      const ipLeasesPayload = resIpLeases.ok ? await resIpLeases.json() : null;
+      const policiesPayload = resPolicies.ok ? await resPolicies.json() : null;
+      const loadedProxyAssets: ProxyAssetSummary[] = Array.isArray(proxyAssetsPayload?.proxyAssets)
+        ? proxyAssetsPayload.proxyAssets
+        : [];
+      const loadedIpLeases: IpLeaseSummary[] = Array.isArray(ipLeasesPayload?.ipLeases)
+        ? ipLeasesPayload.ipLeases
+        : [];
+      const loadedPolicies: PlatformPolicySummary[] = Array.isArray(policiesPayload?.policies)
+        ? policiesPayload.policies
+        : [];
       if (resP.ok) {
         const payload = await resP.json();
         const rawProfiles = Array.isArray(payload) ? payload : payload?.profiles;
-        const mappedProfiles = Array.isArray(rawProfiles) ? rawProfiles.map(toEditableProfile) : [];
+        const proxyAssetMap = new Map(loadedProxyAssets.map((item) => [item.id, item]));
+        const activeLeaseMap = new Map(
+          loadedIpLeases.map((item) => [String(item.leaseId || item.id || ''), item])
+        );
+        const policyMap = new Map(
+          loadedPolicies.map((item) => [`${item.platform}:${item.purpose}`, item])
+        );
+        const mappedProfiles = Array.isArray(rawProfiles)
+          ? rawProfiles.map((item) => {
+              const editable = toEditableProfile(item as Profile);
+              const policy =
+                policyMap.get(`${editable.platform || ''}:${editable.purpose || 'operation'}`) || null;
+              return {
+                ...editable,
+                proxyAssetSummary: editable.proxyAssetId ? proxyAssetMap.get(editable.proxyAssetId) || null : null,
+                activeLeaseSummary: editable.activeLeaseId ? activeLeaseMap.get(editable.activeLeaseId) || null : null,
+                ipUsagePolicy: policy?.proxyPolicy || null,
+              };
+            })
+          : [];
         setProfiles(mappedProfiles);
         loadStorageStateStatus(mappedProfiles);
       }
@@ -576,6 +613,7 @@ export default function Home() {
         }, 1200);
       } catch (err) {
         alert('启动失败: ' + (err instanceof Error ? err.message : String(err)));
+        void fetchProfiles();
       } finally {
         setStartingProfileIds(prev => {
           const next = { ...prev };

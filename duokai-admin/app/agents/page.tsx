@@ -94,6 +94,21 @@ type AgentHealthSummaryItem = {
   } | null;
 };
 
+type ProxyUsageItem = {
+  id: string;
+  name: string;
+  sharingMode: string;
+  maxProfilesPerIp: number;
+  maxConcurrentRunsPerIp: number;
+  boundProfilesCount: number;
+  activeLeasesCount: number;
+  runningProfilesCount: number;
+  affectedProfiles?: Array<{
+    profileId: string;
+    name: string;
+  }>;
+};
+
 type MetricsData = {
   windowMinutes: number;
   runningTimeoutMinutes: number;
@@ -178,6 +193,7 @@ function AgentsPageContent() {
   const [failureSummary, setFailureSummary] = useState<FailureSummaryItem[]>([]);
   const [metrics, setMetrics] = useState<MetricsData | null>(null);
   const [healthSummary, setHealthSummary] = useState<AgentHealthSummaryItem[]>([]);
+  const [proxyUsage, setProxyUsage] = useState<ProxyUsageItem[]>([]);
   const [riskOnly, setRiskOnly] = useState(initialRiskOnly);
   const [recentBatchActions, setRecentBatchActions] = useState<BatchActionLogItem[]>([]);
   const [batchActionFilter, setBatchActionFilter] = useState<BatchActionFilter>(initialBatchActionFilter);
@@ -200,6 +216,16 @@ function AgentsPageContent() {
     const chunks: string[] = [];
     if (task.errorCode) {
       chunks.push(task.errorCode);
+    }
+    if (task.payload && typeof task.payload === 'object') {
+      const ipUsageMode = String(task.payload.ipUsageMode || '').trim();
+      const proxySharingMode = String(task.payload.proxySharingMode || '').trim();
+      const leaseValidationCode = String(
+        (task.payload.leaseValidation as Record<string, unknown> | undefined)?.code || '',
+      ).trim();
+      if (ipUsageMode) chunks.push(`ipUsage=${ipUsageMode}`);
+      if (proxySharingMode) chunks.push(`sharing=${proxySharingMode}`);
+      if (leaseValidationCode) chunks.push(`lease=${leaseValidationCode}`);
     }
     if (task.diagnostics && typeof task.diagnostics === 'object') {
       const action = String(task.diagnostics.action || '').trim();
@@ -294,6 +320,21 @@ function AgentsPageContent() {
     }
     if (code === 'LEASE_COOLDOWN') {
       return '等待 IP 冷却结束，或为该 Profile 重新分配 dedicated IP。';
+    }
+    if (code === 'PROXY_ASSET_COOLDOWN') {
+      return '代理资产仍在冷却中，等待 cooldown 结束或切换新的可用 proxy asset。';
+    }
+    if (code === 'IP_USAGE_MODE_NOT_ALLOWED') {
+      return '当前平台/用途策略不允许所选 IP 使用模式，请调整为 dedicated 或修改策略。';
+    }
+    if (code === 'PROXY_SHARING_UNSUPPORTED') {
+      return '当前 proxy asset 不支持 shared 模式，请更换支持 shared/hybrid 的资产或切回 dedicated。';
+    }
+    if (code === 'DEDICATED_IP_CONFLICT') {
+      return '当前 IP 已被其他受保护环境占用，请释放原租约或分配新的 dedicated IP。';
+    }
+    if (code === 'SHARED_IP_PROFILE_LIMIT' || code === 'SHARED_IP_CONCURRENT_LIMIT') {
+      return '当前 shared IP 已达到平台或资产上限，请切换新 IP、释放占用，或降低并发运行数。';
     }
     if (code === 'POLICY_BLOCK') {
       if (reason.includes('validation')) {
@@ -430,7 +471,7 @@ function AgentsPageContent() {
         actionsParams.set('action', batchActionFilter);
       }
       const actionsUrl = `/api/admin/agents/actions/recent?${actionsParams.toString()}`;
-      const [agentsRes, tasksRes, eventsRes, failuresRes, metricsRes, healthRes, actionsRes] = await Promise.all([
+      const [agentsRes, tasksRes, eventsRes, failuresRes, metricsRes, healthRes, actionsRes, proxyUsageRes] = await Promise.all([
         adminFetch('/api/admin/agents'),
         adminFetch('/api/admin/agents/tasks?limit=50'),
         adminFetch('/api/admin/agents/tasks/events?limit=80'),
@@ -438,6 +479,7 @@ function AgentsPageContent() {
         adminFetch('/api/admin/agents/metrics?windowMinutes=60&runningTimeoutMinutes=10'),
         adminFetch('/api/admin/agents/health-summary?windowMinutes=60&runningTimeoutMinutes=10'),
         adminFetch(actionsUrl),
+        adminFetch('/api/admin/agents/proxy-usage'),
       ]);
       const agentsData = await agentsRes.json();
       const tasksData = await tasksRes.json();
@@ -446,6 +488,7 @@ function AgentsPageContent() {
       const metricsData = await metricsRes.json();
       const healthData = await healthRes.json();
       const actionsData = await actionsRes.json();
+      const proxyUsageData = await proxyUsageRes.json();
 
       if (!agentsRes.ok || !agentsData.success) {
         throw new Error(agentsData.error || '加载 Agent 列表失败');
@@ -468,6 +511,9 @@ function AgentsPageContent() {
       if (!actionsRes.ok || !actionsData.success) {
         throw new Error(actionsData.error || '加载批量操作日志失败');
       }
+      if (!proxyUsageRes.ok || !proxyUsageData.success) {
+        throw new Error(proxyUsageData.error || '加载代理占用视图失败');
+      }
 
       setAgents(Array.isArray(agentsData.agents) ? agentsData.agents : []);
       setTasks(Array.isArray(tasksData.tasks) ? tasksData.tasks : []);
@@ -476,6 +522,7 @@ function AgentsPageContent() {
       setMetrics(metricsData.metrics || null);
       setHealthSummary(Array.isArray(healthData.agents) ? healthData.agents : []);
       setRecentBatchActions(Array.isArray(actionsData.actions) ? actionsData.actions : []);
+      setProxyUsage(Array.isArray(proxyUsageData.proxyAssets) ? proxyUsageData.proxyAssets : []);
     } catch (e) {
       setError(e instanceof Error ? e.message : '加载失败');
     } finally {
@@ -1256,10 +1303,58 @@ function AgentsPageContent() {
               )}
             </tbody>
           </table>
-        </DataTable>
+      </DataTable>
 
-        <DataTable>
-          <table className="w-full text-sm">
+      <DataTable>
+        <table className="w-full text-sm">
+          <thead className="bg-neutral-800/60 text-neutral-300">
+            <tr>
+              <th className="px-4 py-3 text-left">Proxy Asset</th>
+              <th className="px-4 py-3 text-left">Sharing</th>
+              <th className="px-4 py-3 text-left">Profiles / Max</th>
+              <th className="px-4 py-3 text-left">Runs / Max</th>
+              <th className="px-4 py-3 text-left">Active Leases</th>
+              <th className="px-4 py-3 text-left">Affected Profiles</th>
+            </tr>
+          </thead>
+          <tbody>
+            {proxyUsage.length ? (
+              proxyUsage.map((item) => (
+                <tr key={item.id} className="border-t border-neutral-800">
+                  <td className="px-4 py-3">
+                    <div className="font-medium">{item.name || item.id}</div>
+                    <div className="text-xs text-neutral-500">{item.id}</div>
+                  </td>
+                  <td className="px-4 py-3">{item.sharingMode}</td>
+                  <td className="px-4 py-3">
+                    {item.boundProfilesCount} / {item.maxProfilesPerIp}
+                  </td>
+                  <td className="px-4 py-3">
+                    {item.runningProfilesCount} / {item.maxConcurrentRunsPerIp}
+                  </td>
+                  <td className="px-4 py-3">{item.activeLeasesCount}</td>
+                  <td className="px-4 py-3 text-xs text-neutral-300">
+                    {item.affectedProfiles?.length
+                      ? item.affectedProfiles
+                          .map((profile) => `${profile.name} (${profile.profileId.slice(0, 8)})`)
+                          .join(', ')
+                      : '-'}
+                  </td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td className="px-4 py-4" colSpan={6}>
+                  <EmptyState title="暂无 Proxy Asset 占用信息" description="绑定租约或 proxy asset 后会在这里显示共享能力和当前占用。" />
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </DataTable>
+
+      <DataTable>
+        <table className="w-full text-sm">
             <thead className="bg-neutral-800/60 text-neutral-300">
               <tr>
                 <th className="px-4 py-3 text-left">时间</th>

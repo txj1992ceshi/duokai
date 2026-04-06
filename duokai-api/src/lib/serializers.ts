@@ -102,6 +102,22 @@ export function normalizeWorkspacePayload(
             templateRevision,
             templateFingerprintHash,
           },
+    trustSummary:
+      source.trustSummary && typeof source.trustSummary === 'object'
+        ? source.trustSummary
+        : {
+            lastQuickIsolationCheckAt: '',
+            lastQuickIsolationCheckSuccess: null,
+            lastQuickIsolationCheckMessage: '',
+            trustedSnapshotStatus: 'unknown',
+            trustedLaunchVerifiedAt: '',
+            activeRuntimeLock: {
+              state: 'unlocked',
+              ownerDeviceId: '',
+              ownerPid: null,
+              updatedAt: '',
+            },
+          },
     snapshotSummary:
       source.snapshotSummary && typeof source.snapshotSummary === 'object'
         ? {
@@ -181,6 +197,7 @@ export function serializeProfile(profile: any, storageStateSynced = false) {
     purpose: profile.purpose || 'operation',
     runtimeMode: profile.runtimeMode || 'local',
     proxyBindingMode: profile.proxyBindingMode || 'dedicated',
+    ipUsageMode: profile.ipUsageMode || (profile.purpose === 'register' ? 'dedicated' : 'shared'),
     lifecycleState: profile.lifecycleState || 'draft',
     riskFlags: Array.isArray(profile.riskFlags) ? profile.riskFlags : [],
     cooldownSummary:
@@ -229,6 +246,7 @@ export function serializeProfile(profile: any, storageStateSynced = false) {
     proxyFingerprintHash: profile.proxyFingerprintHash || '',
     lastQuickIsolationCheck: profile.lastQuickIsolationCheck || null,
     trustedLaunchSnapshot: profile.trustedLaunchSnapshot || null,
+    lastLaunchBlock: profile.lastLaunchBlock || null,
     workspace: normalizeWorkspacePayload(profileId, profile.workspace),
     createdAt: profile.createdAt,
     updatedAt: profile.updatedAt,

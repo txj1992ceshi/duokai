@@ -34,6 +34,12 @@ const ProfileSchema = new Schema(
       enum: ['dedicated', 'reusable'],
       default: 'dedicated',
     },
+    ipUsageMode: {
+      type: String,
+      enum: ['dedicated', 'shared'],
+      default: 'dedicated',
+      index: true,
+    },
     lifecycleState: {
       type: String,
       default: 'draft',
@@ -134,6 +140,10 @@ const ProfileSchema = new Schema(
       default: null,
     },
     trustedLaunchSnapshot: {
+      type: Schema.Types.Mixed,
+      default: null,
+    },
+    lastLaunchBlock: {
       type: Schema.Types.Mixed,
       default: null,
     },

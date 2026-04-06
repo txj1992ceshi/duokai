@@ -47,6 +47,29 @@ test('serializeProfile includes normalized workspace', () => {
   assert.equal(serialized.workspace.templateBinding.templateFingerprintHash, 'hash-2');
 });
 
+test('serializeProfile includes ip usage defaults and last launch block details', () => {
+  const serialized = serializeProfile({
+    _id: 'profile-2',
+    userId: 'user-1',
+    name: 'Profile 2',
+    purpose: 'register',
+    status: 'Ready',
+    lastLaunchBlock: {
+      code: 'DEDICATED_IP_CONFLICT',
+      message: 'conflict',
+      blockedAt: '2026-04-07T00:00:00.000Z',
+    },
+    workspace: null,
+  });
+
+  assert.equal(serialized.ipUsageMode, 'dedicated');
+  assert.deepEqual(serialized.lastLaunchBlock, {
+    code: 'DEDICATED_IP_CONFLICT',
+    message: 'conflict',
+    blockedAt: '2026-04-07T00:00:00.000Z',
+  });
+});
+
 test('workspace snapshot schema keeps profile identity and unique snapshot key', () => {
   const indexes = WorkspaceSnapshotModel.schema.indexes();
   assert.equal(

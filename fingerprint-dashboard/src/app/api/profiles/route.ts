@@ -16,7 +16,11 @@ function normalizeCooldownSummary(input: unknown) {
   };
 }
 
-function serializeProfile(profile: Record<string, any>, storageStateSynced = false) {
+function resolveDefaultIpUsageMode(purpose: unknown) {
+  return String(purpose || '').trim() === 'register' ? 'dedicated' : 'shared';
+}
+
+function serializeProfile(profile: Record<string, unknown>, storageStateSynced = false) {
   return {
     id: String(profile._id),
     userId: String(profile.userId),
@@ -25,6 +29,7 @@ function serializeProfile(profile: Record<string, any>, storageStateSynced = fal
     purpose: profile.purpose || 'operation',
     runtimeMode: profile.runtimeMode || 'local',
     proxyBindingMode: profile.proxyBindingMode || 'dedicated',
+    ipUsageMode: profile.ipUsageMode || resolveDefaultIpUsageMode(profile.purpose || 'operation'),
     lifecycleState: profile.lifecycleState || 'draft',
     riskFlags: Array.isArray(profile.riskFlags) ? profile.riskFlags : [],
     cooldownSummary:
@@ -33,6 +38,8 @@ function serializeProfile(profile: Record<string, any>, storageStateSynced = fal
         : { active: false, reason: '', until: '' },
     fingerprintPresetRef: profile.fingerprintPresetRef || '',
     workspaceManifestRef: profile.workspaceManifestRef || '',
+    proxyAssetId: profile.proxyAssetId || '',
+    activeLeaseId: profile.activeLeaseId || '',
     ownerLabel: profile.ownerLabel || '',
     status: profile.status,
     lastActive: profile.lastActive || '',
@@ -94,9 +101,9 @@ export async function GET(req: NextRequest) {
     );
 
     return NextResponse.json({
-      success: true,
+        success: true,
       profiles: profiles.map((profile) =>
-        serializeProfile(profile as Record<string, any>, syncedProfileIds.has(String(profile._id)))
+        serializeProfile(profile as Record<string, unknown>, syncedProfileIds.has(String(profile._id)))
       ),
     });
   } catch (error) {
@@ -128,11 +135,16 @@ export async function POST(req: NextRequest) {
       purpose: String(body.purpose || 'operation').trim() || 'operation',
       runtimeMode: String(body.runtimeMode || 'local').trim() || 'local',
       proxyBindingMode: String(body.proxyBindingMode || 'dedicated').trim() || 'dedicated',
+      ipUsageMode:
+        String(body.ipUsageMode || resolveDefaultIpUsageMode(body.purpose || 'operation')).trim() ||
+        'dedicated',
       lifecycleState: String(body.lifecycleState || 'draft').trim() || 'draft',
       riskFlags: Array.isArray(body.riskFlags) ? body.riskFlags : [],
       cooldownSummary: normalizeCooldownSummary(body.cooldownSummary),
       fingerprintPresetRef: String(body.fingerprintPresetRef || '').trim(),
       workspaceManifestRef: String(body.workspaceManifestRef || '').trim(),
+      proxyAssetId: String(body.proxyAssetId || '').trim(),
+      activeLeaseId: String(body.activeLeaseId || '').trim(),
       ownerLabel: String(body.ownerLabel || '').trim(),
       status: body.status || 'Ready',
       lastActive: body.lastActive || '',
@@ -178,7 +190,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      profile: serializeProfile(profile as Record<string, any>),
+      profile: serializeProfile(profile as Record<string, unknown>),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Request failed';

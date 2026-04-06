@@ -1,5 +1,6 @@
 export type PlatformPolicyPlatform = 'tiktok' | 'linkedin' | 'facebook';
 export type PlatformPolicyPurpose = 'register' | 'nurture' | 'operation';
+export type IpUsageMode = 'dedicated' | 'shared';
 
 export type DefaultPlatformPolicy = {
   policyId: string;
@@ -9,7 +10,14 @@ export type DefaultPlatformPolicy = {
   active: boolean;
   cooldownPolicy: Record<string, unknown>;
   validationPolicy: Record<string, unknown>;
-  proxyPolicy: Record<string, unknown>;
+  proxyPolicy: {
+    bindingMode: 'dedicated' | 'reusable';
+    requireLease: boolean;
+    allowedIpUsageModes: IpUsageMode[];
+    defaultIpUsageMode: IpUsageMode;
+    sharedIpMaxProfilesPerIp?: number;
+    sharedIpMaxConcurrentRunsPerIp?: number;
+  };
   fingerprintPolicy: Record<string, unknown>;
   workspacePolicy: Record<string, unknown>;
   startupPolicy: Record<string, unknown>;
@@ -22,6 +30,7 @@ function makeDefaultPolicy(
   purpose: PlatformPolicyPurpose
 ): DefaultPlatformPolicy {
   const dedicatedProxyRequired = purpose === 'register';
+  const sharedAllowed = purpose !== 'register';
   const riskTolerance =
     purpose === 'register' ? 'strict' : purpose === 'nurture' ? 'balanced' : 'stable';
   const startupUrl =
@@ -50,6 +59,10 @@ function makeDefaultPolicy(
     proxyPolicy: {
       bindingMode: dedicatedProxyRequired ? 'dedicated' : 'reusable',
       requireLease: true,
+      allowedIpUsageModes: sharedAllowed ? ['dedicated', 'shared'] : ['dedicated'],
+      defaultIpUsageMode: sharedAllowed ? 'shared' : 'dedicated',
+      sharedIpMaxProfilesPerIp: sharedAllowed ? 3 : 1,
+      sharedIpMaxConcurrentRunsPerIp: sharedAllowed ? 2 : 1,
     },
     fingerprintPolicy: {
       presetRef: `${platform}-${purpose}-baseline`,
@@ -68,6 +81,64 @@ function makeDefaultPolicy(
       requireCompatibilityCheck: true,
     },
     fallbackPolicyRef: `${platform}-operation-v1`,
+  };
+}
+
+export function getDefaultPlatformPolicy(
+  platform: string,
+  purpose: string
+): DefaultPlatformPolicy | null {
+  const normalizedPlatform = String(platform || '').trim().toLowerCase() as PlatformPolicyPlatform;
+  const normalizedPurpose = String(purpose || '').trim().toLowerCase() as PlatformPolicyPurpose;
+  if (
+    (normalizedPlatform !== 'tiktok' &&
+      normalizedPlatform !== 'linkedin' &&
+      normalizedPlatform !== 'facebook') ||
+    (normalizedPurpose !== 'register' &&
+      normalizedPurpose !== 'nurture' &&
+      normalizedPurpose !== 'operation')
+  ) {
+    return null;
+  }
+  return makeDefaultPolicy(normalizedPlatform, normalizedPurpose);
+}
+
+export function resolveDefaultIpUsageMode(
+  purpose: string,
+  proxyPolicy?: Record<string, unknown> | null
+): IpUsageMode {
+  const candidate = String(proxyPolicy?.defaultIpUsageMode || '').trim();
+  if (candidate === 'dedicated' || candidate === 'shared') {
+    return candidate;
+  }
+  return String(purpose || '').trim() === 'register' ? 'dedicated' : 'shared';
+}
+
+export function normalizeProxyPolicy(
+  purpose: string,
+  proxyPolicy?: Record<string, unknown> | null
+) {
+  const defaultIpUsageMode = resolveDefaultIpUsageMode(purpose, proxyPolicy);
+  const allowedIpUsageModes = Array.isArray(proxyPolicy?.allowedIpUsageModes)
+    ? proxyPolicy.allowedIpUsageModes
+        .map((item) => String(item || '').trim())
+        .filter((item): item is IpUsageMode => item === 'dedicated' || item === 'shared')
+    : defaultIpUsageMode === 'dedicated'
+      ? ['dedicated']
+      : ['dedicated', 'shared'];
+
+  return {
+    ...(proxyPolicy || {}),
+    allowedIpUsageModes,
+    defaultIpUsageMode,
+    sharedIpMaxProfilesPerIp: Math.max(
+      1,
+      Number(proxyPolicy?.sharedIpMaxProfilesPerIp || (defaultIpUsageMode === 'shared' ? 3 : 1)) || 1
+    ),
+    sharedIpMaxConcurrentRunsPerIp: Math.max(
+      1,
+      Number(proxyPolicy?.sharedIpMaxConcurrentRunsPerIp || (defaultIpUsageMode === 'shared' ? 2 : 1)) || 1
+    ),
   };
 }
 

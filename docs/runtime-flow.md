@@ -3,19 +3,28 @@
 ## Canonical Start Flow
 
 1. User requests launch from desktop UI or control plane UI.
-2. Control plane creates a `start` control task for a target desktop agent.
-3. Desktop agent claims the task.
-4. Desktop runtime loads the target profile, policy, workspace manifest, and lease data.
-5. Runtime validates:
+2. Control plane resolves the target profile, active lease, proxy asset, and platform-purpose policy.
+3. Control plane validates:
+   - selected `ipUsageMode`
+   - proxy asset sharing capability
+   - lease availability and active state
+   - cooldown rules
+   - active same-IP and same-asset conflicts
+   - shared-IP profile and concurrent-run limits
+4. If any hard block exists, control plane rejects launch with an explicit reason code and records the blocked decision.
+5. If validation passes, control plane creates a `start` control task for a target desktop agent.
+6. Desktop agent claims the task.
+7. Desktop runtime loads the target profile, policy, workspace manifest, and lease data.
+8. Runtime validates:
    - profile state
    - lease validity
    - cooldown rules
    - workspace isolation
    - launch lock
    - environment consistency
-6. Runtime launches the local browser environment.
-7. Runtime records status and compact events.
-8. Runtime updates trusted launch and snapshot metadata when appropriate.
+9. Runtime launches the local browser environment.
+10. Runtime records status and compact events.
+11. Runtime updates trusted launch and snapshot metadata when appropriate.
 
 ## Canonical Stop Flow
 
@@ -52,6 +61,10 @@ All runtime failures must map to explainable reasons, including:
 
 - no valid lease
 - lease cooling down
+- IP usage mode not allowed by policy
+- proxy asset does not support shared mode
+- shared IP profile limit reached
+- shared IP concurrent run limit reached
 - duplicate launch
 - workspace contamination
 - unsupported runtime mode

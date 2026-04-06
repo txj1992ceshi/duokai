@@ -15,6 +15,7 @@ import {
 import AppButton from '@/components/AppButton';
 import EmptyState from '@/components/EmptyState';
 import GlassCard from '@/components/GlassCard';
+import IpUsageSummary from '@/components/IpUsageSummary';
 import ProfileStorageStateEditor from '@/components/ProfileStorageStateEditor';
 import ProfileSyncSummary from '@/components/ProfileSyncSummary';
 import ProxyNodeCell from '@/components/ProxyNodeCell';
@@ -165,6 +166,7 @@ export default function DesktopProfileList({
                         <div className="text-[11px] text-slate-500">
                           {formatWorkspaceSnapshotSummary(profile)}
                         </div>
+                        <IpUsageSummary profile={profile} compact />
                       </div>
                     )}
                   </div>
@@ -216,6 +218,10 @@ export default function DesktopProfileList({
                 </div>
                 {detailsOpen ? (
                   <div className="mt-3 border-t border-slate-800/80 pt-3">
+                    <div className="mb-3 rounded-xl border border-slate-800 bg-[#111722] px-3 py-3">
+                      <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">IP 使用状态</div>
+                      <IpUsageSummary profile={profile} />
+                    </div>
                     <ProfileStorageStateEditor
                       profileId={profile.id}
                       open={!!storageStateEditorOpen[profile.id]}

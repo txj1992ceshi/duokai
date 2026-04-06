@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { connectMongo } from '../lib/mongodb.js';
 import { asyncHandler } from '../lib/http.js';
 import { normalizeWorkspacePayload, serializeProfile } from '../lib/serializers.js';
+import { resolveDefaultIpUsageMode } from '../lib/platformPolicies.js';
 import { requireUser } from '../middlewares/auth.js';
 import { ProfileModel } from '../models/Profile.js';
 import { ProfileStorageStateModel } from '../models/ProfileStorageState.js';
@@ -60,6 +61,13 @@ router.post(
       purpose: String(body.purpose || body.environmentPurpose || 'operation').trim() || 'operation',
       runtimeMode: String(body.runtimeMode || 'local').trim() || 'local',
       proxyBindingMode: String(body.proxyBindingMode || 'dedicated').trim() || 'dedicated',
+      ipUsageMode:
+        String(
+          body.ipUsageMode ||
+            resolveDefaultIpUsageMode(
+              String(body.purpose || body.environmentPurpose || 'operation').trim() || 'operation'
+            )
+        ).trim() || 'dedicated',
       lifecycleState: String(body.lifecycleState || 'draft').trim() || 'draft',
       riskFlags: Array.isArray(body.riskFlags) ? body.riskFlags : [],
       cooldownSummary: normalizeCooldownSummary(body.cooldownSummary),
@@ -104,6 +112,7 @@ router.post(
       proxyFingerprintHash: body.proxyFingerprintHash || '',
       lastQuickIsolationCheck: body.lastQuickIsolationCheck || null,
       trustedLaunchSnapshot: body.trustedLaunchSnapshot || null,
+      lastLaunchBlock: body.lastLaunchBlock || null,
       workspace: normalizeWorkspacePayload('pending-profile-id', body.workspace),
     });
 
@@ -161,6 +170,7 @@ router.patch(
     if (typeof body.purpose === 'string') updateData.purpose = body.purpose.trim();
     if (typeof body.runtimeMode === 'string') updateData.runtimeMode = body.runtimeMode.trim();
     if (typeof body.proxyBindingMode === 'string') updateData.proxyBindingMode = body.proxyBindingMode.trim();
+    if (typeof body.ipUsageMode === 'string') updateData.ipUsageMode = body.ipUsageMode.trim();
     if (typeof body.lifecycleState === 'string') updateData.lifecycleState = body.lifecycleState.trim();
     if (Array.isArray(body.riskFlags)) updateData.riskFlags = body.riskFlags;
     if (body.cooldownSummary !== undefined) updateData.cooldownSummary = normalizeCooldownSummary(body.cooldownSummary);
@@ -215,6 +225,9 @@ router.patch(
     }
     if (body.trustedLaunchSnapshot !== undefined) {
       updateData.trustedLaunchSnapshot = body.trustedLaunchSnapshot;
+    }
+    if (body.lastLaunchBlock !== undefined) {
+      updateData.lastLaunchBlock = body.lastLaunchBlock;
     }
     if (body.workspace !== undefined) {
       updateData.workspace = normalizeWorkspacePayload(profileId, body.workspace);

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { connectMongo } from '../lib/mongodb.js';
 import { asyncHandler } from '../lib/http.js';
-import { getDefaultPlatformPolicies } from '../lib/platformPolicies.js';
+import { getDefaultPlatformPolicies, normalizeProxyPolicy } from '../lib/platformPolicies.js';
 import { requireUser } from '../middlewares/auth.js';
 import { PlatformPolicyModel } from '../models/PlatformPolicy.js';
 
@@ -29,7 +29,14 @@ router.get(
       .lean();
 
     if (policies.length > 0) {
-      res.json({ success: true, source: 'mongo', policies });
+      res.json({
+        success: true,
+        source: 'mongo',
+        policies: policies.map((policy) => ({
+          ...policy,
+          proxyPolicy: normalizeProxyPolicy(policy.purpose, policy.proxyPolicy),
+        })),
+      });
       return;
     }
 
@@ -43,7 +50,14 @@ router.get(
       return true;
     });
 
-    res.json({ success: true, source: 'defaults', policies: defaults });
+    res.json({
+      success: true,
+      source: 'defaults',
+      policies: defaults.map((policy) => ({
+        ...policy,
+        proxyPolicy: normalizeProxyPolicy(policy.purpose, policy.proxyPolicy),
+      })),
+    });
   })
 );
 

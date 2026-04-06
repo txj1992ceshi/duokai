@@ -19,7 +19,11 @@ function normalizeCooldownSummary(input: unknown) {
   };
 }
 
-function serializeProfile(profile: Record<string, any>) {
+function resolveDefaultIpUsageMode(purpose: unknown) {
+  return String(purpose || '').trim() === 'register' ? 'dedicated' : 'shared';
+}
+
+function serializeProfile(profile: Record<string, unknown>) {
   return {
     id: String(profile._id),
     userId: String(profile.userId),
@@ -28,6 +32,7 @@ function serializeProfile(profile: Record<string, any>) {
     purpose: profile.purpose || 'operation',
     runtimeMode: profile.runtimeMode || 'local',
     proxyBindingMode: profile.proxyBindingMode || 'dedicated',
+    ipUsageMode: profile.ipUsageMode || resolveDefaultIpUsageMode(profile.purpose || 'operation'),
     lifecycleState: profile.lifecycleState || 'draft',
     riskFlags: Array.isArray(profile.riskFlags) ? profile.riskFlags : [],
     cooldownSummary:
@@ -36,6 +41,8 @@ function serializeProfile(profile: Record<string, any>) {
         : { active: false, reason: '', until: '' },
     fingerprintPresetRef: profile.fingerprintPresetRef || '',
     workspaceManifestRef: profile.workspaceManifestRef || '',
+    proxyAssetId: profile.proxyAssetId || '',
+    activeLeaseId: profile.activeLeaseId || '',
     ownerLabel: profile.ownerLabel || '',
     status: profile.status,
     lastActive: profile.lastActive || '',
@@ -96,7 +103,7 @@ export async function GET(req: NextRequest, context: RouteContext) {
 
     return NextResponse.json({
       success: true,
-      profile: serializeProfile(profile as Record<string, any>),
+      profile: serializeProfile(profile as Record<string, unknown>),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Request failed';
@@ -128,11 +135,14 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
     if (typeof body.purpose === 'string') updateData.purpose = body.purpose.trim();
     if (typeof body.runtimeMode === 'string') updateData.runtimeMode = body.runtimeMode.trim();
     if (typeof body.proxyBindingMode === 'string') updateData.proxyBindingMode = body.proxyBindingMode.trim();
+    if (typeof body.ipUsageMode === 'string') updateData.ipUsageMode = body.ipUsageMode.trim();
     if (typeof body.lifecycleState === 'string') updateData.lifecycleState = body.lifecycleState.trim();
     if (Array.isArray(body.riskFlags)) updateData.riskFlags = body.riskFlags;
     if (body.cooldownSummary !== undefined) updateData.cooldownSummary = normalizeCooldownSummary(body.cooldownSummary);
     if (typeof body.fingerprintPresetRef === 'string') updateData.fingerprintPresetRef = body.fingerprintPresetRef.trim();
     if (typeof body.workspaceManifestRef === 'string') updateData.workspaceManifestRef = body.workspaceManifestRef.trim();
+    if (typeof body.proxyAssetId === 'string') updateData.proxyAssetId = body.proxyAssetId.trim();
+    if (typeof body.activeLeaseId === 'string') updateData.activeLeaseId = body.activeLeaseId.trim();
     if (typeof body.ownerLabel === 'string') updateData.ownerLabel = body.ownerLabel.trim();
     if (typeof body.status === 'string') updateData.status = body.status;
     if (Array.isArray(body.tags)) updateData.tags = body.tags;
@@ -204,7 +214,7 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
 
     return NextResponse.json({
       success: true,
-      profile: serializeProfile(profile as Record<string, any>),
+      profile: serializeProfile(profile as Record<string, unknown>),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Request failed';

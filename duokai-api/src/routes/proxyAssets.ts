@@ -1,7 +1,11 @@
 import { Router } from 'express';
 import { asyncHandler } from '../lib/http.js';
 import { connectMongo } from '../lib/mongodb.js';
+import { buildProxyAssetUsageMap, serializeProxyAssetWithUsage } from '../lib/proxyAssetUsage.js';
 import { requireUser } from '../middlewares/auth.js';
+import { AgentModel } from '../models/Agent.js';
+import { IpLeaseModel } from '../models/IpLease.js';
+import { ProfileModel } from '../models/Profile.js';
 import { ProxyAssetModel } from '../models/ProxyAsset.js';
 
 const router = Router();
@@ -12,13 +16,33 @@ router.get(
   '/',
   asyncHandler(async (req, res) => {
     await connectMongo();
-    const assets = await ProxyAssetModel.find({
-      userId: req.authUser!.userId,
-    })
-      .sort({ updatedAt: -1 })
-      .lean();
+    const userId = req.authUser!.userId;
+    const [assets, profiles, leases, agents] = await Promise.all([
+      ProxyAssetModel.find({
+        userId,
+      })
+        .sort({ updatedAt: -1 })
+        .lean(),
+      ProfileModel.find({ userId }).select('_id proxyAssetId').lean(),
+      IpLeaseModel.find({ userId }).select('proxyAssetId profileId state').lean(),
+      AgentModel.find({ ownerUserId: userId }).select('runtimeStatus').lean(),
+    ]);
 
-    res.json({ success: true, proxyAssets: assets });
+    const runningProfileIds = agents.flatMap((agent) =>
+      Array.isArray(agent.runtimeStatus?.runningProfileIds)
+        ? agent.runtimeStatus.runningProfileIds
+            .map((item: unknown) => String(item || '').trim())
+            .filter(Boolean)
+        : []
+    );
+    const usageMap = buildProxyAssetUsageMap(assets, profiles, leases, runningProfileIds);
+
+    res.json({
+      success: true,
+      proxyAssets: assets.map((asset) =>
+        serializeProxyAssetWithUsage(asset as Record<string, unknown>, usageMap.get(String(asset._id)))
+      ),
+    });
   })
 );
 
@@ -37,6 +61,9 @@ router.post(
       username: String(body.username || '').trim(),
       password: String(body.password || ''),
       bindingMode: String(body.bindingMode || 'dedicated').trim() || 'dedicated',
+      sharingMode: String(body.sharingMode || 'dedicated').trim() || 'dedicated',
+      maxProfilesPerIp: Number(body.maxProfilesPerIp || 1) || 1,
+      maxConcurrentRunsPerIp: Number(body.maxConcurrentRunsPerIp || 1) || 1,
       status: String(body.status || 'draft').trim() || 'draft',
       platformScope: Array.isArray(body.platformScope) ? body.platformScope : [],
       purposeScope: Array.isArray(body.purposeScope) ? body.purposeScope : [],
