@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { Dictionary, LocaleCode } from '../i18n'
 import type { EnvironmentListItem, ProfileFormState } from '../lib/desktop-types'
+import { assignStableHardwareFingerprint } from '../shared/hardwareProfiles'
 import type {
   EnvironmentPurpose,
   FingerprintConfig,
@@ -265,6 +266,7 @@ export function useProfilesWorkspace({
   }
 
   function loadTemplateIntoProfile(template: TemplateRecord) {
+    const draftId = `draft-template-${crypto.randomUUID()}`
     setTemplateDrawerOpen(false)
     setSelectedTemplateId(null)
     setResourceMode('profiles')
@@ -279,12 +281,22 @@ export function useProfilesWorkspace({
       environmentPurpose: template.environmentPurpose,
       deviceProfile: null,
       fingerprintConfig: {
-        ...cloneFingerprintConfig(template.fingerprintConfig),
-        runtimeMetadata: {
-          ...defaultRuntimeMetadata,
-          lastValidationMessages: [],
-          injectedFeatures: [],
-        },
+        ...assignStableHardwareFingerprint(
+          {
+            ...cloneFingerprintConfig(template.fingerprintConfig),
+            runtimeMetadata: {
+              ...defaultRuntimeMetadata,
+              lastValidationMessages: [],
+              injectedFeatures: [],
+              hardwareProfileSource: 'template',
+            },
+          },
+          draftId,
+          {
+            forceRegenerate: true,
+            seed: draftId,
+          },
+        ),
       },
     })
   }

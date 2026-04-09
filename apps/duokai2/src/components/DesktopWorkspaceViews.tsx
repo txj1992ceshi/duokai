@@ -54,7 +54,7 @@ export function DesktopWorkspaceViews({
       <DesktopWorkspaceChrome {...shellProps} />
       <AnimatePresence mode="wait" initial={false}>
         <motion.div
-          key={view}
+          key={`${view}-${shellProps.locale}`}
           initial="initial"
           animate="animate"
           exit="exit"

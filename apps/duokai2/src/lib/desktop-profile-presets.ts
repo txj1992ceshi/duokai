@@ -4,6 +4,11 @@ import {
   DEFAULT_ENVIRONMENT_LANGUAGE,
   normalizeEnvironmentLanguage,
 } from '../shared/environmentLanguages'
+import {
+  assignStableHardwareFingerprint,
+  randomizeStableHardwareFingerprint,
+  sanitizeTemplateHardwareFingerprint,
+} from '../shared/hardwareProfiles'
 import type {
   DeviceProfile,
   EnvironmentPurpose,
@@ -394,37 +399,15 @@ export const defaultFingerprint: FingerprintConfig = {
     lastStorageStateDeviceId: '',
     lastStorageStateSyncStatus: 'idle',
     lastStorageStateSyncMessage: '',
+    hardwareProfileId: '',
+    hardwareProfileVersion: '',
+    hardwareSeed: '',
+    hardwareProfileSource: '',
   },
 }
 
 export function randomDesktopFingerprint(current: FingerprintConfig): FingerprintConfig {
-  const resolutions = ['1280x720', '1366x768', '1440x900', '1600x900', '1920x1080']
-  const resolution =
-    resolutions[Math.floor(Math.random() * resolutions.length)] ?? current.resolution
-  const [width, height] = resolution.split('x').map(Number)
-  return {
-    ...current,
-    resolution,
-    userAgent: buildDesktopUserAgent(
-      current.advanced.operatingSystem,
-      String(136 + Math.floor(Math.random() * 4)),
-    ),
-    advanced: {
-      ...current.advanced,
-      windowWidth: width || current.advanced.windowWidth,
-      windowHeight: height || current.advanced.windowHeight,
-      deviceName: `DESKTOP-${Math.random().toString(36).slice(2, 9).toUpperCase()}`,
-      hostIp: `172.${20 + Math.floor(Math.random() * 10)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`,
-      macAddress: Array.from({ length: 6 }, () =>
-        Math.floor(Math.random() * 256)
-          .toString(16)
-          .padStart(2, '0')
-          .toUpperCase(),
-      ).join('-'),
-      cpuCores: [4, 8, 12, 16][Math.floor(Math.random() * 4)] ?? current.advanced.cpuCores,
-      memoryGb: [4, 8, 16, 32][Math.floor(Math.random() * 4)] ?? current.advanced.memoryGb,
-    },
-  }
+  return randomizeStableHardwareFingerprint(current)
 }
 
 export function normalizeTags(value: string): string[] {
@@ -670,6 +653,7 @@ export function emptyProfile(
   proxyId: string | null = null,
   defaultLanguage: string = DEFAULT_ENVIRONMENT_LANGUAGE,
 ): ProfileFormState {
+  const draftId = `draft-${crypto.randomUUID()}`
   return {
     name: '',
     proxyId,
@@ -678,10 +662,17 @@ export function emptyProfile(
     notes: '',
     environmentPurpose: 'operation',
     deviceProfile: null,
-    fingerprintConfig: {
-      ...cloneFingerprintConfig(defaultFingerprint),
-      language: normalizeEnvironmentLanguage(defaultLanguage),
-    },
+    fingerprintConfig: assignStableHardwareFingerprint(
+      {
+        ...cloneFingerprintConfig(defaultFingerprint),
+        language: normalizeEnvironmentLanguage(defaultLanguage),
+      },
+      draftId,
+      {
+        forceRegenerate: true,
+        seed: draftId,
+      },
+    ),
   }
 }
 
@@ -694,7 +685,7 @@ export function emptyTemplate(proxyId: string | null = null): ProfileFormState {
     notes: '',
     environmentPurpose: 'operation',
     deviceProfile: null,
-    fingerprintConfig: cloneFingerprintConfig(defaultFingerprint),
+    fingerprintConfig: sanitizeTemplateHardwareFingerprint(cloneFingerprintConfig(defaultFingerprint)),
   }
 }
 

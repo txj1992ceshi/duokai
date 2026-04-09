@@ -10,6 +10,7 @@ import {
   normalizeFingerprintConfig,
   normalizeWorkspaceDescriptor,
 } from './factories'
+import { sanitizeTemplateHardwareFingerprint } from '../../src/shared/hardwareProfiles'
 import type {
   CloudPhoneRecord,
   DashboardSummary,
@@ -548,8 +549,7 @@ export class DatabaseService {
         input.notes,
         input.environmentPurpose ?? DEFAULT_ENVIRONMENT_PURPOSE,
         JSON.stringify(
-          input.deviceProfile ??
-            createDeviceProfileFromFingerprint(fingerprintConfig, now),
+          createDeviceProfileFromFingerprint(fingerprintConfig, now, input.deviceProfile),
         ),
         JSON.stringify(fingerprintConfig),
         JSON.stringify(workspace),
@@ -562,6 +562,9 @@ export class DatabaseService {
 
   private insertTemplate(input: UpdateTemplateInput): void {
     const now = new Date().toISOString()
+    const fingerprintConfig = sanitizeTemplateHardwareFingerprint(
+      input.fingerprintConfig ?? createDefaultFingerprint(),
+    )
     this.db
       .prepare(
         `INSERT INTO templates (
@@ -576,7 +579,7 @@ export class DatabaseService {
         input.environmentPurpose ?? DEFAULT_ENVIRONMENT_PURPOSE,
         JSON.stringify(input.tags),
         input.notes,
-        JSON.stringify(input.fingerprintConfig ?? createDefaultFingerprint()),
+        JSON.stringify(fingerprintConfig),
         JSON.stringify(input.workspaceTemplate ?? null),
         now,
         now,
@@ -796,12 +799,11 @@ export class DatabaseService {
         input.notes,
         input.environmentPurpose ?? existing.environmentPurpose ?? DEFAULT_ENVIRONMENT_PURPOSE,
         JSON.stringify(
-          input.deviceProfile ??
-            createDeviceProfileFromFingerprint(
-              input.fingerprintConfig,
-              existing.deviceProfile?.createdAt || existing.createdAt,
-              existing.deviceProfile,
-            ),
+          createDeviceProfileFromFingerprint(
+            input.fingerprintConfig,
+            existing.deviceProfile?.createdAt || existing.createdAt,
+            input.deviceProfile ?? existing.deviceProfile,
+          ),
         ),
         JSON.stringify(input.fingerprintConfig),
         JSON.stringify(
@@ -887,6 +889,9 @@ export class DatabaseService {
     if (!existing) {
       return this.createTemplate(input)
     }
+    const fingerprintConfig = sanitizeTemplateHardwareFingerprint(
+      input.fingerprintConfig ?? existing.fingerprintConfig,
+    )
 
     this.db
       .prepare(
@@ -901,7 +906,7 @@ export class DatabaseService {
         input.environmentPurpose ?? existing.environmentPurpose ?? DEFAULT_ENVIRONMENT_PURPOSE,
         JSON.stringify(input.tags),
         input.notes,
-        JSON.stringify(input.fingerprintConfig),
+        JSON.stringify(fingerprintConfig),
         JSON.stringify(input.workspaceTemplate ?? existing.workspaceTemplate ?? null),
         new Date().toISOString(),
         input.id,
@@ -927,7 +932,7 @@ export class DatabaseService {
       environmentPurpose: profile.environmentPurpose,
       tags: profile.tags,
       notes: profile.notes,
-      fingerprintConfig: profile.fingerprintConfig,
+      fingerprintConfig: sanitizeTemplateHardwareFingerprint(profile.fingerprintConfig),
     })
   }
 

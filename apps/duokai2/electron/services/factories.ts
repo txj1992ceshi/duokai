@@ -29,6 +29,10 @@ import type {
   UpdateTemplateInput,
 } from '../../src/shared/types'
 import { DEFAULT_ENVIRONMENT_LANGUAGE } from '../../src/shared/environmentLanguages'
+import {
+  assignStableHardwareFingerprint,
+  sanitizeTemplateHardwareFingerprint,
+} from '../../src/shared/hardwareProfiles'
 
 export interface PlatformTemplatePreset {
   key: 'linkedin' | 'tiktok'
@@ -471,6 +475,10 @@ export function createDefaultFingerprint(): FingerprintConfig {
     lastStorageStateDeviceId: '',
     lastStorageStateSyncStatus: 'idle',
     lastStorageStateSyncMessage: '',
+    hardwareProfileId: '',
+    hardwareProfileVersion: '',
+    hardwareSeed: '',
+    hardwareProfileSource: '',
   }
 
   return {
@@ -670,10 +678,19 @@ export function createProfilePayload(
   createFingerprint: () => FingerprintConfig,
 ): UpdateProfileInput {
   const id = 'id' in input ? input.id : randomUUID()
-  const fingerprintConfig = normalizeFingerprintConfig({
+  const normalizedFingerprint = normalizeFingerprintConfig({
     ...createFingerprint(),
     ...input.fingerprintConfig,
   })
+  const fingerprintConfig = assignStableHardwareFingerprint(
+    normalizedFingerprint,
+    id,
+    !('id' in input)
+      ? {
+          forceRegenerate: normalizedFingerprint.runtimeMetadata.hardwareProfileSource === 'template',
+        }
+      : undefined,
+  )
   return {
     id,
     name: input.name.trim(),
@@ -717,6 +734,12 @@ export function createTemplatePayload(
   input: CreateTemplateInput | UpdateTemplateInput,
   createFingerprint: () => FingerprintConfig,
 ): UpdateTemplateInput {
+  const fingerprintConfig = sanitizeTemplateHardwareFingerprint(
+    normalizeFingerprintConfig({
+      ...createFingerprint(),
+      ...input.fingerprintConfig,
+    }),
+  )
   return {
     id: 'id' in input ? input.id : randomUUID(),
     name: input.name.trim(),
@@ -725,10 +748,7 @@ export function createTemplatePayload(
     environmentPurpose: input.environmentPurpose ?? DEFAULT_ENVIRONMENT_PURPOSE,
     tags: input.tags.map((tag) => tag.trim()).filter(Boolean),
     notes: input.notes.trim(),
-    fingerprintConfig: normalizeFingerprintConfig({
-      ...createFingerprint(),
-      ...input.fingerprintConfig,
-    }),
+    fingerprintConfig,
     workspaceTemplate: input.workspaceTemplate ?? null,
   }
 }
@@ -738,7 +758,9 @@ export function cloneName(name: string): string {
 }
 
 export function cloneProfileRecordForNewId(existing: ProfileRecord, nextId: string): UpdateProfileInput {
-  const fingerprintConfig = existing.fingerprintConfig
+  const fingerprintConfig = assignStableHardwareFingerprint(existing.fingerprintConfig, nextId, {
+    forceRegenerate: true,
+  })
   return {
     id: nextId,
     name: cloneName(existing.name),

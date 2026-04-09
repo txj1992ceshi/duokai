@@ -345,6 +345,10 @@ export interface ProfileRuntimeMetadata {
   lastStorageStateDeviceId: string
   lastStorageStateSyncStatus: 'idle' | 'synced' | 'pending' | 'conflict' | 'error'
   lastStorageStateSyncMessage: string
+  hardwareProfileId: string
+  hardwareProfileVersion: string
+  hardwareSeed: string
+  hardwareProfileSource: 'generated' | 'manual' | 'template' | ''
 }
 
 export interface DeviceProfileSupportMatrix {

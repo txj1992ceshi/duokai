@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Toaster } from '@duokai/ui'
 import './App.css'
 import {
   dictionaries,
   getLocaleFromSettings,
+  type LocaleCode,
 } from './i18n'
 import {
   useAccountWorkspace,
@@ -80,9 +81,10 @@ function App() {
   const [authIdentifier, setAuthIdentifier] = useState('')
   const [authPassword, setAuthPassword] = useState('')
   const [importResult, setImportResult] = useState<ImportResult | null>(null)
+  const [uiLocaleOverride, setUiLocaleOverride] = useState<LocaleCode | null>(null)
   const lastUpdateNoticeKeyRef = useRef('')
 
-  const locale = getLocaleFromSettings(settings.uiLanguage)
+  const locale = uiLocaleOverride ?? getLocaleFromSettings(settings.uiLanguage)
   const t = dictionaries[locale]
   const rendererOperatingSystem = detectRendererOperatingSystem()
   const defaultEnvironmentLanguage = normalizeEnvironmentLanguage(
@@ -91,6 +93,39 @@ function App() {
   const defaultCloudPhoneProvider = settings.defaultCloudPhoneProvider || 'self-hosted'
   const themeMode = settings.themeMode || 'system'
   const { localizeError, requireDesktopApi } = useDesktopBridge(locale)
+
+  useEffect(() => {
+    if (!uiLocaleOverride) {
+      return
+    }
+    const persistedLocale = getLocaleFromSettings(settings.uiLanguage)
+    if (persistedLocale === uiLocaleOverride) {
+      setUiLocaleOverride(null)
+    }
+  }, [settings.uiLanguage, uiLocaleOverride])
+
+  const handleUiLanguageChange = useCallback((nextLanguage: LocaleCode) => {
+    setUiLocaleOverride(nextLanguage)
+    let nextSettings: SettingsPayload = {}
+    setSettings((current) => {
+      nextSettings = {
+        ...current,
+        uiLanguage: nextLanguage,
+      }
+      return nextSettings
+    })
+    queueMicrotask(() => {
+      void (async () => {
+        try {
+          const api = requireDesktopApi(['settings.set'])
+          const persisted = await api.settings.set(nextSettings)
+          setSettings(persisted)
+        } catch (error) {
+          setErrorMessage(localizeError(error))
+        }
+      })()
+    })
+  }, [localizeError, requireDesktopApi])
 
   useEffect(() => {
     const root = document.documentElement
@@ -635,6 +670,7 @@ function App() {
     setNoticeMessage,
     saveSettings,
     setSettings,
+    onChangeUiLanguage: handleUiLanguageChange,
     cloudPhoneProviderHealth,
     importResult,
     setImportResult,

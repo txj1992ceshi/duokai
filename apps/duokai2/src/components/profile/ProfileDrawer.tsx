@@ -18,6 +18,8 @@ import {
 } from '@duokai/ui'
 import type { Dictionary } from '../../i18n'
 import { SUPPORTED_ENVIRONMENT_LANGUAGES } from '../../shared/environmentLanguages'
+import { COMMON_TIMEZONE_OPTIONS } from '../../shared/timezones'
+import { assignStableHardwareFingerprint } from '../../shared/hardwareProfiles'
 import type { EnvironmentPurpose, ProxyRecord } from '../../shared/types'
 import type { ProfileFormState } from '../../lib/desktop-types'
 
@@ -26,6 +28,12 @@ const PURPOSE_OPTIONS: Array<{ value: EnvironmentPurpose; zh: string; en: string
   { value: 'nurture', zh: '养号维护', en: 'Nurture' },
   { value: 'register', zh: '注册环境', en: 'Register' },
 ]
+
+const OPERATING_SYSTEM_OPTIONS = [
+  { value: 'macOS', zh: 'macOS', en: 'macOS' },
+  { value: 'Windows', zh: 'Windows', en: 'Windows' },
+  { value: 'Linux', zh: 'Linux', en: 'Linux' },
+] as const
 
 export function ProfileDrawer({
   open,
@@ -94,9 +102,11 @@ export function ProfileDrawer({
         autoFromIp: '基于 IP 自动生成',
         manual: '手动设置',
         geolocation: '地理位置',
-        quickFingerprint: '快速指纹扰动',
-        quickFingerprintDescription: '随机化桌面尺寸、UA 与部分硬件参数',
-        randomize: '随机化',
+        autoResolved: '由代理 IP 自动解析',
+        manualMode: '手动模式',
+        quickFingerprint: '硬件画像重抽',
+        quickFingerprintDescription: '为当前环境生成一套新的稳定硬件画像，不影响细节扰动规则',
+        randomize: '重抽画像',
         platform: '平台',
         selectPlatform: '请选择',
         custom: '自定义',
@@ -135,9 +145,11 @@ export function ProfileDrawer({
         autoFromIp: 'Generate from IP',
         manual: 'Manual',
         geolocation: 'Geolocation',
-        quickFingerprint: 'Quick fingerprint shuffle',
-        quickFingerprintDescription: 'Randomize desktop size, user agent, and selected hardware traits',
-        randomize: 'Randomize',
+        autoResolved: 'Resolved automatically from the proxy IP',
+        manualMode: 'Manual mode',
+        quickFingerprint: 'Hardware identity refresh',
+        quickFingerprintDescription: 'Generate a new stable hardware identity for this environment without changing runtime noise rules',
+        randomize: 'Refresh identity',
         platform: 'Platform',
         selectPlatform: 'Select',
         custom: 'Custom',
@@ -286,21 +298,43 @@ export function ProfileDrawer({
               <div className="grid grid-cols-2 gap-4">
                 <label className="block space-y-2">
                   <span className="text-sm font-medium text-slate-700">{copy.operatingSystem}</span>
-                  <Input
+                  <Select
                     value={profileForm.fingerprintConfig.advanced.operatingSystem}
                     onChange={(event) =>
-                      setProfileForm((current) => ({
-                        ...current,
-                        fingerprintConfig: {
-                          ...current.fingerprintConfig,
-                          advanced: {
-                            ...current.fingerprintConfig.advanced,
-                            operatingSystem: event.target.value,
-                          },
-                        },
-                      }))
+                      setProfileForm((current) => {
+                        const nextOperatingSystem = event.target.value
+                        const currentSeed =
+                          current.fingerprintConfig.runtimeMetadata.hardwareSeed || `manual-os-${crypto.randomUUID()}`
+                        return {
+                          ...current,
+                          fingerprintConfig: assignStableHardwareFingerprint(
+                            {
+                              ...current.fingerprintConfig,
+                              advanced: {
+                                ...current.fingerprintConfig.advanced,
+                                operatingSystem: nextOperatingSystem,
+                              },
+                              runtimeMetadata: {
+                                ...current.fingerprintConfig.runtimeMetadata,
+                                hardwareSeed: currentSeed,
+                              },
+                            },
+                            currentSeed,
+                            {
+                              forceRegenerate: true,
+                              seed: currentSeed,
+                            },
+                          ),
+                        }
+                      })
                     }
-                  />
+                  >
+                    {OPERATING_SYSTEM_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {isZh ? option.zh : option.en}
+                      </option>
+                    ))}
+                  </Select>
                 </label>
                 <label className="block space-y-2">
                   <span className="text-sm font-medium text-slate-700">{copy.chromeVersion}</span>
@@ -509,16 +543,23 @@ export function ProfileDrawer({
                   <Select
                     value={profileForm.fingerprintConfig.advanced.autoTimezoneFromIp ? 'auto' : 'manual'}
                     onChange={(event) =>
-                      setProfileForm((current) => ({
-                        ...current,
-                        fingerprintConfig: {
-                          ...current.fingerprintConfig,
-                          advanced: {
-                            ...current.fingerprintConfig.advanced,
-                            autoTimezoneFromIp: event.target.value === 'auto',
+                      setProfileForm((current) => {
+                        const autoTimezoneFromIp = event.target.value === 'auto'
+                        return {
+                          ...current,
+                          fingerprintConfig: {
+                            ...current.fingerprintConfig,
+                            timezone:
+                              autoTimezoneFromIp
+                                ? current.fingerprintConfig.timezone
+                                : current.fingerprintConfig.timezone || 'America/Los_Angeles',
+                            advanced: {
+                              ...current.fingerprintConfig.advanced,
+                              autoTimezoneFromIp,
+                            },
                           },
-                        },
-                      }))
+                        }
+                      })
                     }
                   >
                     <option value="auto">{copy.autoFromIp}</option>
@@ -552,9 +593,8 @@ export function ProfileDrawer({
               {!profileForm.fingerprintConfig.advanced.autoTimezoneFromIp ? (
                 <label className="block space-y-2">
                   <span className="text-sm font-medium text-slate-700">{t.profiles.timezone}</span>
-                  <Input
+                  <Select
                     value={profileForm.fingerprintConfig.timezone}
-                    placeholder="America/Los_Angeles"
                     onChange={(event) =>
                       setProfileForm((current) => ({
                         ...current,
@@ -564,13 +604,52 @@ export function ProfileDrawer({
                         },
                       }))
                     }
-                  />
+                  >
+                    {COMMON_TIMEZONE_OPTIONS.map((timezone) => (
+                      <option key={timezone} value={timezone}>
+                        {timezone}
+                      </option>
+                    ))}
+                  </Select>
+                  <p className="text-xs text-slate-500">{copy.manualMode}</p>
                 </label>
-              ) : null}
+              ) : (
+                <label className="block space-y-2">
+                  <span className="text-sm font-medium text-slate-700">{t.profiles.timezone}</span>
+                  <Input
+                    value={profileForm.fingerprintConfig.timezone}
+                    readOnly
+                    placeholder="America/Los_Angeles"
+                  />
+                  <p className="text-xs text-slate-500">{copy.autoResolved}</p>
+                </label>
+              )}
+              <label className="block space-y-2">
+                <span className="text-sm font-medium text-slate-700">{copy.geolocation}</span>
+                <Select
+                  value={profileForm.fingerprintConfig.advanced.autoGeolocationFromIp ? 'auto' : 'manual'}
+                  onChange={(event) =>
+                    setProfileForm((current) => ({
+                      ...current,
+                      fingerprintConfig: {
+                        ...current.fingerprintConfig,
+                        advanced: {
+                          ...current.fingerprintConfig.advanced,
+                          autoGeolocationFromIp: event.target.value === 'auto',
+                        },
+                      },
+                    }))
+                  }
+                >
+                  <option value="auto">{copy.autoFromIp}</option>
+                  <option value="manual">{copy.manual}</option>
+                </Select>
+              </label>
               <label className="block space-y-2">
                 <span className="text-sm font-medium text-slate-700">{copy.geolocation}</span>
                 <Input
                   value={profileForm.fingerprintConfig.advanced.geolocation}
+                  readOnly={profileForm.fingerprintConfig.advanced.autoGeolocationFromIp}
                   placeholder="34.0522, -118.2437"
                   onChange={(event) =>
                     setProfileForm((current) => ({
@@ -580,12 +659,14 @@ export function ProfileDrawer({
                         advanced: {
                           ...current.fingerprintConfig.advanced,
                           geolocation: event.target.value,
-                          autoGeolocationFromIp: false,
                         },
                       },
                     }))
                   }
                 />
+                <p className="text-xs text-slate-500">
+                  {profileForm.fingerprintConfig.advanced.autoGeolocationFromIp ? copy.autoResolved : copy.manualMode}
+                </p>
               </label>
             </TabsContent>
 

@@ -170,6 +170,7 @@ export function useDesktopWorkspaceViewProps({
   setNoticeMessage,
   saveSettings,
   setSettings,
+  onChangeUiLanguage,
   cloudPhoneProviderHealth,
   importResult,
   setImportResult,
@@ -325,6 +326,7 @@ export function useDesktopWorkspaceViewProps({
   setNoticeMessage: Dispatch<SetStateAction<string>>
   saveSettings: () => void | Promise<void>
   setSettings: SettingsProps['setSettings']
+  onChangeUiLanguage: NonNullable<SettingsProps['onChangeUiLanguage']>
   cloudPhoneProviderHealth: SettingsProps['cloudPhoneProviderHealth']
   importResult: SettingsProps['importResult']
   setImportResult: Dispatch<SetStateAction<ImportResult | null>>
@@ -545,6 +547,7 @@ export function useDesktopWorkspaceViewProps({
     t,
     settings,
     setSettings,
+    onChangeUiLanguage,
     defaultEnvironmentLanguage,
     cloudPhoneProviders,
     defaultCloudPhoneProvider,

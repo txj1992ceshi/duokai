@@ -18,6 +18,7 @@ export function SettingsView({
   t,
   settings,
   setSettings,
+  onChangeUiLanguage,
   defaultEnvironmentLanguage,
   cloudPhoneProviders,
   defaultCloudPhoneProvider,
@@ -44,6 +45,7 @@ export function SettingsView({
   t: Dictionary
   settings: SettingsPayload
   setSettings: Dispatch<SetStateAction<SettingsPayload>>
+  onChangeUiLanguage?: (nextLanguage: 'zh-CN' | 'en-US') => void | Promise<void>
   defaultEnvironmentLanguage: string
   cloudPhoneProviders: CloudPhoneProviderSummary[]
   defaultCloudPhoneProvider: string
@@ -91,10 +93,12 @@ export function SettingsView({
                   <Button
                     variant={(settings.uiLanguage ?? 'zh-CN') === 'zh-CN' ? 'primary' : 'ghost'}
                     onClick={() =>
-                      setSettings((current) => ({
-                        ...current,
-                        uiLanguage: 'zh-CN',
-                      }))
+                      onChangeUiLanguage
+                        ? void onChangeUiLanguage('zh-CN')
+                        : setSettings((current) => ({
+                            ...current,
+                            uiLanguage: 'zh-CN',
+                          }))
                     }
                   >
                     {t.settings.languageZh}
@@ -102,10 +106,12 @@ export function SettingsView({
                   <Button
                     variant={(settings.uiLanguage ?? 'zh-CN') === 'en-US' ? 'primary' : 'ghost'}
                     onClick={() =>
-                      setSettings((current) => ({
-                        ...current,
-                        uiLanguage: 'en-US',
-                      }))
+                      onChangeUiLanguage
+                        ? void onChangeUiLanguage('en-US')
+                        : setSettings((current) => ({
+                            ...current,
+                            uiLanguage: 'en-US',
+                          }))
                     }
                   >
                     {t.settings.languageEn}

@@ -22,6 +22,7 @@ import {
   SUPPORTED_ENVIRONMENT_LANGUAGES,
   normalizeEnvironmentLanguage,
 } from '../shared/environmentLanguages'
+import { COMMON_TIMEZONE_OPTIONS } from '../shared/timezones'
 import type {
   EnvironmentPurpose,
   FingerprintConfig,
@@ -223,6 +224,8 @@ export function ProfilesView({
         manualTimezone: '手动时区',
         geoFromIp: '位置跟随 IP',
         manualGeo: '手动位置',
+        autoResolved: '由代理 IP 自动解析',
+        manualMode: '手动模式',
         close: '关闭',
       }
     : {
@@ -246,6 +249,8 @@ export function ProfilesView({
         manualTimezone: 'Manual timezone',
         geoFromIp: 'Geo from IP',
         manualGeo: 'Manual geo',
+        autoResolved: 'Resolved automatically from the proxy IP',
+        manualMode: 'Manual mode',
         close: 'Close',
       }
   const getStartupPlatformLabel = (item: StartupPlatformOption) => (isZh ? item.labelZh : item.labelEn)
@@ -717,23 +722,41 @@ export function ProfilesView({
                     </Select>
                   ) : null}
                   {!templateForm.fingerprintConfig.advanced.autoTimezoneFromIp ? (
-                    <Input
-                      value={templateForm.fingerprintConfig.timezone}
-                      onChange={(event) =>
-                        setTemplateForm((current) => ({
-                          ...current,
-                          fingerprintConfig: {
-                            ...current.fingerprintConfig,
-                            timezone: event.target.value,
-                          },
-                        }))
-                      }
-                      placeholder="America/Los_Angeles"
-                    />
-                  ) : null}
-                  {!templateForm.fingerprintConfig.advanced.autoGeolocationFromIp ? (
+                    <div className="space-y-2">
+                      <Select
+                        value={templateForm.fingerprintConfig.timezone}
+                        onChange={(event) =>
+                          setTemplateForm((current) => ({
+                            ...current,
+                            fingerprintConfig: {
+                              ...current.fingerprintConfig,
+                              timezone: event.target.value,
+                            },
+                          }))
+                        }
+                      >
+                        {COMMON_TIMEZONE_OPTIONS.map((timezone) => (
+                          <option key={timezone} value={timezone}>
+                            {timezone}
+                          </option>
+                        ))}
+                      </Select>
+                      <p className="text-xs text-slate-500">{copy.manualMode}</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <Input
+                        value={templateForm.fingerprintConfig.timezone}
+                        readOnly
+                        placeholder="America/Los_Angeles"
+                      />
+                      <p className="text-xs text-slate-500">{copy.autoResolved}</p>
+                    </div>
+                  )}
+                  <div className="space-y-2">
                     <Input
                       value={templateForm.fingerprintConfig.advanced.geolocation}
+                      readOnly={templateForm.fingerprintConfig.advanced.autoGeolocationFromIp}
                       onChange={(event) =>
                         setTemplateForm((current) => ({
                           ...current,
@@ -748,7 +771,10 @@ export function ProfilesView({
                       }
                       placeholder="34.0522, -118.2437"
                     />
-                  ) : null}
+                    <p className="text-xs text-slate-500">
+                      {templateForm.fingerprintConfig.advanced.autoGeolocationFromIp ? copy.autoResolved : copy.manualMode}
+                    </p>
+                  </div>
                   <div className="grid gap-4 md:grid-cols-2">
                     <Input
                       value={templateForm.fingerprintConfig.resolution}

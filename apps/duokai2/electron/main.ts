@@ -75,6 +75,11 @@ import { RuntimeScheduler } from './services/runtimeScheduler'
 import { AgentService } from './services/agentService'
 import { evaluateTrustedSnapshotReuse } from './services/trustedLaunch'
 import {
+  assignStableHardwareFingerprint,
+  sanitizeTemplateHardwareFingerprint,
+  shouldMigrateStableHardwareFingerprint,
+} from '../src/shared/hardwareProfiles'
+import {
   assessRegistrationRisk,
   validateProfileReadiness,
   validateWorkspaceGate,
@@ -1706,6 +1711,46 @@ function requireDatabase(): DatabaseService {
     throw new Error('Database is not initialized')
   }
   return db
+}
+
+function migrateStableHardwareFingerprintsOnStartup(): void {
+  const database = requireDatabase()
+
+  for (const profile of database.listProfiles()) {
+    if (!shouldMigrateStableHardwareFingerprint(profile.fingerprintConfig)) {
+      continue
+    }
+    const fingerprintConfig = assignStableHardwareFingerprint(profile.fingerprintConfig, profile.id)
+    database.updateProfile({
+      id: profile.id,
+      name: profile.name,
+      proxyId: profile.proxyId,
+      groupName: profile.groupName,
+      tags: profile.tags,
+      notes: profile.notes,
+      environmentPurpose: profile.environmentPurpose,
+      fingerprintConfig,
+      workspace: profile.workspace,
+    })
+  }
+
+  for (const template of database.listTemplates()) {
+    const fingerprintConfig = sanitizeTemplateHardwareFingerprint(template.fingerprintConfig)
+    if (JSON.stringify(fingerprintConfig) === JSON.stringify(template.fingerprintConfig)) {
+      continue
+    }
+    database.updateTemplate({
+      id: template.id,
+      name: template.name,
+      proxyId: template.proxyId,
+      groupName: template.groupName,
+      environmentPurpose: template.environmentPurpose,
+      tags: template.tags,
+      notes: template.notes,
+      fingerprintConfig,
+      workspaceTemplate: template.workspaceTemplate,
+    })
+  }
 }
 
 function getSettingValue(key: string, fallback = ''): string {
@@ -5626,6 +5671,8 @@ async function bootstrap(): Promise<void> {
   traceStartup('theme_synced')
   db = new DatabaseService(app)
   traceStartup('database_initialized')
+  migrateStableHardwareFingerprintsOnStartup()
+  traceStartup('hardware_profiles_migrated')
   resetCachedProfileStatesOnStartup()
   traceStartup('profiles_reset_on_startup')
   cleanupRuntimeLocksOnStartup()
