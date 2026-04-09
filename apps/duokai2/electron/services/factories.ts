@@ -224,8 +224,8 @@ export function createDefaultWorkspaceDescriptor(
     String(existing?.templateBinding?.templateRevision || legacyTemplateRevision || 'legacy-profile-v1').trim() ||
     'legacy-profile-v1'
   const templateFingerprintHash =
-    String(existing?.templateBinding?.templateFingerprintHash || legacyTemplateFingerprintHash || '').trim() ||
-    buildWorkspaceTemplateFingerprintHash(templateId, templateRevision, resolvedEnvironment, paths)
+    buildWorkspaceTemplateFingerprintHash(templateId, templateRevision, resolvedEnvironment, paths) ||
+    String(existing?.templateBinding?.templateFingerprintHash || legacyTemplateFingerprintHash || '').trim()
 
   return {
     identityProfileId: profileId,

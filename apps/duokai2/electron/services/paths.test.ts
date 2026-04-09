@@ -5,7 +5,11 @@ import path from 'node:path'
 import test from 'node:test'
 
 import { createDefaultFingerprint, normalizeWorkspaceDescriptor } from './factories.ts'
-import { ensureWorkspaceLayoutForProfile, resolveWorkspacePaths } from './paths.ts'
+import {
+  ensureWorkspaceLayoutForProfile,
+  normalizeWorkspacePathsForProfile,
+  resolveWorkspacePaths,
+} from './paths.ts'
 
 function createFakeApp(userDataDir: string) {
   return {
@@ -22,6 +26,24 @@ test('resolveWorkspacePaths uses workspaces/<id> layout', () => {
   const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'duokai-workspace-paths-'))
   const app = createFakeApp(userDataDir)
   const paths = resolveWorkspacePaths(app as never, 'profile-1')
+
+  assert.equal(paths.profileDir, path.join(userDataDir, 'workspaces', 'profile-1', 'profile'))
+  assert.equal(paths.cacheDir, path.join(userDataDir, 'workspaces', 'profile-1', 'cache'))
+  assert.equal(paths.downloadsDir, path.join(userDataDir, 'workspaces', 'profile-1', 'downloads'))
+  assert.equal(paths.extensionsDir, path.join(userDataDir, 'workspaces', 'profile-1', 'extensions'))
+  assert.equal(paths.metaDir, path.join(userDataDir, 'workspaces', 'profile-1', 'meta'))
+})
+
+test('normalizeWorkspacePathsForProfile anchors legacy relative paths under userData', () => {
+  const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'duokai-workspace-normalize-'))
+  const app = createFakeApp(userDataDir)
+  const paths = normalizeWorkspacePathsForProfile(app as never, 'profile-1', {
+    profileDir: 'workspaces/profile-1/profile',
+    cacheDir: 'workspaces/profile-1/cache',
+    downloadsDir: 'workspaces/profile-1/downloads',
+    extensionsDir: 'workspaces/profile-1/extensions',
+    metaDir: 'workspaces/profile-1/meta',
+  })
 
   assert.equal(paths.profileDir, path.join(userDataDir, 'workspaces', 'profile-1', 'profile'))
   assert.equal(paths.cacheDir, path.join(userDataDir, 'workspaces', 'profile-1', 'cache'))
@@ -108,6 +130,8 @@ test('ensureWorkspaceLayoutForProfile migrates legacy profile dir once and resum
     path.join(userDataDir, 'workspaces', 'profile-1', 'profile'),
     migrated.paths.profileDir,
   )
+  assert.equal(migrated.resolvedEnvironment.downloadsDir, migrated.paths.downloadsDir)
+  assert.equal(Boolean(migrated.templateBinding.templateFingerprintHash), true)
   assert.equal(
     JSON.parse(readFileSync(path.join(migrated.paths.metaDir, 'migration-state.json'), 'utf8')).migrationState,
     'completed',

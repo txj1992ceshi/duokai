@@ -140,6 +140,7 @@ type CountRow = { count: number }
 
 export class DatabaseService {
   private readonly db: Database.Database
+  private logsTableRecoveryAttempted = false
 
   constructor(app: App) {
     const userDataDir = app.getPath('userData')
@@ -149,6 +150,42 @@ export class DatabaseService {
     this.db.pragma('journal_mode = WAL')
     this.initialize()
     this.seedSettings()
+  }
+
+  private isSqliteCorruptionError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error)
+    return /database disk image is malformed|malformed/i.test(message)
+  }
+
+  private warnLogTableCorruption(error: unknown, operation: string): void {
+    const message = error instanceof Error ? error.message : String(error)
+    console.warn(`[duokai2] logs table is unavailable during ${operation}: ${message}`)
+  }
+
+  private recoverLogsTableFromCorruption(operation: string): boolean {
+    if (this.logsTableRecoveryAttempted) {
+      return false
+    }
+    this.logsTableRecoveryAttempted = true
+    try {
+      this.db.exec(`
+        DROP TABLE IF EXISTS logs;
+        CREATE TABLE logs (
+          id TEXT PRIMARY KEY,
+          level TEXT NOT NULL,
+          category TEXT NOT NULL,
+          message TEXT NOT NULL,
+          profile_id TEXT,
+          created_at TEXT NOT NULL
+        );
+      `)
+      console.warn(`[duokai2] rebuilt logs table after corruption during ${operation}`)
+      return true
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.warn(`[duokai2] failed rebuilding logs table during ${operation}: ${message}`)
+      return false
+    }
   }
 
   private initialize(): void {
@@ -227,7 +264,7 @@ export class DatabaseService {
         updated_at TEXT NOT NULL
       );
 
-      CREATE TABLE IF NOT EXISTS logs (
+      CREATE TABLE IF NOT EXISTS runtime_logs (
         id TEXT PRIMARY KEY,
         level TEXT NOT NULL,
         category TEXT NOT NULL,
@@ -288,6 +325,7 @@ export class DatabaseService {
     const now = new Date().toISOString()
     const stmt = this.db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`)
     stmt.run('uiLanguage', 'zh-CN')
+    stmt.run('themeMode', 'system')
     stmt.run('defaultEnvironmentLanguage', DEFAULT_ENVIRONMENT_LANGUAGE)
     stmt.run('workspaceName', 'Bit Clone Workspace')
     stmt.run('defaultHomePage', 'https://example.com')
@@ -950,14 +988,34 @@ export class DatabaseService {
   }
 
   listLogs(): LogEntry[] {
-    const rows = this.db
-      .prepare(`SELECT * FROM logs ORDER BY datetime(created_at) DESC LIMIT 500`)
-      .all() as LogRow[]
-    return rows.map((row) => this.mapLog(row))
+    try {
+      const rows = this.db
+        .prepare(`SELECT * FROM runtime_logs ORDER BY datetime(created_at) DESC LIMIT 500`)
+        .all() as LogRow[]
+      return rows.map((row) => this.mapLog(row))
+    } catch (error) {
+      if (this.isSqliteCorruptionError(error)) {
+        this.warnLogTableCorruption(error, 'listLogs')
+        if (this.recoverLogsTableFromCorruption('listLogs')) {
+          return this.listLogs()
+        }
+        return []
+      }
+      throw error
+    }
   }
 
   clearLogs(): void {
-    this.db.prepare(`DELETE FROM logs`).run()
+    try {
+      this.db.prepare(`DELETE FROM runtime_logs`).run()
+    } catch (error) {
+      if (this.isSqliteCorruptionError(error)) {
+        this.warnLogTableCorruption(error, 'clearLogs')
+        this.recoverLogsTableFromCorruption('clearLogs')
+        return
+      }
+      throw error
+    }
   }
 
   createLog(input: {
@@ -966,12 +1024,32 @@ export class DatabaseService {
     message: string
     profileId: string | null
   }): void {
-    this.db
-      .prepare(
-        `INSERT INTO logs (id, level, category, message, profile_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      )
-      .run(randomUUID(), input.level, input.category, input.message, input.profileId, new Date().toISOString())
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO runtime_logs (id, level, category, message, profile_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(randomUUID(), input.level, input.category, input.message, input.profileId, new Date().toISOString())
+    } catch (error) {
+      if (this.isSqliteCorruptionError(error)) {
+        this.warnLogTableCorruption(error, 'createLog')
+        if (this.recoverLogsTableFromCorruption('createLog')) {
+          try {
+            this.db
+              .prepare(
+                `INSERT INTO logs (id, level, category, message, profile_id, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?)`,
+              )
+              .run(randomUUID(), input.level, input.category, input.message, input.profileId, new Date().toISOString())
+          } catch {
+            // Give up after one recovery attempt.
+          }
+        }
+        return
+      }
+      throw error
+    }
   }
 
   createIpUsage(input: {
@@ -1078,7 +1156,9 @@ export class DatabaseService {
         stmt.run(key, value)
       }
     })
-    tx(Object.entries(payload))
+    tx(
+      Object.entries(payload).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+    )
     return this.getSettings()
   }
 
@@ -1410,7 +1490,16 @@ export class DatabaseService {
       (this.db.prepare(`SELECT COUNT(*) AS count FROM cloud_phones WHERE status = 'error'`).get() as CountRow)
         .count,
     )
-    const logCount = Number((this.db.prepare(`SELECT COUNT(*) AS count FROM logs`).get() as CountRow).count)
+    let logCount = 0
+    try {
+      logCount = Number((this.db.prepare(`SELECT COUNT(*) AS count FROM runtime_logs`).get() as CountRow).count)
+    } catch (error) {
+      if (this.isSqliteCorruptionError(error)) {
+        this.warnLogTableCorruption(error, 'getDashboardSummary')
+      } else {
+        throw error
+      }
+    }
 
     return {
       totalProfiles,

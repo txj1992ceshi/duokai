@@ -1,3 +1,8 @@
+@import "tailwindcss";
+
+@source "./**/*.{ts,tsx}";
+@source "../../../packages/ui/src/**/*.{ts,tsx}";
+
 :root {
   font-family:
     'SF Pro Display',
@@ -6,8 +11,8 @@
     sans-serif;
   line-height: 1.5;
   font-weight: 400;
-  color: #081827;
-  background: #0b1828;
+  color: #0f172a;
+  background: var(--duokai-bg);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -27,4 +32,65 @@ body,
 
 body {
   min-width: 320px;
+  background: var(--duokai-bg);
+  color: var(--duokai-text);
+}
+
+.duokai-app-shell {
+  background:
+    radial-gradient(circle at 8% 4%, var(--duokai-bg-accent-b), transparent 22%),
+    radial-gradient(circle at 88% 10%, var(--duokai-bg-accent-c), transparent 24%),
+    radial-gradient(circle at 52% 100%, var(--duokai-bg-accent-a), transparent 34%),
+    linear-gradient(180deg, color-mix(in srgb, var(--duokai-bg) 84%, transparent), var(--duokai-bg));
+}
+
+.dark .bg-white {
+  background-color: var(--duokai-surface) !important;
+}
+
+.dark .bg-white\/95 {
+  background-color: color-mix(in srgb, var(--duokai-surface) 92%, transparent) !important;
+}
+
+.dark .bg-slate-50,
+.dark .bg-slate-100 {
+  background-color: var(--duokai-surface-muted) !important;
+}
+
+.dark .border-slate-200,
+.dark .border-slate-200\/80,
+.dark .border-slate-100,
+.dark .border-r.border-slate-800,
+.dark .border-t.border-slate-200,
+.dark .border-b.border-slate-200,
+.dark .border-b.border-slate-100 {
+  border-color: var(--duokai-border) !important;
+}
+
+.dark .divide-slate-100 > :not([hidden]) ~ :not([hidden]) {
+  border-color: var(--duokai-border) !important;
+}
+
+.dark .text-slate-950,
+.dark .text-slate-900,
+.dark .text-slate-800,
+.dark .text-slate-700 {
+  color: var(--duokai-text) !important;
+}
+
+.dark .text-slate-600,
+.dark .text-slate-500,
+.dark .text-slate-400 {
+  color: var(--duokai-text-muted) !important;
+}
+
+.dark .hover\:bg-blue-50\/50:hover {
+  background-color: rgba(37, 99, 235, 0.16) !important;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
 }

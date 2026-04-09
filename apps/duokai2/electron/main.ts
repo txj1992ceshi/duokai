@@ -1,4 +1,4 @@
-import { appendFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import dns from 'node:dns'
@@ -43,6 +43,7 @@ import {
   ensureProfileDirectory,
   getProfileDirectoryInfo,
   getProfilePath,
+  normalizeWorkspacePathsForProfile,
 } from './services/paths'
 import {
   buildChromiumLaunchEnv,
@@ -139,7 +140,6 @@ const DEFAULT_CONTROL_PLANE_API_BASE = (
   String(process.env.DUOKAI_API_BASE || '').trim() || 'http://duokai.duckdns.org'
 ).replace(/\/$/, '')
 const TRUSTED_SNAPSHOT_VERSION = 1
-const PROFILE_STORAGE_SYNC_INTERVAL_MS = 5 * 60 * 1000
 const PROFILE_RUNTIME_LOCK_HEARTBEAT_MS = 30 * 1000
 const PROFILE_RUNTIME_LOCK_STALE_MS = 2 * 60 * 1000
 const CONTROL_PLANE_API_BASE_KEY = 'controlPlaneApiBase'
@@ -149,14 +149,22 @@ const CONTROL_PLANE_AUTH_USER_KEY = 'controlPlaneAuthUser'
 const SMOKE_TEST_ENABLED = process.env.SMOKE_TEST === '1'
 const SMOKE_RESULT_FILE = 'smoke-result.json'
 const SMOKE_AUDIT_FILE = 'runtime-audit.log'
+const STARTUP_TRACE_FILE = path.join(os.tmpdir(), 'duokai2-startup.log')
 
 let mainWindow: BrowserWindow | null = null
 let db: DatabaseService | null = null
 let agentService: AgentService | null = null
+type ProfileSyncOptions = {
+  force?: boolean
+}
+
+let profileSyncInFlight: Promise<number> | null = null
+let lastProfileSyncAt = 0
+let lastProfileSyncCount = 0
 
 const runtimeContexts = new Map<string, BrowserContext>()
-const runtimeStorageSyncTimers = new Map<string, NodeJS.Timeout>()
 const runtimeLockHeartbeatTimers = new Map<string, NodeJS.Timeout>()
+const runtimeShutdownFinalizing = new Set<string>()
 const MAX_QUEUE = Number(process.env.MAX_QUEUE_LENGTH || 200)
 const CONTROL_PLANE_FETCH_RETRY_MS = 1200
 const DESKTOP_RELEASES_API = 'https://api.github.com/repos/txj1992ceshi/duokai/releases/latest'
@@ -164,6 +172,7 @@ const DESKTOP_RELEASES_PAGE = 'https://github.com/txj1992ceshi/duokai/releases'
 const UPDATE_DOWNLOAD_DIR = 'updates'
 const AUTO_UPDATE_CHECK_DELAY_MS = 12_000
 const UPDATE_CHECK_MIN_INTERVAL_MS = 30 * 60 * 1000
+const PROFILE_SYNC_COOLDOWN_MS = 30_000
 
 type ControlPlaneStorageState = {
   id: string
@@ -202,6 +211,22 @@ function resolveAuditLogPath(): string {
     return path.join(app.getPath('userData'), process.env.RUNTIME_AUDIT_FILE || 'runtime-audit.log')
   } catch {
     return path.join(process.cwd(), process.env.RUNTIME_AUDIT_FILE || 'runtime-audit.log')
+  }
+}
+
+function traceStartup(step: string, payload: Record<string, unknown> = {}): void {
+  try {
+    appendFileSync(
+      STARTUP_TRACE_FILE,
+      `${JSON.stringify({
+        at: new Date().toISOString(),
+        pid: process.pid,
+        step,
+        ...payload,
+      })}\n`,
+    )
+  } catch {
+    // Best-effort diagnostics only.
   }
 }
 
@@ -339,7 +364,19 @@ function getProfileStorageStatePath(profileId: string): string {
 }
 
 function getProfileRuntimeLockPath(profile: ProfileRecord): string {
-  const ensured = profile.workspace ?? ensureWorkspaceLayoutForProfileId(profile.id).workspace
+  const normalizedPaths = profile.workspace
+    ? normalizeWorkspacePathsForProfile(app, profile.id, profile.workspace.paths)
+    : null
+  const ensured = profile.workspace
+    ? {
+        ...profile.workspace,
+        paths: normalizedPaths!,
+        resolvedEnvironment: {
+          ...profile.workspace.resolvedEnvironment,
+          downloadsDir: normalizedPaths!.downloadsDir,
+        },
+      }
+    : ensureWorkspaceLayoutForProfileId(profile.id).workspace
   if (!ensured) {
     throw new Error('Workspace not ready for runtime lock')
   }
@@ -1090,88 +1127,79 @@ async function refreshLastKnownGoodSnapshotStatus(profile: ProfileRecord): Promi
   return persisted
 }
 
-async function saveAllElectronSessions(): Promise<void> {
-  audit('save_all_begin', { count: runtimeContexts.size })
-  for (const [profileId, context] of runtimeContexts.entries()) {
-    try {
-      const storagePath = getProfileStorageStatePath(profileId)
-      await saveProfileStorageStateToDisk(profileId, context)
-      await uploadProfileStorageStateToControlPlane(profileId, {
-        context,
-        reason: 'graceful-shutdown',
-      })
-      audit('save_ok', { profileId, storagePath })
-    } catch (error) {
-      audit('save_err', { profileId, err: String(error) })
-      console.error('Failed saving storageState for', profileId, error)
-    }
-  }
-  audit('save_all_end', { count: runtimeContexts.size })
-}
-
-async function finalizeRuntimeShutdown(profileId: string, reason: string): Promise<void> {
+async function finalizeRuntimeShutdown(
+  profileId: string,
+  reason: StorageStateUploadReason,
+): Promise<void> {
   const context = runtimeContexts.get(profileId)
   clearProfileStorageSyncTimer(profileId)
-
   if (context) {
-    try {
-      await saveProfileStorageStateToDisk(profileId, context)
-    } catch (error) {
-      audit('shutdown_storage_save_failed', {
-        profileId,
-        reason,
-        err: error instanceof Error ? error.message : String(error),
-      })
-    }
-    try {
-      await uploadProfileStorageStateToControlPlane(profileId, {
-        context,
-        reason,
-      })
-    } catch (error) {
-      audit('shutdown_storage_upload_failed', {
-        profileId,
-        reason,
-        err: error instanceof Error ? error.message : String(error),
-      })
-    }
+    runtimeShutdownFinalizing.add(profileId)
   }
 
-  runtimeContexts.delete(profileId)
   try {
     if (context) {
-      await context.close()
+      try {
+        await saveProfileStorageStateToDisk(profileId, context)
+      } catch (error) {
+        audit('shutdown_storage_save_failed', {
+          profileId,
+          reason,
+          err: error instanceof Error ? error.message : String(error),
+        })
+      }
+      try {
+        await uploadProfileStorageStateToControlPlane(profileId, {
+          context,
+          reason,
+        })
+      } catch (error) {
+        audit('shutdown_storage_upload_failed', {
+          profileId,
+          reason,
+          err: error instanceof Error ? error.message : String(error),
+        })
+      }
     }
-  } catch (error) {
-    audit('shutdown_context_close_failed', {
-      profileId,
-      reason,
-      err: error instanceof Error ? error.message : String(error),
-    })
-  }
 
-  try {
-    await runtimeHostManager.stopEnvironment(profileId)
-  } catch (error) {
-    audit('shutdown_runtime_host_stop_failed', {
-      profileId,
-      reason,
-      err: error instanceof Error ? error.message : String(error),
-    })
-  }
+    runtimeContexts.delete(profileId)
+    try {
+      if (context) {
+        await context.close()
+      }
+    } catch (error) {
+      audit('shutdown_context_close_failed', {
+        profileId,
+        reason,
+        err: error instanceof Error ? error.message : String(error),
+      })
+    }
 
-  try {
-    await releaseProfileRuntimeLock(profileId)
-  } catch (error) {
-    audit('shutdown_runtime_lock_release_failed', {
-      profileId,
-      reason,
-      err: error instanceof Error ? error.message : String(error),
-    })
-  }
+    try {
+      await runtimeHostManager.stopEnvironment(profileId)
+    } catch (error) {
+      audit('shutdown_runtime_host_stop_failed', {
+        profileId,
+        reason,
+        err: error instanceof Error ? error.message : String(error),
+      })
+    }
 
-  scheduler.markStopped(profileId)
-  await updateProfileStatus(profileId, 'stopped')
+    try {
+      await releaseProfileRuntimeLock(profileId)
+    } catch (error) {
+      audit('shutdown_runtime_lock_release_failed', {
+        profileId,
+        reason,
+        err: error instanceof Error ? error.message : String(error),
+      })
+    }
+
+    scheduler.markStopped(profileId)
+    await updateProfileStatus(profileId, 'stopped')
+  } finally {
+    runtimeShutdownFinalizing.delete(profileId)
+  }
 }
 
 async function gracefulShutdownHandler(signalOrErr?: unknown) {
@@ -1179,39 +1207,59 @@ async function gracefulShutdownHandler(signalOrErr?: unknown) {
     return
   }
   gracefulShutdownInFlight = true
+  const exitCode = signalOrErr ? 1 : 0
+  const hardExitTimer = setTimeout(() => {
+    audit('process_shutdown_forced_exit', { info: String(signalOrErr || ''), exitCode })
+    process.exit(exitCode)
+  }, 4_000)
   try {
     audit('process_shutdown_begin', { info: String(signalOrErr || '') })
     console.log('Graceful shutdown: saving sessions...')
-    await saveAllElectronSessions()
     for (const profileId of [...runtimeContexts.keys()]) {
       await finalizeRuntimeShutdown(profileId, 'graceful-shutdown')
     }
   } catch (error) {
     console.error('graceful shutdown save failed', error)
   } finally {
+    clearTimeout(hardExitTimer)
     audit('process_shutdown_end', { info: String(signalOrErr || '') })
-    setTimeout(() => process.exit(signalOrErr ? 1 : 0), 300)
+    setTimeout(() => process.exit(exitCode), 150)
   }
 }
 
 process.on('SIGINT', () => {
   console.log('SIGINT')
+  traceStartup('signal_sigint')
   void gracefulShutdownHandler('SIGINT')
 })
 process.on('SIGTERM', () => {
   console.log('SIGTERM')
+  traceStartup('signal_sigterm')
   void gracefulShutdownHandler('SIGTERM')
 })
 process.on('uncaughtException', (error) => {
   console.error('uncaughtException', error)
+  traceStartup('uncaught_exception', {
+    message: error instanceof Error ? error.message : String(error),
+    stack: error instanceof Error ? error.stack || '' : '',
+  })
   void gracefulShutdownHandler(error)
 })
 process.on('unhandledRejection', (reason) => {
   console.error('unhandledRejection', reason)
+  traceStartup('unhandled_rejection', {
+    message: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack || '' : '',
+  })
   void gracefulShutdownHandler(reason)
 })
 
 console.log('Runtime audit log:', AUDIT_LOG_PATH)
+traceStartup('module_loaded', {
+  auditLogPath: AUDIT_LOG_PATH,
+  cwd: process.cwd(),
+  packaged: app.isPackaged,
+})
 
 const cloudPhoneProviderRegistry = new CloudPhoneProviderRegistry()
 cloudPhoneProviderRegistry.register(new SelfHostedCloudPhoneProvider())
@@ -1224,6 +1272,16 @@ const isDev = !app.isPackaged
 const rendererUrl = process.env.VITE_DEV_SERVER_URL
 const rendererFile = path.join(__dirname, '../dist/index.html')
 const PRELOAD_VERSION = 'bridge-2026-03-15'
+const BUILD_MARKER = (() => {
+  try {
+    const appPath = app.getAppPath()
+    const targetPath = appPath.endsWith('.asar') ? appPath : path.join(appPath, 'package.json')
+    const stats = statSync(targetPath)
+    return `${path.basename(targetPath)}:${stats.size}:${Math.floor(stats.mtimeMs).toString(36)}`
+  } catch {
+    return 'build-marker-unavailable'
+  }
+})()
 const CAPABILITIES: DesktopRuntimeInfo['capabilities'] = [
   'dashboard.summary',
   'cloudPhones.list',
@@ -1769,8 +1827,9 @@ async function requestControlPlane(
     }
     headers.set('Authorization', `Bearer ${token}`)
   }
+  const method = String(init.method || 'GET').toUpperCase()
   const response = await requestJsonWithRetry(`${getControlPlaneApiBase()}${pathName}`, {
-    method: init.method,
+    method,
     headers,
     body:
       typeof init.body === 'string'
@@ -1778,7 +1837,7 @@ async function requestControlPlane(
         : init.body == null
           ? undefined
           : String(init.body),
-  })
+  }, method === 'GET' ? 1 : 0)
   const payload = response.json
   if (!response.ok || payload.success === false) {
     const message = String(payload.error || `${response.status} ${response.statusText}` || 'Control plane request failed')
@@ -2559,7 +2618,86 @@ function syncRemoteProfileIntoLocal(
   return database.getProfileById(profile.id) || profile
 }
 
-async function syncProfilesFromControlPlane(): Promise<number> {
+function syncProfileMutationToControlPlaneInBackground(
+  action: 'create' | 'update',
+  payload: ProfileRecord,
+): void {
+  void (async () => {
+    let syncedProfile = payload
+
+    if (getDesktopAuthState().authenticated) {
+      try {
+        if (action === 'create') {
+          const remotePayload = await requestControlPlane('/api/profiles', {
+            method: 'POST',
+            body: JSON.stringify(mapLocalProfileToRemotePayload(payload)),
+          })
+          const remoteProfile = (remotePayload.profile || {}) as ControlPlaneProfile
+          const remoteId = String(remoteProfile.id || payload.id)
+          if (remoteId !== payload.id) {
+            requireDatabase().deleteProfile(payload.id)
+          }
+          syncedProfile = syncRemoteProfileIntoLocal(remoteProfile, payload)
+        } else {
+          try {
+            const remotePayload = await requestControlPlane(`/api/profiles/${encodeURIComponent(payload.id)}`, {
+              method: 'PATCH',
+              body: JSON.stringify(mapLocalProfileToRemotePayload(payload)),
+            })
+            syncedProfile = syncRemoteProfileIntoLocal((remotePayload.profile || {}) as ControlPlaneProfile, payload)
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            if (!/profile not found/i.test(message)) {
+              throw error
+            }
+            const remotePayload = await requestControlPlane('/api/profiles', {
+              method: 'POST',
+              body: JSON.stringify(mapLocalProfileToRemotePayload(payload)),
+            })
+            const remoteProfile = (remotePayload.profile || {}) as ControlPlaneProfile
+            const remoteId = String(remoteProfile.id || payload.id)
+            if (remoteId !== payload.id) {
+              requireDatabase().deleteProfile(payload.id)
+            }
+            syncedProfile = syncRemoteProfileIntoLocal(remoteProfile, payload)
+          }
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        audit('profile_remote_sync_failed', {
+          action,
+          profileId: payload.id,
+          err: message,
+        })
+        logEvent(
+          'warn',
+          'profile',
+          `${action === 'create' ? 'Create' : 'Update'} profile remote sync failed for "${payload.name}": ${message}`,
+          payload.id,
+        )
+      }
+    }
+
+    try {
+      await syncConfigToControlPlaneOrThrow()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      audit('profile_config_sync_failed', {
+        action,
+        profileId: syncedProfile.id,
+        err: message,
+      })
+      logEvent(
+        'warn',
+        'profile',
+        `${action === 'create' ? 'Create' : 'Update'} profile config sync failed for "${syncedProfile.name}": ${message}`,
+        syncedProfile.id,
+      )
+    }
+  })()
+}
+
+async function performProfilesSyncFromControlPlane(): Promise<number> {
   const database = requireDatabase()
   const cachedProfiles = database.listProfiles()
   let payload: Record<string, unknown>
@@ -2580,40 +2718,96 @@ async function syncProfilesFromControlPlane(): Promise<number> {
   const remoteProfilesRaw = Array.isArray(payload.profiles)
     ? (payload.profiles as ControlPlaneProfile[])
     : []
-  const remoteProfiles = await dedupeRemoteProfilesByName(remoteProfilesRaw)
-  const remoteIds = new Set(remoteProfiles.map((item) => item.id))
-  const remoteNames = new Set(remoteProfiles.map((item) => normalizeProfileName(item.name)))
+  try {
+    const remoteProfiles = await dedupeRemoteProfilesByName(remoteProfilesRaw)
+    const remoteIds = new Set(remoteProfiles.map((item) => item.id))
+    const remoteNames = new Set(remoteProfiles.map((item) => normalizeProfileName(item.name)))
 
-  for (const localProfile of database.listProfiles()) {
-    if (remoteIds.has(localProfile.id)) {
-      continue
-    }
-    const localName = normalizeProfileName(localProfile.name)
-    if (localName && remoteNames.has(localName)) {
-      database.deleteProfile(localProfile.id)
-      audit('profiles_local_stale_removed', {
-        profileId: localProfile.id,
-        name: localName,
+    for (const localProfile of database.listProfiles()) {
+      if (remoteIds.has(localProfile.id)) {
+        continue
+      }
+      const localName = normalizeProfileName(localProfile.name)
+      if (localName && remoteNames.has(localName)) {
+        database.deleteProfile(localProfile.id)
+        audit('profiles_local_stale_removed', {
+          profileId: localProfile.id,
+          name: localName,
+        })
+        continue
+      }
+      const createdPayload = await requestControlPlane('/api/profiles', {
+        method: 'POST',
+        body: JSON.stringify(mapLocalProfileToRemotePayload(localProfile)),
       })
-      continue
+      const createdRemote = (createdPayload.profile || {}) as ControlPlaneProfile
+      remoteProfiles.push(createdRemote)
+      remoteIds.add(createdRemote.id)
+      remoteNames.add(normalizeProfileName(createdRemote.name))
+      if (createdRemote.id && createdRemote.id !== localProfile.id) {
+        database.deleteProfile(localProfile.id)
+      }
     }
-    const createdPayload = await requestControlPlane('/api/profiles', {
-      method: 'POST',
-      body: JSON.stringify(mapLocalProfileToRemotePayload(localProfile)),
+
+    for (const remoteProfile of remoteProfiles) {
+      syncRemoteProfileIntoLocal(remoteProfile)
+    }
+    return remoteProfiles.length
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    audit('profiles_sync_failed', {
+      message,
+      cachedCount: cachedProfiles.length,
+      stage: 'reconcile',
     })
-    const createdRemote = (createdPayload.profile || {}) as ControlPlaneProfile
-    remoteProfiles.push(createdRemote)
-    remoteIds.add(createdRemote.id)
-    remoteNames.add(createdRemote.name)
-    if (createdRemote.id && createdRemote.id !== localProfile.id) {
-      database.deleteProfile(localProfile.id)
+    if (cachedProfiles.length > 0) {
+      logEvent(
+        'warn',
+        'runtime',
+        `Control plane profile reconciliation failed, using cached profiles: ${message}`,
+        null,
+      )
+      return database.listProfiles().length
     }
+    throw error
+  }
+}
+
+async function syncProfilesFromControlPlane(options: ProfileSyncOptions = {}): Promise<number> {
+  const database = requireDatabase()
+  const cachedCount = database.listProfiles().length
+
+  if (!getDesktopAuthState().authenticated) {
+    return cachedCount
   }
 
-  for (const remoteProfile of remoteProfiles) {
-    syncRemoteProfileIntoLocal(remoteProfile)
+  // Keep desktop startup and idle usage local-first. We only force a remote
+  // profile reconciliation on explicit flows such as a successful login.
+  if (!options.force) {
+    return cachedCount
   }
-  return remoteProfiles.length
+
+  if (profileSyncInFlight) {
+    return profileSyncInFlight
+  }
+
+  const now = Date.now()
+  if (now - lastProfileSyncAt < PROFILE_SYNC_COOLDOWN_MS) {
+    return lastProfileSyncCount || cachedCount
+  }
+
+  profileSyncInFlight = (async () => {
+    const count = await performProfilesSyncFromControlPlane()
+    lastProfileSyncAt = Date.now()
+    lastProfileSyncCount = count
+    return count
+  })()
+
+  try {
+    return await profileSyncInFlight
+  } finally {
+    profileSyncInFlight = null
+  }
 }
 
 async function syncProfileStatusToControlPlane(
@@ -2704,14 +2898,10 @@ async function applyStorageStateToContext(
 }
 
 function clearProfileStorageSyncTimer(profileId: string): void {
-  const existing = runtimeStorageSyncTimers.get(profileId)
-  if (existing) {
-    clearInterval(existing)
-    runtimeStorageSyncTimers.delete(profileId)
-  }
+  void profileId
 }
 
-type StorageStateUploadReason = 'periodic' | 'stop' | 'graceful-shutdown' | 'context-close'
+type StorageStateUploadReason = 'stop' | 'graceful-shutdown' | 'context-close'
 
 async function uploadProfileStorageStateToControlPlane(
   profileId: string,
@@ -2861,17 +3051,6 @@ async function uploadProfileStorageStateToControlPlane(
   }
 }
 
-function startProfileStorageSyncTimer(profileId: string, context: BrowserContext): void {
-  clearProfileStorageSyncTimer(profileId)
-  const timer = setInterval(() => {
-    void uploadProfileStorageStateToControlPlane(profileId, {
-      context,
-      reason: 'periodic',
-    })
-  }, PROFILE_STORAGE_SYNC_INTERVAL_MS)
-  runtimeStorageSyncTimers.set(profileId, timer)
-}
-
 async function downloadProfileStorageStateFromControlPlane(profileId: string): Promise<boolean> {
   if (!getDesktopAuthState().authenticated) {
     return false
@@ -2947,15 +3126,38 @@ function logEvent(
 }
 
 function syncTheme(): void {
-  nativeTheme.themeSource = 'light'
+  try {
+    const themeMode = String(requireDatabase().getSettings().themeMode || 'system').trim()
+    if (themeMode === 'dark' || themeMode === 'light' || themeMode === 'system') {
+      nativeTheme.themeSource = themeMode
+      return
+    }
+  } catch {
+    // Database not ready during early bootstrap.
+  }
+  nativeTheme.themeSource = 'system'
 }
 
 async function createMainWindow(): Promise<void> {
+  if (beforeQuitHandled || gracefulShutdownInFlight) {
+    traceStartup('create_main_window_skipped_during_shutdown')
+    return
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore()
+    }
+    mainWindow.show()
+    mainWindow.focus()
+    traceStartup('create_main_window_reused_existing')
+    return
+  }
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 960,
     minWidth: 1180,
     minHeight: 760,
+    show: false,
     backgroundColor: '#071425',
     titleBarStyle: 'hiddenInset',
     webPreferences: {
@@ -2965,9 +3167,49 @@ async function createMainWindow(): Promise<void> {
       sandbox: false,
     },
   })
+  traceStartup('main_window_created', {
+    rendererUrl: rendererUrl || '',
+    rendererFile,
+  })
+
+  mainWindow.on('closed', () => {
+    traceStartup('main_window_closed')
+    mainWindow = null
+  })
+
+  mainWindow.once('ready-to-show', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return
+    }
+    mainWindow.show()
+    mainWindow.focus()
+    traceStartup('main_window_ready_to_show')
+  })
 
   mainWindow.webContents.on('did-finish-load', () => {
+    traceStartup('main_window_did_finish_load')
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return
+    }
+    if (!mainWindow.isVisible()) {
+      mainWindow.show()
+    }
+    mainWindow.focus()
     emitUpdateState()
+  })
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
+    traceStartup('main_window_did_fail_load', {
+      errorCode,
+      errorDescription,
+      validatedUrl,
+      isMainFrame,
+    })
+  })
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    traceStartup('render_process_gone', {
+      reason: details.reason,
+      exitCode: details.exitCode,
+    })
   })
 
   if (rendererUrl) {
@@ -4011,7 +4253,6 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     }
     runtimeContexts.set(profileId, context)
     markProfileRuntimeLockRunning(profileId)
-    startProfileStorageSyncTimer(profileId, context)
     database.touchProfileLastStarted(profileId)
     const injectedFeatures = buildInjectedFeatures(profile)
     profile = updateRuntimeMetadata(profile, {
@@ -4065,7 +4306,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     context.on('close', () => {
     clearProfileStorageSyncTimer(profileId)
     runtimeContexts.delete(profileId)
-    if (!gracefulShutdownInFlight) {
+    if (!gracefulShutdownInFlight && !runtimeShutdownFinalizing.has(profileId)) {
       void uploadProfileStorageStateToControlPlane(profileId, {
         reason: 'context-close',
       })
@@ -4249,7 +4490,18 @@ async function performDesktopLogin(payload: {
         throw new Error('登录响应缺少用户或令牌')
       }
       const nextAuthState = saveDesktopAuth(apiBase, token, user)
-      await syncProfilesFromControlPlane()
+      try {
+        await syncProfilesFromControlPlane({ force: true })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        audit('auth_login_profile_sync_failed', { apiBase, err: message })
+        logEvent(
+          'warn',
+          'system',
+          `Desktop login profile sync failed, continuing with local cache: ${message}`,
+          null,
+        )
+      }
       return nextAuthState
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error))
@@ -4338,7 +4590,7 @@ async function updateProfileStartupTarget(
       },
     },
   })
-  void syncProfileToControlPlane(persisted).catch((error) => {
+  void syncWorkspaceSummaryToControlPlane(persisted).catch((error: unknown) => {
     audit('profile_startup_target_sync_failed', {
       profileId,
       targetUrl,
@@ -4447,8 +4699,11 @@ async function waitForRuntimeOutcome(
 
 function buildSmokeFingerprint(proxy: ProxyRecord | null, startupUrl: string): FingerprintConfig {
   const fingerprint = createDefaultFingerprint()
+  const defaultTimezone = String(process.env.DUOKAI_SMOKE_TIMEZONE || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC').trim()
   fingerprint.basicSettings.platform = 'custom'
   fingerprint.basicSettings.customPlatformUrl = startupUrl
+  fingerprint.timezone = defaultTimezone || 'UTC'
+  fingerprint.advanced.autoTimezoneFromIp = false
   if (proxy) {
     fingerprint.proxySettings.proxyMode = 'custom'
     fingerprint.proxySettings.proxyType = proxy.type
@@ -4468,33 +4723,35 @@ async function ensureSmokeProxyAndProfile(): Promise<{
   const smokeProxyHost = String(process.env.DUOKAI_SMOKE_PROXY_HOST || '').trim()
   const smokeProxyPort = Number(process.env.DUOKAI_SMOKE_PROXY_PORT || 0)
   const smokeStartupUrl = String(process.env.DUOKAI_SMOKE_STARTUP_URL || 'https://example.com').trim()
-
-  if (!smokeProxyHost || !smokeProxyPort) {
-    const existingProfile = database.listProfiles()[0] ?? null
-    return { proxy: existingProfile ? resolveProfileProxy(existingProfile, database) : null, profile: existingProfile }
-  }
-
-  const smokeProxyName = String(process.env.DUOKAI_SMOKE_PROXY_NAME || 'CI Windows Smoke Proxy').trim()
-  const smokeProfileName = String(process.env.DUOKAI_SMOKE_PROFILE_NAME || 'CI Windows Smoke Profile').trim()
+  const smokeProxyName = String(process.env.DUOKAI_SMOKE_PROXY_NAME || 'CI Desktop Smoke Proxy').trim()
+  const smokeProfileName = String(process.env.DUOKAI_SMOKE_PROFILE_NAME || 'CI Desktop Smoke Profile').trim()
   const smokeProxyType = String(process.env.DUOKAI_SMOKE_PROXY_TYPE || 'https').trim()
-  const proxyPayload = createProxyPayload({
-    name: smokeProxyName,
-    type: smokeProxyType === 'socks5' ? 'socks5' : smokeProxyType === 'https' ? 'https' : 'http',
-    host: smokeProxyHost,
-    port: smokeProxyPort,
-    username: String(process.env.DUOKAI_SMOKE_PROXY_USERNAME || '').trim(),
-    password: String(process.env.DUOKAI_SMOKE_PROXY_PASSWORD || ''),
-  })
+  const proxy =
+    smokeProxyHost && smokeProxyPort > 0
+      ? (() => {
+          const proxyPayload = createProxyPayload({
+            name: smokeProxyName,
+            type: smokeProxyType === 'socks5' ? 'socks5' : smokeProxyType === 'https' ? 'https' : 'http',
+            host: smokeProxyHost,
+            port: smokeProxyPort,
+            username: String(process.env.DUOKAI_SMOKE_PROXY_USERNAME || '').trim(),
+            password: String(process.env.DUOKAI_SMOKE_PROXY_PASSWORD || ''),
+          })
 
-  const existingProxy = database.listProxies().find((item) => item.name === smokeProxyName)
-  const proxy = existingProxy
-    ? database.updateProxy({ ...proxyPayload, id: existingProxy.id })
-    : database.createProxy(proxyPayload)
+          const existingProxy = database.listProxies().find((item) => item.name === smokeProxyName)
+          return existingProxy
+            ? database.updateProxy({ ...proxyPayload, id: existingProxy.id })
+            : database.createProxy(proxyPayload)
+        })()
+      : null
 
   const existingProfile = database.listProfiles().find((item) => item.name === smokeProfileName)
+  if (existingProfile) {
+    database.deleteProfile(existingProfile.id)
+  }
   const profilePayload = createProfilePayload(
     {
-      id: existingProfile?.id || randomUUID(),
+      id: randomUUID(),
       name: smokeProfileName,
       proxyId: null,
       groupName: 'CI Smoke',
@@ -4505,9 +4762,7 @@ async function ensureSmokeProxyAndProfile(): Promise<{
     createDefaultFingerprint,
   )
 
-  const profile = existingProfile
-    ? database.updateProfile(profilePayload)
-    : database.createProfile(profilePayload)
+  const profile = database.createProfile(profilePayload)
 
   return { proxy, profile }
 }
@@ -4797,7 +5052,9 @@ async function registerIpcHandlers(): Promise<void> {
     return saveDesktopAuth(getControlPlaneApiBase(), getStoredAuthToken(), user)
   })
   ipcMain.handle('auth.logout', async () => clearDesktopAuth())
-  ipcMain.handle('auth.syncProfiles', async () => ({ count: await syncProfilesFromControlPlane() }))
+  ipcMain.handle('auth.syncProfiles', async (_event, options?: ProfileSyncOptions) => ({
+    count: await syncProfilesFromControlPlane(options),
+  }))
 
   ipcMain.handle('meta.getInfo', async () => ({
     mode: isDev ? 'development' : 'production',
@@ -4805,6 +5062,7 @@ async function registerIpcHandlers(): Promise<void> {
     mainVersion: app.getVersion(),
     preloadVersion: PRELOAD_VERSION,
     rendererVersion: app.getVersion(),
+    buildMarker: BUILD_MARKER,
     capabilities: CAPABILITIES,
   }))
   ipcMain.handle('meta.getAgentState', async () => getAgentStateSnapshot())
@@ -4993,17 +5251,8 @@ async function registerIpcHandlers(): Promise<void> {
       requireDatabase(),
     )
     assertProfileNameUniqueOrThrow(payload.name)
-    let profile: ProfileRecord
-    if (getDesktopAuthState().authenticated) {
-      const remotePayload = await requestControlPlane('/api/profiles', {
-        method: 'POST',
-        body: JSON.stringify(mapLocalProfileToRemotePayload(payload)),
-      })
-      profile = syncRemoteProfileIntoLocal((remotePayload.profile || {}) as ControlPlaneProfile, payload)
-    } else {
-      profile = requireDatabase().createProfile(payload)
-    }
-    await syncConfigToControlPlaneOrThrow()
+    const profile = requireDatabase().createProfile(payload)
+    syncProfileMutationToControlPlaneInBackground('create', profile)
     logEvent('info', 'profile', `Created profile "${profile.name}"`, profile.id)
     return profile
   })
@@ -5018,33 +5267,11 @@ async function registerIpcHandlers(): Promise<void> {
       existingProfile,
     )
     assertProfileNameUniqueOrThrow(payload.name, payload.id)
-    let profile: ProfileRecord
-    if (getDesktopAuthState().authenticated) {
-      try {
-        const remotePayload = await requestControlPlane(`/api/profiles/${encodeURIComponent(payload.id)}`, {
-          method: 'PATCH',
-          body: JSON.stringify(mapLocalProfileToRemotePayload(payload)),
-        })
-        profile = syncRemoteProfileIntoLocal((remotePayload.profile || {}) as ControlPlaneProfile, payload)
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        if (/profile not found/i.test(message)) {
-          const remotePayload = await requestControlPlane('/api/profiles', {
-            method: 'POST',
-            body: JSON.stringify(mapLocalProfileToRemotePayload(payload)),
-          })
-          if (payload.id !== String((remotePayload.profile as ControlPlaneProfile | undefined)?.id || payload.id)) {
-            requireDatabase().deleteProfile(payload.id)
-          }
-          profile = syncRemoteProfileIntoLocal((remotePayload.profile || {}) as ControlPlaneProfile, payload)
-        } else {
-          throw error
-        }
-      }
-    } else {
-      profile = requireDatabase().updateProfile(payload)
+    const profile = requireDatabase().updateProfile(payload)
+    if (existingProfile?.status === 'error' && !runtimeContexts.has(profile.id)) {
+      requireDatabase().setProfileStatus(profile.id, 'stopped')
     }
-    await syncConfigToControlPlaneOrThrow()
+    syncProfileMutationToControlPlaneInBackground('update', profile)
     logEvent('info', 'profile', `Updated profile "${profile.name}"`, profile.id)
     return profile
   })
@@ -5208,6 +5435,7 @@ async function registerIpcHandlers(): Promise<void> {
   ipcMain.handle('settings.set', async (_event, payload: SettingsPayload) => {
     ensureWritable('settings.set')
     const data = requireDatabase().setSettings(payload)
+    syncTheme()
     await syncConfigToControlPlaneOrThrow()
     logEvent('info', 'system', 'Updated application settings', null)
     return data
@@ -5388,24 +5616,46 @@ function initAgentService() {
 }
 
 async function bootstrap(): Promise<void> {
+  traceStartup('bootstrap_begin')
   await app.whenReady()
+  traceStartup('app_ready', {
+    userData: app.getPath('userData'),
+    version: app.getVersion(),
+  })
   syncTheme()
+  traceStartup('theme_synced')
   db = new DatabaseService(app)
+  traceStartup('database_initialized')
   resetCachedProfileStatesOnStartup()
+  traceStartup('profiles_reset_on_startup')
   cleanupRuntimeLocksOnStartup()
+  traceStartup('runtime_locks_cleaned')
   await registerIpcHandlers()
+  traceStartup('ipc_handlers_registered')
   if (SMOKE_TEST_ENABLED) {
     audit('smoke_test_bootstrap_begin', { outputDir: resolveSmokeOutputDir(), platform: process.platform })
     await runDesktopSmokeScenario()
     return
   }
   initAgentService()
-  try {
-    await syncConfigFromControlPlane()
-  } catch (error) {
-    logEvent('warn', 'system', `Initial config sync failed: ${error instanceof Error ? error.message : String(error)}`)
-  }
+  traceStartup('agent_service_initialized')
+  traceStartup('create_main_window_begin')
   await createMainWindow()
+  traceStartup('create_main_window_succeeded')
+  void syncConfigFromControlPlane()
+    .then(() => {
+      traceStartup('control_plane_sync_succeeded')
+    })
+    .catch((error) => {
+      traceStartup('control_plane_sync_failed', {
+        message: error instanceof Error ? error.message : String(error),
+      })
+      logEvent(
+        'warn',
+        'system',
+        `Initial config sync failed: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    })
   if (app.isPackaged) {
     setTimeout(() => {
       void checkForDesktopUpdates({ silent: true })
@@ -5419,11 +5669,22 @@ async function bootstrap(): Promise<void> {
     'system',
     `Runtime info: mode=${isDev ? 'development' : 'production'} preload=${PRELOAD_VERSION} capabilities=${CAPABILITIES.length}`,
   )
+  logEvent('info', 'system', `Build marker: ${BUILD_MARKER}`, null)
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      void createMainWindow()
+    if (beforeQuitHandled || gracefulShutdownInFlight) {
+      return
     }
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) {
+        mainWindow.restore()
+      }
+      mainWindow.show()
+      mainWindow.focus()
+      traceStartup('app_activate_focused_existing_window')
+      return
+    }
+    void createMainWindow()
   })
 
   app.on('before-quit', (event) => {
@@ -5451,4 +5712,11 @@ app.on('window-all-closed', async () => {
   }
 })
 
-void bootstrap()
+void bootstrap().catch((error) => {
+  console.error('bootstrap failed', error)
+  traceStartup('bootstrap_failed', {
+    message: error instanceof Error ? error.message : String(error),
+    stack: error instanceof Error ? error.stack || '' : '',
+  })
+  void gracefulShutdownHandler(error)
+})

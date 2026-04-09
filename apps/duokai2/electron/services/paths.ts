@@ -14,6 +14,7 @@ import type {
   WorkspaceMigrationCheckpointName,
   WorkspacePaths,
 } from '../../src/shared/types'
+import { normalizeWorkspaceDescriptor } from './factories'
 
 export interface ProfileDirectoryInfoPayload {
   appDataDir: string
@@ -118,6 +119,32 @@ export function resolveWorkspacePaths(app: App, profileId: string): WorkspacePat
   }
 }
 
+function absolutizeWorkspacePath(app: App, input: string | undefined, fallback: string): string {
+  const candidate = String(input || '').trim()
+  if (!candidate) {
+    return fallback
+  }
+  if (path.isAbsolute(candidate)) {
+    return path.normalize(candidate)
+  }
+  return path.join(app.getPath('userData'), candidate)
+}
+
+export function normalizeWorkspacePathsForProfile(
+  app: App,
+  profileId: string,
+  paths?: Partial<WorkspacePaths> | null,
+): WorkspacePaths {
+  const fallback = resolveWorkspacePaths(app, profileId)
+  return {
+    profileDir: absolutizeWorkspacePath(app, paths?.profileDir, fallback.profileDir),
+    cacheDir: absolutizeWorkspacePath(app, paths?.cacheDir, fallback.cacheDir),
+    downloadsDir: absolutizeWorkspacePath(app, paths?.downloadsDir, fallback.downloadsDir),
+    extensionsDir: absolutizeWorkspacePath(app, paths?.extensionsDir, fallback.extensionsDir),
+    metaDir: absolutizeWorkspacePath(app, paths?.metaDir, fallback.metaDir),
+  }
+}
+
 export function getProfilePath(app: App, profileId: string): string {
   return resolveWorkspacePaths(app, profileId).profileDir
 }
@@ -131,9 +158,14 @@ export function ensureWorkspaceLayoutForProfile(
   ensureProfileDirectory(directoryInfo.profilesDir)
   mkdirSync(directoryInfo.workspacesDir, { recursive: true })
 
+  const normalizedPaths = normalizeWorkspacePathsForProfile(app, profile.id, profile.workspace?.paths)
   let workspace = {
     ...profile.workspace!,
-    paths: resolveWorkspacePaths(app, profile.id),
+    paths: normalizedPaths,
+    resolvedEnvironment: {
+      ...profile.workspace!.resolvedEnvironment,
+      downloadsDir: normalizedPaths.downloadsDir,
+    },
   }
 
   const legacyProfileDir = path.join(directoryInfo.profilesDir, profile.id)
@@ -153,6 +185,7 @@ export function ensureWorkspaceLayoutForProfile(
       mkdirSync(targetPath, { recursive: true })
     }
     writeMigrationStateFile(workspacePaths.metaDir, workspace)
+    persistWorkspace(workspace)
     return workspace
   }
 
@@ -190,8 +223,28 @@ export function ensureWorkspaceLayoutForProfile(
     persistWorkspace(workspace)
 
     workspace = {
-      ...workspace,
-      paths: workspacePaths,
+      ...normalizeWorkspaceDescriptor(
+        {
+          ...workspace,
+          paths: workspacePaths,
+          resolvedEnvironment: {
+            ...workspace.resolvedEnvironment,
+            downloadsDir: workspacePaths.downloadsDir,
+          },
+          templateBinding: {
+            ...workspace.templateBinding,
+            templateFingerprintHash: '',
+          },
+          consistencySummary: {
+            ...workspace.consistencySummary,
+            templateFingerprintHash: '',
+          },
+        },
+        profile.id,
+        profile.fingerprintConfig,
+      ),
+      migrationState: workspace.migrationState,
+      migrationCheckpoints: workspace.migrationCheckpoints,
     }
     workspace = withCheckpoint(workspace, 'path_mapping_persisted')
     writeMigrationStateFile(workspacePaths.metaDir, workspace)

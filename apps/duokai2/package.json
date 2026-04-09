@@ -10,24 +10,30 @@
     "dev": "vite --force",
     "clean": "rm -rf dist dist-electron release build-resources/ms-playwright",
     "prepare:desktop-assets": "node scripts/prepare-desktop-assets.mjs && node scripts/prepare-playwright-browsers.mjs && electron-builder install-app-deps",
-    "build": "npm run prepare:desktop-assets && tsc -b && vite build && ELECTRON_BUILDER_CACHE=.cache/electron-builder CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
-    "build:dir": "npm run prepare:desktop-assets && tsc -b && vite build && ELECTRON_BUILDER_CACHE=.cache/electron-builder CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir",
-    "build:mac": "npm run prepare:desktop-assets && tsc -b && vite build && ELECTRON_BUILDER_CACHE=.cache/electron-builder CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --publish never",
-    "build:win": "npm run prepare:desktop-assets && tsc -b && vite build && electron-builder --win nsis zip --publish never",
+    "build": "npm run prepare:desktop-assets && tsc -b && vite build && ELECTRON_BUILDER_CACHE=.cache/electron-builder CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder -c electron-builder.config.cjs",
+    "build:dir": "npm run prepare:desktop-assets && tsc -b && vite build && ELECTRON_BUILDER_CACHE=.cache/electron-builder CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder -c electron-builder.config.cjs --dir",
+    "build:mac": "npm run prepare:desktop-assets && tsc -b && vite build && ELECTRON_BUILDER_CACHE=.cache/electron-builder CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder -c electron-builder.config.cjs --mac dmg zip --publish never",
+    "build:win": "npm run prepare:desktop-assets && tsc -b && vite build && electron-builder -c electron-builder.config.cjs --win nsis zip --publish never",
     "smoke:win": "node scripts/run-desktop-smoke.mjs",
     "install:chromium": "playwright install chromium",
     "lint": "eslint .",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@duokai/ui": "file:../../packages/ui",
+    "framer-motion": "^12.6.3",
     "better-sqlite3": "^12.8.0",
+    "i18next": "^25.1.3",
+    "lucide-react": "^0.511.0",
     "playwright": "^1.58.2",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
+    "react-i18next": "^15.5.2",
     "react-router-dom": "^7.13.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
+    "@tailwindcss/vite": "^4.1.3",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.12.0",
     "@types/react": "^19.2.14",
@@ -40,6 +46,7 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",
+    "tailwindcss": "^4.1.3",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.56.1",
     "vite": "^8.0.0",
@@ -49,6 +56,7 @@
   "build": {
     "appId": "com.jj.duokai2",
     "productName": "Duokai2",
+    "npmRebuild": false,
     "directories": {
       "output": "release"
     },
@@ -67,6 +75,7 @@
       "icon": "build-resources/icon.icns",
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
+      "notarize": false,
       "signIgnore": [
         "Contents\\/Resources\\/ms-playwright\\/.*"
       ],

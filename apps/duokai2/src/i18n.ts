@@ -9,7 +9,7 @@ import type {
 
 export type LocaleCode = 'zh-CN' | 'en-US'
 
-type Dictionary = {
+export type Dictionary = {
   appName: string
   appTagline: string
   nav: Record<'dashboard' | 'profiles' | 'cloudPhones' | 'proxies' | 'logs' | 'settings', string>
@@ -231,6 +231,10 @@ type Dictionary = {
     localDevices: string
     languageZh: string
     languageEn: string
+    themeMode: string
+    themeSystem: string
+    themeLight: string
+    themeDark: string
     dataTools: string
     exportBundle: string
     importBundle: string
@@ -240,6 +244,7 @@ type Dictionary = {
     mainVersion: string
     preloadVersion: string
     rendererVersion: string
+    buildMarker: string
     capabilities: string
   }
 }
@@ -489,6 +494,10 @@ export const dictionaries: Record<LocaleCode, Dictionary> = {
       localDevices: '本机设备',
       languageZh: '简体中文',
       languageEn: 'English',
+      themeMode: '主题模式',
+      themeSystem: '跟随系统',
+      themeLight: '浅色',
+      themeDark: '深色',
       dataTools: '数据工具',
       exportBundle: '导出配置包',
       importBundle: '导入配置包',
@@ -498,6 +507,7 @@ export const dictionaries: Record<LocaleCode, Dictionary> = {
       mainVersion: 'Main 版本',
       preloadVersion: 'Preload 版本',
       rendererVersion: 'Renderer 版本',
+      buildMarker: '构建标记',
       capabilities: '已注册能力',
     },
   },
@@ -745,6 +755,10 @@ export const dictionaries: Record<LocaleCode, Dictionary> = {
       localDevices: 'Local devices',
       languageZh: 'Simplified Chinese',
       languageEn: 'English',
+      themeMode: 'Theme mode',
+      themeSystem: 'System',
+      themeLight: 'Light',
+      themeDark: 'Dark',
       dataTools: 'Data tools',
       exportBundle: 'Export bundle',
       importBundle: 'Import bundle',
@@ -754,6 +768,7 @@ export const dictionaries: Record<LocaleCode, Dictionary> = {
       mainVersion: 'Main version',
       preloadVersion: 'Preload version',
       rendererVersion: 'Renderer version',
+      buildMarker: 'Build marker',
       capabilities: 'Capabilities',
     },
   },
@@ -763,44 +778,73 @@ export function getLocaleFromSettings(value?: string): LocaleCode {
   return value === 'en-US' ? 'en-US' : 'zh-CN'
 }
 
+const STATUS_LABELS: Record<
+  LocaleCode,
+  Partial<Record<ProfileStatus | ProxyRecord['status'], string>>
+> = {
+  'zh-CN': {
+    queued: '排队中',
+    starting: '启动中',
+    running: '运行中',
+    idle: '待机',
+    stopped: '已停止',
+    error: '异常',
+    online: '在线',
+    offline: '离线',
+    unknown: '未知',
+  },
+  'en-US': {
+    unknown: 'Unknown',
+    online: 'Online',
+    offline: 'Offline',
+  },
+}
+
+const LOG_LEVEL_LABELS: Record<LocaleCode, Record<LogLevel, string>> = {
+  'zh-CN': {
+    info: '信息',
+    warn: '警告',
+    error: '错误',
+  },
+  'en-US': {
+    info: 'info',
+    warn: 'warn',
+    error: 'error',
+  },
+}
+
+const LOG_CATEGORY_LABELS: Record<LocaleCode, Record<LogCategory, string>> = {
+  'zh-CN': {
+    profile: '环境',
+    proxy: '代理',
+    runtime: '运行时',
+    'cloud-phone': '云手机',
+    system: '系统',
+  },
+  'en-US': {
+    profile: 'profile',
+    proxy: 'proxy',
+    runtime: 'runtime',
+    'cloud-phone': 'cloud-phone',
+    system: 'system',
+  },
+}
+
 export function translateStatus(
   locale: LocaleCode,
   status: ProfileStatus | ProxyRecord['status'],
 ): string {
-  if (locale === 'zh-CN') {
-    if (status === 'queued') return '排队中'
-    if (status === 'starting') return '启动中'
-    if (status === 'running') return '运行中'
-    if (status === 'idle') return '待机'
-    if (status === 'stopped') return '已停止'
-    if (status === 'error') return '异常'
-    if (status === 'online') return '在线'
-    if (status === 'offline') return '离线'
-    return '未知'
+  const localized = STATUS_LABELS[locale][status]
+  if (localized) {
+    return localized
   }
-
-  if (status === 'unknown') return 'Unknown'
-  if (status === 'online') return 'Online'
-  if (status === 'offline') return 'Offline'
   return status.charAt(0).toUpperCase() + status.slice(1)
 }
 
 export function translateLogLevel(locale: LocaleCode, level: LogLevel): string {
-  if (locale === 'zh-CN') {
-    if (level === 'info') return '信息'
-    if (level === 'warn') return '警告'
-    return '错误'
-  }
-  return level
+  return LOG_LEVEL_LABELS[locale][level]
 }
 
 export function translateLogCategory(locale: LocaleCode, category: LogCategory): string {
-  if (locale === 'zh-CN') {
-    if (category === 'profile') return '环境'
-    if (category === 'proxy') return '代理'
-    if (category === 'runtime') return '运行时'
-    if (category === 'cloud-phone') return '云手机'
-    return '系统'
-  }
-  return category
+  return LOG_CATEGORY_LABELS[locale][category]
 }

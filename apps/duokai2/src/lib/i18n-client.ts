@@ -1,0 +1,395 @@
+import i18n from 'i18next'
+import { initReactI18next } from 'react-i18next'
+import { dictionaries } from '../i18n'
+
+const resources = {
+  'zh-CN': {
+    common: {
+      search: dictionaries['zh-CN'].common.search,
+      all: dictionaries['zh-CN'].common.all,
+      edit: dictionaries['zh-CN'].common.edit,
+      launch: dictionaries['zh-CN'].common.launch,
+      stop: dictionaries['zh-CN'].common.stop,
+      delete: dictionaries['zh-CN'].common.delete,
+      save: dictionaries['zh-CN'].common.save,
+      create: dictionaries['zh-CN'].common.create,
+      clear: dictionaries['zh-CN'].common.clear,
+    },
+    desktop: {
+      shell: {
+        title: 'DuoKai Pro',
+        subtitle: '桌面控制中心',
+        logout: '退出登录',
+        environmentTabsHint: '一级导航聚焦模块，顶部切换环境中心里的子视图。',
+        releasePage: '发布页',
+        updateTitle: '桌面端更新 {{version}}',
+      },
+      navigation: {
+        tabs: {
+          dashboard: '概览',
+          profiles: '环境配置',
+          cloudPhones: '云手机环境',
+        },
+        main: {
+          environmentCenter: '环境中心',
+          proxyRepository: '代理仓库',
+          groupManagement: '分组管理',
+          settings: '设置',
+        },
+        secondary: {
+          logs: '运行日志',
+          account: '个人中心',
+        },
+      },
+      headings: {
+        dashboard: {
+          title: '浏览器运营桌面端',
+          subtitle: '本地环境隔离、模板复用、批量操作与运行状态管理。',
+        },
+        environmentCenter: {
+          title: '环境中心',
+          subtitle: '统一管理环境、模板、云手机与批量分组操作。',
+        },
+        groupManagement: {
+          title: '分组管理',
+          subtitle: '以分组维度查看环境、执行批量操作并保持列表上下文。',
+        },
+        proxies: {
+          title: '代理管理',
+          subtitle: '管理可复用代理与健康检查。',
+        },
+        logs: {
+          title: '运行与审计日志',
+          subtitle: '查看近期运行日志与事件轨迹。',
+          description: '日志视图改成更适合桌面端长时间浏览的扁平列表。',
+          emptyTitle: '还没有运行日志',
+          backToCenter: '回到环境中心',
+        },
+        settings: {
+          title: '应用设置',
+          subtitle: '管理桌面端运行时与默认策略。',
+        },
+        cloudPhones: {
+          title: '云手机环境',
+          subtitle: 'Android 云手机环境、算力、代理与指纹设置管理。',
+        },
+        account: {
+          title: '个人中心',
+          subtitle: '账号资料与桌面端绑定信息。后续可以在这里继续扩展更多个人设置。',
+        },
+      },
+      bridge: {
+        unavailable: '应用桥接未同步，请完全关闭当前开发窗口后重新执行 npm run dev。',
+        unavailableWithPath: '应用桥接未同步，缺少接口 {{path}}。请完全关闭当前开发窗口后重新执行 npm run dev。',
+        unknownError: '发生未知错误。',
+      },
+      feedback: {
+        updateAvailable: '发现新版本 {{version}}，可在设置中下载安装。',
+        updateDownloaded: '更新包已准备好，可在设置中开始安装。',
+        logsCleared: '日志已清空。',
+        configurationBundleExported: '配置包已导出。',
+        configurationBundleImported: '配置包已导入，数据已刷新。',
+        cloudSyncUnavailable: '云端同步暂不可用，当前显示本地缓存。',
+      },
+      environment: {
+        emptyTitle: '还没有环境',
+        emptyDescription: '现在可以先从右上角创建第一个环境，列表会以扁平行视图展示并支持批量操作。',
+        createAction: '新建环境',
+        row: {
+          status: {
+            running: '运行中',
+            error: '异常',
+            idle: '空闲',
+            stopped: '未启动',
+          },
+          actions: {
+            launch: '启动',
+            retryLaunch: '重试启动',
+            stop: '停止',
+            editAria: '编辑环境',
+            clone: '克隆环境',
+            moveToNurture: '迁移养号',
+            moveToOperation: '转为运营',
+          },
+        },
+      },
+      settings: {
+        profileDescription: '工作区、语言与默认打开行为都在这里统一管理。',
+        runtimeLimitsTitle: '运行配额',
+        runtimeLimitsDescription: '限制同时启动、活跃环境和失败重试次数。',
+        providersDescription: '桌面端默认云手机提供方与接入凭证。',
+        dataToolsDescription: '导入导出配置包，并查看导入结果。',
+        updates: {
+          title: '桌面端更新',
+          currentVersion: '当前版本',
+          latestVersion: '最新版本',
+          publishedAt: '发布时间',
+          lastChecked: '最近检查',
+          downloadedTo: '已下载到：{{path}}',
+          macOsHint: 'Mac 当前采用“检测更新并提示安装”模式，下载后会打开安装包。',
+          checkAgain: '重新检查',
+          openReleasePage: '打开发布页',
+        },
+      },
+      account: {
+        devices: '设备',
+        fields: {
+          accountId: '账号 ID',
+          username: '用户名',
+          email: '邮箱',
+          role: '角色',
+        },
+        subscription: {
+          title: '订阅信息',
+          description: '查看当前套餐状态与到期时间。',
+          plan: '套餐',
+          status: '状态',
+          expiresAt: '到期时间',
+        },
+        profile: {
+          title: '基础资料',
+          description: '修改名称、账号、邮箱和头像地址。',
+          name: '名称',
+          username: '账号',
+          uploadImage: '上传图片',
+          email: '邮箱',
+          bio: '备注',
+          save: '保存资料',
+        },
+        password: {
+          title: '密码安全',
+          description: '修改当前账号密码。',
+          currentPassword: '当前密码',
+          newPassword: '新密码',
+          confirmPassword: '确认新密码',
+          save: '修改密码',
+        },
+        devicesPanel: {
+          title: '登录设备',
+          currentDevice: '当前设备',
+          revoked: '已失效',
+          lastLogin: '最近登录',
+          lastSeen: '最近在线',
+          revokedAt: '失效时间',
+          revokeCurrent: '踢下当前设备',
+          revoke: '踢下线',
+          delete: '删除设备',
+          empty: '暂无设备记录。',
+        },
+      },
+      proxies: {
+        description: '统一管理代理资产，测试结果会以内联状态和 toast 一起反馈。',
+        closeCreate: '收起新建',
+        testing: '测试中',
+        emptyTitle: '还没有代理',
+        close: '关闭',
+        status: {
+          online: '在线',
+          offline: '离线',
+          unknown: '未知',
+        },
+      },
+    },
+  },
+  'en-US': {
+    common: {
+      search: dictionaries['en-US'].common.search,
+      all: dictionaries['en-US'].common.all,
+      edit: dictionaries['en-US'].common.edit,
+      launch: dictionaries['en-US'].common.launch,
+      stop: dictionaries['en-US'].common.stop,
+      delete: dictionaries['en-US'].common.delete,
+      save: dictionaries['en-US'].common.save,
+      create: dictionaries['en-US'].common.create,
+      clear: dictionaries['en-US'].common.clear,
+    },
+    desktop: {
+      shell: {
+        title: 'DuoKai Pro',
+        subtitle: 'Desktop Control Center',
+        logout: 'Log out',
+        environmentTabsHint: 'Primary nav picks a module, while these tabs switch environment-center subviews.',
+        releasePage: 'Release page',
+        updateTitle: 'Desktop update {{version}}',
+      },
+      navigation: {
+        tabs: {
+          dashboard: 'Dashboard',
+          profiles: 'Profiles',
+          cloudPhones: 'Cloud phones',
+        },
+        main: {
+          environmentCenter: 'Environment center',
+          proxyRepository: 'Proxy repository',
+          groupManagement: 'Group management',
+          settings: 'Settings',
+        },
+        secondary: {
+          logs: 'Logs',
+          account: 'Account',
+        },
+      },
+      headings: {
+        dashboard: {
+          title: 'Browser operations desktop',
+          subtitle: 'Local profile isolation, templates, batch actions, and runtime visibility.',
+        },
+        environmentCenter: {
+          title: 'Environment center',
+          subtitle: 'Manage environments, templates, cloud phones, and grouped operations in one place.',
+        },
+        groupManagement: {
+          title: 'Group management',
+          subtitle: 'Review environments by group, run bulk actions, and keep the list context in place.',
+        },
+        proxies: {
+          title: 'Proxies',
+          subtitle: 'Manage reusable proxies and health checks.',
+        },
+        logs: {
+          title: 'Runtime and audit logs',
+          subtitle: 'Review recent runtime logs and event traces.',
+          description: 'Logs now use a flatter desktop-friendly layout for longer scanning sessions.',
+          emptyTitle: 'No runtime logs yet',
+          backToCenter: 'Back to center',
+        },
+        settings: {
+          title: 'Settings',
+          subtitle: 'Configure desktop runtime and default policies.',
+        },
+        cloudPhones: {
+          title: 'Cloud phone environments',
+          subtitle: 'Android cloud phones, compute tiers, proxying, and fingerprint controls.',
+        },
+        account: {
+          title: 'Personal Center',
+          subtitle: 'Account profile and desktop bindings. More personal settings can be added here later.',
+        },
+      },
+      bridge: {
+        unavailable: 'Desktop bridge is out of sync. Fully close the current dev window and run npm run dev again.',
+        unavailableWithPath: 'Desktop bridge is out of sync. Missing API {{path}}. Fully close the current dev window and run npm run dev again.',
+        unknownError: 'Unknown error.',
+      },
+      feedback: {
+        updateAvailable: 'Update {{version}} is available. Download it from Settings.',
+        updateDownloaded: 'The update package is ready to install from Settings.',
+        logsCleared: 'Logs cleared.',
+        configurationBundleExported: 'Configuration bundle exported.',
+        configurationBundleImported: 'Configuration bundle imported and data refreshed.',
+        cloudSyncUnavailable: 'Cloud sync is temporarily unavailable. Showing cached local data.',
+      },
+      environment: {
+        emptyTitle: 'No environments yet',
+        emptyDescription: 'Create the first environment from the top-right action. The list will use flat rows and support batch operations.',
+        createAction: 'New environment',
+        row: {
+          status: {
+            running: 'Running',
+            error: 'Error',
+            idle: 'Idle',
+            stopped: 'Stopped',
+          },
+          actions: {
+            launch: 'Launch',
+            retryLaunch: 'Retry launch',
+            stop: 'Stop',
+            editAria: 'Edit environment',
+            clone: 'Clone environment',
+            moveToNurture: 'Move to nurture',
+            moveToOperation: 'Move to operation',
+          },
+        },
+      },
+      settings: {
+        profileDescription: 'Manage workspace identity, language, and default behavior from one place.',
+        runtimeLimitsTitle: 'Runtime limits',
+        runtimeLimitsDescription: 'Control concurrent starts, active profiles, and retry behavior.',
+        providersDescription: 'Default cloud phone provider and integration credentials.',
+        dataToolsDescription: 'Import or export configuration bundles and inspect the result.',
+        updates: {
+          title: 'Desktop updates',
+          currentVersion: 'Current version',
+          latestVersion: 'Latest version',
+          publishedAt: 'Published at',
+          lastChecked: 'Last checked',
+          downloadedTo: 'Downloaded to: {{path}}',
+          macOsHint: 'On macOS the app checks for updates and opens the installer package after download.',
+          checkAgain: 'Check again',
+          openReleasePage: 'Open release page',
+        },
+      },
+      account: {
+        devices: 'Devices',
+        fields: {
+          accountId: 'Account ID',
+          username: 'Username',
+          email: 'Email',
+          role: 'Role',
+        },
+        subscription: {
+          title: 'Subscription',
+          description: 'Review the active plan, status, and expiration date.',
+          plan: 'Plan',
+          status: 'Status',
+          expiresAt: 'Expires at',
+        },
+        profile: {
+          title: 'Basic profile',
+          description: 'Update display name, username, email, and avatar settings.',
+          name: 'Name',
+          username: 'Username',
+          uploadImage: 'Upload image',
+          email: 'Email',
+          bio: 'Bio / Notes',
+          save: 'Save profile',
+        },
+        password: {
+          title: 'Password security',
+          description: 'Update the password for the current account.',
+          currentPassword: 'Current password',
+          newPassword: 'New password',
+          confirmPassword: 'Confirm new password',
+          save: 'Change password',
+        },
+        devicesPanel: {
+          title: 'Logged-in devices',
+          currentDevice: 'Current device',
+          revoked: 'Revoked',
+          lastLogin: 'Last login',
+          lastSeen: 'Last seen',
+          revokedAt: 'Revoked at',
+          revokeCurrent: 'Revoke current',
+          revoke: 'Revoke',
+          delete: 'Delete device',
+          empty: 'No device records yet.',
+        },
+      },
+      proxies: {
+        description: 'Manage proxy inventory from one place, with inline states plus toast feedback.',
+        closeCreate: 'Close create',
+        testing: 'Testing',
+        emptyTitle: 'No proxies yet',
+        close: 'Close',
+        status: {
+          online: 'Online',
+          offline: 'Offline',
+          unknown: 'Unknown',
+        },
+      },
+    },
+  },
+}
+
+void i18n.use(initReactI18next).init({
+  resources,
+  lng: 'zh-CN',
+  fallbackLng: 'en-US',
+  interpolation: {
+    escapeValue: false,
+  },
+  defaultNS: 'desktop',
+  ns: ['common', 'desktop'],
+})
+
+export default i18n

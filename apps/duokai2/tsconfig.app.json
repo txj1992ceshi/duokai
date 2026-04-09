@@ -15,6 +15,11 @@
     "moduleDetection": "force",
     "noEmit": true,
     "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": {
+      "@duokai/ui": ["../../packages/ui/src/index.ts"],
+      "@duokai/ui/*": ["../../packages/ui/src/*"]
+    },
 
     /* Linting */
     "strict": true,
@@ -24,5 +29,5 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["src"]
+  "include": ["src", "../../packages/ui/src"]
 }

@@ -806,7 +806,8 @@ export interface CloudPhoneBulkActionPayload {
 }
 
 export interface SettingsPayload {
-  [key: string]: string
+  [key: string]: string | undefined
+  themeMode?: 'system' | 'light' | 'dark'
 }
 
 export interface AuthUser {
@@ -900,6 +901,7 @@ export interface DesktopRuntimeInfo {
   mainVersion: string
   preloadVersion: string
   rendererVersion: string
+  buildMarker: string
   capabilities: string[]
 }
 

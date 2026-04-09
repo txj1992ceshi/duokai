@@ -896,22 +896,22 @@ input,
 select,
 textarea {
   border-radius: 14px;
-  border: 1px solid rgba(16, 36, 61, 0.14);
+  border: 1px solid var(--duokai-border);
   padding: 12px 14px;
-  background: #f8fbff;
-  color: #081827;
+  background: var(--duokai-surface);
+  color: var(--duokai-text);
 }
 
 input::placeholder,
 textarea::placeholder {
-  color: #6f839d;
+  color: var(--duokai-text-muted);
 }
 
 input:focus,
 select:focus,
 textarea:focus {
   outline: 2px solid rgba(42, 120, 255, 0.18);
-  border-color: rgba(42, 120, 255, 0.4);
+  border-color: var(--duokai-primary);
 }
 
 textarea {

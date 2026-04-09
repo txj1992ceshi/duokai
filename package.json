@@ -1,0 +1,19 @@
+{
+  "name": "duokai",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "duokai-admin",
+    "duokai-api",
+    "fingerprint-dashboard"
+  ],
+  "scripts": {
+    "dev:desktop": "npm run dev --workspace apps/duokai2",
+    "build:desktop": "npm run build --workspace apps/duokai2",
+    "lint:desktop": "npm run lint --workspace apps/duokai2",
+    "dev:admin": "npm run dev --workspace duokai-admin",
+    "dev:dashboard": "npm run dev --workspace fingerprint-dashboard",
+    "dev:api": "npm run dev --workspace duokai-api"
+  }
+}
