@@ -80,6 +80,7 @@ function App() {
   const [authSubmitting, setAuthSubmitting] = useState(false)
   const [authIdentifier, setAuthIdentifier] = useState('')
   const [authPassword, setAuthPassword] = useState('')
+  const [authRememberCredentials, setAuthRememberCredentials] = useState(false)
   const [importResult, setImportResult] = useState<ImportResult | null>(null)
   const [uiLocaleOverride, setUiLocaleOverride] = useState<LocaleCode | null>(null)
   const lastUpdateNoticeKeyRef = useRef('')
@@ -174,6 +175,15 @@ function App() {
     setSyncWarningMessage,
     setSettings,
   })
+
+  useEffect(() => {
+    if (!authState) {
+      return
+    }
+    setAuthRememberCredentials(Boolean(authState.rememberCredentials))
+    setAuthIdentifier(authState.rememberedIdentifier || '')
+    setAuthPassword(authState.rememberedPassword || '')
+  }, [authState])
 
   const {
     defaultCloudPhoneProviderHealth,
@@ -371,6 +381,7 @@ function App() {
     settings,
     authIdentifier,
     authPassword,
+    authRememberCredentials,
     setAuthSubmitting,
     setAuthPassword,
     accountProfileForm,
@@ -697,9 +708,11 @@ function App() {
         errorMessage={errorMessage}
         authIdentifier={authIdentifier}
         authPassword={authPassword}
+        authRememberCredentials={authRememberCredentials}
         authSubmitting={authSubmitting}
         onAuthIdentifierChange={setAuthIdentifier}
         onAuthPasswordChange={setAuthPassword}
+        onAuthRememberCredentialsChange={setAuthRememberCredentials}
         onSubmit={handleDesktopLogin}
       />
     )

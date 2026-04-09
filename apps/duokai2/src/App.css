@@ -59,6 +59,21 @@
   gap: 4px;
 }
 
+.auth-remember {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: #425a77;
+  font-size: 0.92rem;
+}
+
+.auth-remember input {
+  width: 16px;
+  height: 16px;
+  accent-color: #2a78ff;
+}
+
 .sidebar {
   height: 100vh;
   overflow-y: auto;

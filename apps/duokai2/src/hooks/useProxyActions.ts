@@ -112,12 +112,22 @@ export function useProxyActions({
     })
     try {
       const api = requireDesktopApi(['proxies.test'])
-      await api.proxies.test(proxyId)
+      const result = await api.proxies.test(proxyId)
+      if (!result.success) {
+        setProxyRowFeedback((current) => ({
+          ...current,
+          [proxyId]: {
+            kind: 'error',
+            message: copy.testFailed(result.message || 'Unknown proxy error'),
+          },
+        }))
+        return
+      }
       setProxyRowFeedback((current) => ({
         ...current,
         [proxyId]: {
           kind: 'success',
-          message: copy.testPassed,
+          message: result.message || copy.testPassed,
         },
       }))
     } catch (error) {

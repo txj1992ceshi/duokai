@@ -151,6 +151,10 @@ const CONTROL_PLANE_API_BASE_KEY = 'controlPlaneApiBase'
 const CONTROL_PLANE_DEVICE_ID_KEY = 'controlPlaneDeviceId'
 const CONTROL_PLANE_AUTH_TOKEN_KEY = 'controlPlaneAuthToken'
 const CONTROL_PLANE_AUTH_USER_KEY = 'controlPlaneAuthUser'
+const CONTROL_PLANE_AUTH_REMEMBER_KEY = 'controlPlaneAuthRemember'
+const CONTROL_PLANE_REMEMBER_CREDENTIALS_KEY = 'controlPlaneRememberCredentials'
+const CONTROL_PLANE_AUTH_IDENTIFIER_KEY = 'controlPlaneAuthIdentifier'
+const CONTROL_PLANE_AUTH_PASSWORD_KEY = 'controlPlaneAuthPassword'
 const SMOKE_TEST_ENABLED = process.env.SMOKE_TEST === '1'
 const SMOKE_RESULT_FILE = 'smoke-result.json'
 const SMOKE_AUDIT_FILE = 'runtime-audit.log'
@@ -166,6 +170,9 @@ type ProfileSyncOptions = {
 let profileSyncInFlight: Promise<number> | null = null
 let lastProfileSyncAt = 0
 let lastProfileSyncCount = 0
+let sessionAuthApiBase = ''
+let sessionAuthToken = ''
+let sessionAuthUser: AuthUser | null = null
 
 const runtimeContexts = new Map<string, BrowserContext>()
 const runtimeLockHeartbeatTimers = new Map<string, NodeJS.Timeout>()
@@ -1758,14 +1765,43 @@ function getSettingValue(key: string, fallback = ''): string {
 }
 
 function getControlPlaneApiBase(): string {
+  if (sessionAuthApiBase) {
+    return sessionAuthApiBase.replace(/\/$/, '')
+  }
   return (
     getSettingValue(CONTROL_PLANE_API_BASE_KEY) ||
     DEFAULT_CONTROL_PLANE_API_BASE
   ).replace(/\/$/, '')
 }
 
+function shouldRememberCredentials(): boolean {
+  return getSettingValue(CONTROL_PLANE_REMEMBER_CREDENTIALS_KEY).trim() === '1'
+}
+
+function getRememberedCredentials(): {
+  rememberCredentials: boolean
+  identifier: string
+  password: string
+} {
+  if (!shouldRememberCredentials()) {
+    return {
+      rememberCredentials: false,
+      identifier: '',
+      password: '',
+    }
+  }
+  return {
+    rememberCredentials: true,
+    identifier: getSettingValue(CONTROL_PLANE_AUTH_IDENTIFIER_KEY).trim(),
+    password: getSettingValue(CONTROL_PLANE_AUTH_PASSWORD_KEY),
+  }
+}
+
 function getStoredAuthToken(): string {
-  return getSettingValue(CONTROL_PLANE_AUTH_TOKEN_KEY).trim()
+  if (sessionAuthToken) {
+    return sessionAuthToken
+  }
+  return ''
 }
 
 function getControlPlaneDeviceId(): string {
@@ -1782,19 +1818,15 @@ function getControlPlaneDeviceId(): string {
 }
 
 function getStoredAuthUser(): AuthUser | null {
-  const raw = getSettingValue(CONTROL_PLANE_AUTH_USER_KEY)
-  if (!raw) {
-    return null
+  if (sessionAuthUser) {
+    return sessionAuthUser
   }
-  try {
-    return JSON.parse(raw) as AuthUser
-  } catch {
-    return null
-  }
+  return null
 }
 
 function getDesktopAuthState(): DesktopAuthState {
   const user = getStoredAuthUser()
+  const remembered = getRememberedCredentials()
   const currentDeviceId = getControlPlaneDeviceId()
   return {
     apiBase: getControlPlaneApiBase(),
@@ -1811,26 +1843,54 @@ function getDesktopAuthState(): DesktopAuthState {
             : [],
         }
       : null,
+    rememberCredentials: remembered.rememberCredentials,
+    rememberedIdentifier: remembered.identifier,
+    rememberedPassword: remembered.password,
   }
 }
 
 function saveDesktopAuth(apiBase: string, token: string, user: AuthUser): DesktopAuthState {
+  sessionAuthApiBase = apiBase.replace(/\/$/, '')
+  sessionAuthToken = token
+  sessionAuthUser = user
   requireDatabase().setSettings({
     ...getSettings(),
-    [CONTROL_PLANE_API_BASE_KEY]: apiBase.replace(/\/$/, ''),
-    [CONTROL_PLANE_AUTH_TOKEN_KEY]: token,
-    [CONTROL_PLANE_AUTH_USER_KEY]: JSON.stringify(user),
+    [CONTROL_PLANE_API_BASE_KEY]: sessionAuthApiBase,
+    [CONTROL_PLANE_AUTH_TOKEN_KEY]: '',
+    [CONTROL_PLANE_AUTH_USER_KEY]: '',
+    [CONTROL_PLANE_AUTH_REMEMBER_KEY]: '0',
   })
   return getDesktopAuthState()
 }
 
 function clearDesktopAuth(): DesktopAuthState {
+  sessionAuthApiBase = ''
+  sessionAuthToken = ''
+  sessionAuthUser = null
   requireDatabase().setSettings({
     ...getSettings(),
     [CONTROL_PLANE_AUTH_TOKEN_KEY]: '',
     [CONTROL_PLANE_AUTH_USER_KEY]: '',
+    [CONTROL_PLANE_AUTH_REMEMBER_KEY]: '0',
   })
   return getDesktopAuthState()
+}
+
+function clearPersistedDesktopAuthOnStartup(): void {
+  const settings = getSettings()
+  const hasLegacyAuth =
+    Boolean(String(settings[CONTROL_PLANE_AUTH_TOKEN_KEY] || '').trim()) ||
+    Boolean(String(settings[CONTROL_PLANE_AUTH_USER_KEY] || '').trim()) ||
+    String(settings[CONTROL_PLANE_AUTH_REMEMBER_KEY] || '').trim() === '1'
+  if (!hasLegacyAuth) {
+    return
+  }
+  requireDatabase().setSettings({
+    ...settings,
+    [CONTROL_PLANE_AUTH_TOKEN_KEY]: '',
+    [CONTROL_PLANE_AUTH_USER_KEY]: '',
+    [CONTROL_PLANE_AUTH_REMEMBER_KEY]: '0',
+  })
 }
 
 function buildControlPlaneLoginCandidates(explicitApiBase?: string): string[] {
@@ -3358,7 +3418,7 @@ async function performProxyConnectivityTest(
     logEvent('info', category, `Proxy "${options.label}" verified locally`, null)
     return {
       success: true,
-      message: 'Proxy verified locally',
+      message: '本机检测通过（local）',
       checkedAt,
     }
   } catch (error) {
@@ -3399,8 +3459,8 @@ async function performProxyConnectivityTest(
             result.detail ||
               result.error ||
               (success
-                ? 'Proxy verified successfully via control plane fallback'
-                : 'Proxy verification failed')
+                ? '本机检测失败，但控制台后备检测通过（control-plane）'
+                : '本机与控制台后备检测均失败')
           ),
           checkedAt,
         }
@@ -3421,7 +3481,7 @@ async function performProxyConnectivityTest(
     logEvent('error', category, `Proxy "${options.label}" test failed locally`, null)
     return {
       success: false,
-      message: error instanceof Error ? error.message : 'Unknown proxy error',
+      message: error instanceof Error ? `本机检测失败：${error.message}` : '本机检测失败：未知错误',
       checkedAt,
     }
   }
@@ -4499,12 +4559,21 @@ async function performDesktopLogin(payload: {
   identifier: string
   password: string
   apiBase?: string
+  rememberCredentials?: boolean
 }): Promise<DesktopAuthState> {
   const identifier = String(payload.identifier || '').trim()
   const password = String(payload.password || '')
+  const rememberCredentials = Boolean(payload.rememberCredentials)
   if (!identifier || !password) {
     throw new Error('请输入账号和密码')
   }
+  requireDatabase().setSettings({
+    ...getSettings(),
+    [CONTROL_PLANE_AUTH_REMEMBER_KEY]: '0',
+    [CONTROL_PLANE_REMEMBER_CREDENTIALS_KEY]: rememberCredentials ? '1' : '0',
+    [CONTROL_PLANE_AUTH_IDENTIFIER_KEY]: rememberCredentials ? identifier : '',
+    [CONTROL_PLANE_AUTH_PASSWORD_KEY]: rememberCredentials ? password : '',
+  })
   let lastError: Error | null = null
   const attemptedBases: string[] = []
 
@@ -4977,7 +5046,7 @@ async function registerIpcHandlers(): Promise<void> {
   ipcMain.handle('auth.getState', async () => getDesktopAuthState())
   ipcMain.handle(
     'auth.login',
-    async (_event, payload: { identifier: string; password: string; apiBase?: string }) =>
+    async (_event, payload: { identifier: string; password: string; apiBase?: string; rememberCredentials?: boolean }) =>
       performDesktopLogin(payload),
   )
   ipcMain.handle(
@@ -5671,6 +5740,8 @@ async function bootstrap(): Promise<void> {
   traceStartup('theme_synced')
   db = new DatabaseService(app)
   traceStartup('database_initialized')
+  clearPersistedDesktopAuthOnStartup()
+  traceStartup('desktop_auth_cleared_on_startup')
   migrateStableHardwareFingerprintsOnStartup()
   traceStartup('hardware_profiles_migrated')
   resetCachedProfileStatesOnStartup()

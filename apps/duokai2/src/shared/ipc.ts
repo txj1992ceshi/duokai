@@ -40,6 +40,7 @@ export interface DesktopApi {
       identifier: string
       password: string
       apiBase?: string
+      rememberCredentials?: boolean
     }) => Promise<DesktopAuthState>
     updateProfile: (payload: {
       name: string

@@ -847,6 +847,9 @@ export interface DesktopAuthState {
   authenticated: boolean
   currentDeviceId: string
   user: AuthUser | null
+  rememberCredentials: boolean
+  rememberedIdentifier: string
+  rememberedPassword: string
 }
 
 export interface ProfileDirectoryInfo {

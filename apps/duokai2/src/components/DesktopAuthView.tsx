@@ -5,18 +5,22 @@ export function DesktopAuthView({
   errorMessage,
   authIdentifier,
   authPassword,
+  authRememberCredentials,
   authSubmitting,
   onAuthIdentifierChange,
   onAuthPasswordChange,
+  onAuthRememberCredentialsChange,
   onSubmit,
 }: {
   authReady: boolean
   errorMessage: string
   authIdentifier: string
   authPassword: string
+  authRememberCredentials: boolean
   authSubmitting: boolean
   onAuthIdentifierChange: (value: string) => void
   onAuthPasswordChange: (value: string) => void
+  onAuthRememberCredentialsChange: (value: boolean) => void
   onSubmit: FormEventHandler<HTMLFormElement>
 }) {
   if (!authReady) {
@@ -47,6 +51,14 @@ export function DesktopAuthView({
               onChange={(event) => onAuthPasswordChange(event.target.value)}
               placeholder="请输入密码"
             />
+          </label>
+          <label className="auth-remember">
+            <input
+              type="checkbox"
+              checked={authRememberCredentials}
+              onChange={(event) => onAuthRememberCredentialsChange(event.target.checked)}
+            />
+            <span>记住账号和密码</span>
           </label>
           <button type="submit" className="primary auth-submit" disabled={authSubmitting}>
             {authSubmitting ? '登录中...' : '登录'}

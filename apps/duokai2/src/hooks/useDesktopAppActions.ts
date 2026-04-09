@@ -17,6 +17,7 @@ export function useDesktopAppActions({
   settings,
   authIdentifier,
   authPassword,
+  authRememberCredentials,
   setAuthSubmitting,
   setAuthPassword,
   accountProfileForm,
@@ -39,6 +40,7 @@ export function useDesktopAppActions({
   settings: SettingsPayload
   authIdentifier: string
   authPassword: string
+  authRememberCredentials: boolean
   setAuthSubmitting: (value: boolean) => void
   setAuthPassword: (value: string) => void
   accountProfileForm: AccountProfileFormState
@@ -184,6 +186,7 @@ export function useDesktopAppActions({
       const nextAuthState = await api.auth.login({
         identifier: authIdentifier,
         password: authPassword,
+        rememberCredentials: authRememberCredentials,
       })
       setAuthState(nextAuthState)
       setAuthPassword('')
