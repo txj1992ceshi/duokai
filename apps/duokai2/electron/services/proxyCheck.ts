@@ -3,7 +3,12 @@ import net from 'node:net'
 import { chromium } from 'playwright'
 import type { ProfileRecord, ProxyRecord } from '../../src/shared/types'
 import { resolveLaunchProxy } from './proxyBridge'
-import { buildChromiumLaunchEnv, proxyToPlaywrightConfig, resolveChromiumExecutable } from './runtime'
+import {
+  applyProxyCompatibilityArgs,
+  buildChromiumLaunchEnv,
+  proxyToPlaywrightConfig,
+  resolveChromiumExecutable,
+} from './runtime'
 
 const LOOKUP_URL = 'https://ipwho.is/?output=json'
 
@@ -126,6 +131,7 @@ async function lookupWithProxy(proxy: ProxyRecord): Promise<ProxyCheckResult> {
       executablePath: resolveChromiumExecutable(),
       proxy: launchProxy.config ?? proxyToPlaywrightConfig(proxy) ?? undefined,
       env: buildChromiumLaunchEnv(),
+      args: applyProxyCompatibilityArgs([], proxy, { bridgeActive: launchProxy.bridgeActive }),
     })
     const page = await browser.newPage()
     await page.goto(LOOKUP_URL, { waitUntil: 'domcontentloaded', timeout: 20_000 })
@@ -157,6 +163,7 @@ async function lookupWithProxy(proxy: ProxyRecord): Promise<ProxyCheckResult> {
         executablePath: resolveChromiumExecutable(),
         proxy: launchProxy.config ?? proxyToPlaywrightConfig(proxy) ?? undefined,
         env: buildChromiumLaunchEnv(),
+        args: applyProxyCompatibilityArgs([], proxy, { bridgeActive: launchProxy.bridgeActive }),
       })
       const page = await browser.newPage()
       await page.goto('https://example.com', { waitUntil: 'domcontentloaded', timeout: 20_000 })

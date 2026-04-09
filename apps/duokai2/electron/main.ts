@@ -13,9 +13,11 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
+  Menu,
   nativeTheme,
   shell,
 } from 'electron'
+import type { MenuItemConstructorOptions, TitleBarOverlay } from 'electron'
 import { chromium } from 'playwright'
 import type { BrowserContext } from 'playwright'
 import { DatabaseService } from './services/database'
@@ -46,6 +48,7 @@ import {
   normalizeWorkspacePathsForProfile,
 } from './services/paths'
 import {
+  applyProxyCompatibilityArgs,
   buildChromiumLaunchEnv,
   buildProxyServer,
   proxyToPlaywrightConfig,
@@ -3235,12 +3238,132 @@ function syncTheme(): void {
     const themeMode = String(requireDatabase().getSettings().themeMode || 'system').trim()
     if (themeMode === 'dark' || themeMode === 'light' || themeMode === 'system') {
       nativeTheme.themeSource = themeMode
+      syncNativeChrome()
       return
     }
   } catch {
     // Database not ready during early bootstrap.
   }
   nativeTheme.themeSource = 'system'
+  syncNativeChrome()
+}
+
+function getUiLanguage(): 'zh-CN' | 'en-US' {
+  try {
+    const language = String(getSettings().uiLanguage || 'zh-CN').trim()
+    return language === 'en-US' ? 'en-US' : 'zh-CN'
+  } catch {
+    return 'zh-CN'
+  }
+}
+
+function shouldUseDarkNativeChrome(): boolean {
+  try {
+    const themeMode = String(getSettings().themeMode || 'system').trim()
+    return themeMode === 'dark' || (themeMode !== 'light' && nativeTheme.shouldUseDarkColors)
+  } catch {
+    return nativeTheme.shouldUseDarkColors
+  }
+}
+
+function getNativeChromeColors(): { backgroundColor: string; symbolColor: string } {
+  return shouldUseDarkNativeChrome()
+    ? { backgroundColor: '#071425', symbolColor: '#f5f9ff' }
+    : { backgroundColor: '#f7f9fc', symbolColor: '#0f172a' }
+}
+
+function getTitleBarOverlayOptions(): TitleBarOverlay | undefined {
+  if (process.platform !== 'win32') {
+    return undefined
+  }
+  const { backgroundColor, symbolColor } = getNativeChromeColors()
+  return {
+    color: backgroundColor,
+    symbolColor,
+    height: 40,
+  }
+}
+
+function buildLocalizedMenuTemplate(locale: 'zh-CN' | 'en-US'): MenuItemConstructorOptions[] {
+  const isZh = locale === 'zh-CN'
+  return [
+    {
+      label: isZh ? '文件' : 'File',
+      submenu: [
+        { role: 'quit', label: isZh ? '退出' : 'Quit' },
+      ],
+    },
+    {
+      label: isZh ? '编辑' : 'Edit',
+      submenu: [
+        { role: 'undo', label: isZh ? '撤销' : 'Undo' },
+        { role: 'redo', label: isZh ? '重做' : 'Redo' },
+        { type: 'separator' },
+        { role: 'cut', label: isZh ? '剪切' : 'Cut' },
+        { role: 'copy', label: isZh ? '复制' : 'Copy' },
+        { role: 'paste', label: isZh ? '粘贴' : 'Paste' },
+        { role: 'selectAll', label: isZh ? '全选' : 'Select All' },
+      ],
+    },
+    {
+      label: isZh ? '查看' : 'View',
+      submenu: [
+        { role: 'reload', label: isZh ? '重新加载' : 'Reload' },
+        { role: 'forceReload', label: isZh ? '强制重新加载' : 'Force Reload' },
+        { role: 'toggleDevTools', label: isZh ? '开发者工具' : 'Toggle Developer Tools' },
+        { type: 'separator' },
+        { role: 'resetZoom', label: isZh ? '实际大小' : 'Actual Size' },
+        { role: 'zoomIn', label: isZh ? '放大' : 'Zoom In' },
+        { role: 'zoomOut', label: isZh ? '缩小' : 'Zoom Out' },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: isZh ? '切换全屏' : 'Toggle Full Screen' },
+      ],
+    },
+    {
+      label: isZh ? '窗口' : 'Window',
+      submenu: [
+        { role: 'minimize', label: isZh ? '最小化' : 'Minimize' },
+        { role: 'close', label: isZh ? '关闭' : 'Close' },
+      ],
+    },
+    {
+      label: isZh ? '帮助' : 'Help',
+      submenu: [
+        {
+          label: isZh ? 'Duokai 官网' : 'Duokai Website',
+          click: () => {
+            void shell.openExternal('https://github.com/txj1992ceshi/duokai')
+          },
+        },
+      ],
+    },
+  ]
+}
+
+function syncApplicationMenu(): void {
+  const menu = Menu.buildFromTemplate(buildLocalizedMenuTemplate(getUiLanguage()))
+  Menu.setApplicationMenu(menu)
+  if (process.platform === 'win32' && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setMenu(menu)
+    mainWindow.setMenuBarVisibility(true)
+    mainWindow.autoHideMenuBar = false
+  }
+}
+
+function syncNativeChrome(): void {
+  syncApplicationMenu()
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
+  const { backgroundColor } = getNativeChromeColors()
+  mainWindow.setBackgroundColor(backgroundColor)
+  if (process.platform === 'win32') {
+    try {
+      mainWindow.setTitleBarOverlay(getTitleBarOverlayOptions())
+    } catch {
+      // Best-effort for platforms or Electron builds without overlay support.
+    }
+  }
 }
 
 async function createMainWindow(): Promise<void> {
@@ -3263,8 +3386,9 @@ async function createMainWindow(): Promise<void> {
     minWidth: 1180,
     minHeight: 760,
     show: false,
-    backgroundColor: '#071425',
-    titleBarStyle: 'hiddenInset',
+    backgroundColor: getNativeChromeColors().backgroundColor,
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
+    titleBarOverlay: getTitleBarOverlayOptions(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
       contextIsolation: true,
@@ -3276,8 +3400,10 @@ async function createMainWindow(): Promise<void> {
     rendererUrl: rendererUrl || '',
     rendererFile,
   })
+  syncNativeChrome()
 
   mainWindow.on('closed', () => {
+    clearDesktopAuth()
     traceStartup('main_window_closed')
     mainWindow = null
   })
@@ -3406,6 +3532,7 @@ async function performProxyConnectivityTest(
       executablePath: resolveChromiumExecutable(),
       proxy: launchProxy.config ?? proxyToPlaywrightConfig(proxy) ?? undefined,
       env: buildChromiumLaunchEnv(),
+      args: applyProxyCompatibilityArgs([], proxy, { bridgeActive: launchProxy.bridgeActive }),
     })
     const page = await browser.newPage()
     await page.goto('https://example.com', { waitUntil: 'domcontentloaded', timeout: 20000 })
@@ -4341,6 +4468,9 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     }
     launchOptions.proxy = launchProxy.config ?? proxyConfig ?? undefined
   }
+  launchOptions.args = applyProxyCompatibilityArgs(launchOptions.args ?? [], resolvedProxy, {
+    bridgeActive: launchProxy.bridgeActive,
+  })
   launchOptions.env = buildChromiumLaunchEnv()
 
     const diagnostics = buildNetworkDiagnosticsSummary(runtimeHost, check)

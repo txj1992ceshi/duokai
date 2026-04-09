@@ -128,6 +128,24 @@ function App() {
     })
   }, [localizeError, requireDesktopApi])
 
+  const handleThemeModeChange = useCallback((nextThemeMode: 'light' | 'dark' | 'system') => {
+    setSettings((current) => ({
+      ...current,
+      themeMode: nextThemeMode,
+    }))
+    queueMicrotask(() => {
+      void (async () => {
+        try {
+          const api = requireDesktopApi(['settings.set'])
+          const persisted = await api.settings.set({ themeMode: nextThemeMode })
+          setSettings(persisted)
+        } catch (error) {
+          setErrorMessage(localizeError(error))
+        }
+      })()
+    })
+  }, [localizeError, requireDesktopApi])
+
   useEffect(() => {
     const root = document.documentElement
     const media = window.matchMedia('(prefers-color-scheme: dark)')
@@ -682,6 +700,7 @@ function App() {
     saveSettings,
     setSettings,
     onChangeUiLanguage: handleUiLanguageChange,
+    onChangeThemeMode: handleThemeModeChange,
     cloudPhoneProviderHealth,
     importResult,
     setImportResult,

@@ -70,6 +70,25 @@ export function buildChromiumLaunchEnv(baseEnv: NodeJS.ProcessEnv = process.env)
   return env
 }
 
+export function applyProxyCompatibilityArgs(
+  args: string[] = [],
+  proxy: ProxyRecord | null,
+  options: { bridgeActive?: boolean } = {},
+): string[] {
+  const nextArgs = [...args]
+  if (
+    process.platform === 'win32' &&
+    proxy?.type === 'https' &&
+    options.bridgeActive &&
+    !nextArgs.includes('--ignore-certificate-errors')
+  ) {
+    // Windows local proxy bridge + HTTPS upstream proxies can surface certificate
+    // validation failures inside Chromium before page-level ignoreHTTPSErrors applies.
+    nextArgs.push('--ignore-certificate-errors')
+  }
+  return nextArgs
+}
+
 export function resolveChromiumExecutable(): string | undefined {
   const existingExecutable = resolveExistingChromiumExecutable()
   if (existingExecutable) {

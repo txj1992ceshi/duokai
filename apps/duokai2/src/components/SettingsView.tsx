@@ -19,6 +19,7 @@ export function SettingsView({
   settings,
   setSettings,
   onChangeUiLanguage,
+  onChangeThemeMode,
   defaultEnvironmentLanguage,
   cloudPhoneProviders,
   defaultCloudPhoneProvider,
@@ -46,6 +47,7 @@ export function SettingsView({
   settings: SettingsPayload
   setSettings: Dispatch<SetStateAction<SettingsPayload>>
   onChangeUiLanguage?: (nextLanguage: 'zh-CN' | 'en-US') => void | Promise<void>
+  onChangeThemeMode?: (nextThemeMode: 'light' | 'dark' | 'system') => void | Promise<void>
   defaultEnvironmentLanguage: string
   cloudPhoneProviders: CloudPhoneProviderSummary[]
   defaultCloudPhoneProvider: string
@@ -123,10 +125,12 @@ export function SettingsView({
                   <Button
                     variant={(settings.themeMode ?? 'system') === 'light' ? 'primary' : 'ghost'}
                     onClick={() =>
-                      setSettings((current) => ({
-                        ...current,
-                        themeMode: 'light',
-                      }))
+                      onChangeThemeMode
+                        ? void onChangeThemeMode('light')
+                        : setSettings((current) => ({
+                            ...current,
+                            themeMode: 'light',
+                          }))
                     }
                   >
                     {t.settings.themeLight}
@@ -134,10 +138,12 @@ export function SettingsView({
                   <Button
                     variant={(settings.themeMode ?? 'system') === 'dark' ? 'primary' : 'ghost'}
                     onClick={() =>
-                      setSettings((current) => ({
-                        ...current,
-                        themeMode: 'dark',
-                      }))
+                      onChangeThemeMode
+                        ? void onChangeThemeMode('dark')
+                        : setSettings((current) => ({
+                            ...current,
+                            themeMode: 'dark',
+                          }))
                     }
                   >
                     {t.settings.themeDark}
@@ -145,10 +151,12 @@ export function SettingsView({
                   <Button
                     variant={(settings.themeMode ?? 'system') === 'system' ? 'primary' : 'ghost'}
                     onClick={() =>
-                      setSettings((current) => ({
-                        ...current,
-                        themeMode: 'system',
-                      }))
+                      onChangeThemeMode
+                        ? void onChangeThemeMode('system')
+                        : setSettings((current) => ({
+                            ...current,
+                            themeMode: 'system',
+                          }))
                     }
                   >
                     {t.settings.themeSystem}
