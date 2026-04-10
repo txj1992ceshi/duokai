@@ -63,3 +63,35 @@ test('createProfilePayload builds workspace resolvedEnvironment as runtime sourc
   assert.equal(payload.workspace?.resolvedEnvironment.timezone, 'America/New_York')
   assert.equal(payload.workspace?.resolvedEnvironment.resolution, '1600x900')
 })
+
+test('normalizeWorkspaceDescriptor backfills empty runtime fields from fingerprint defaults', () => {
+  const fingerprint = {
+    ...createDefaultFingerprint(),
+    language: 'en-US',
+    timezone: 'America/New_York',
+    resolution: '1600x900',
+    advanced: {
+      ...createDefaultFingerprint().advanced,
+      browserVersion: '137',
+    },
+  }
+
+  const workspace = normalizeWorkspaceDescriptor(
+    {
+      resolvedEnvironment: {
+        browserLanguage: '',
+        timezone: '',
+        resolution: '',
+        downloadsDir: '',
+        launchArgs: [],
+      },
+    } as unknown as Partial<ReturnType<typeof normalizeWorkspaceDescriptor>>,
+    'profile-legacy',
+    fingerprint,
+  )
+
+  assert.equal(workspace.resolvedEnvironment.browserLanguage, 'en-US')
+  assert.equal(workspace.resolvedEnvironment.systemLanguage, 'en-US')
+  assert.equal(workspace.resolvedEnvironment.timezone, 'America/New_York')
+  assert.equal(workspace.resolvedEnvironment.resolution, '1600x900')
+})

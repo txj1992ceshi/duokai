@@ -180,6 +180,42 @@ function createResolvedWorkspaceEnvironment(
   }
 }
 
+function coalesceWorkspaceEnvironment(
+  existing: Partial<WorkspaceEnvironment> | null | undefined,
+  defaults: WorkspaceEnvironment,
+): WorkspaceEnvironment {
+  return {
+    browserFamily:
+      typeof existing?.browserFamily === 'string' && existing.browserFamily.trim().length > 0 ?
+        existing.browserFamily
+      : defaults.browserFamily,
+    browserMajorVersionRange:
+      String(existing?.browserMajorVersionRange || defaults.browserMajorVersionRange).trim() ||
+      defaults.browserMajorVersionRange,
+    systemLanguage: String(existing?.systemLanguage || defaults.systemLanguage).trim() || defaults.systemLanguage,
+    browserLanguage: String(existing?.browserLanguage || defaults.browserLanguage).trim() || defaults.browserLanguage,
+    timezone: String(existing?.timezone || defaults.timezone).trim() || defaults.timezone,
+    resolution: String(existing?.resolution || defaults.resolution).trim() || defaults.resolution,
+    fontStrategy:
+      typeof existing?.fontStrategy === 'string' && existing.fontStrategy.trim().length > 0 ?
+        existing.fontStrategy
+      : defaults.fontStrategy,
+    webrtcPolicy:
+      typeof existing?.webrtcPolicy === 'string' && existing.webrtcPolicy.trim().length > 0 ?
+        existing.webrtcPolicy
+      : defaults.webrtcPolicy,
+    ipv6Policy:
+      typeof existing?.ipv6Policy === 'string' && existing.ipv6Policy.trim().length > 0 ?
+        existing.ipv6Policy
+      : defaults.ipv6Policy,
+    downloadsDir: String(existing?.downloadsDir || defaults.downloadsDir).trim() || defaults.downloadsDir,
+    launchArgs:
+      Array.isArray(existing?.launchArgs) ?
+        existing.launchArgs.map((item) => String(item).trim()).filter(Boolean)
+      : defaults.launchArgs,
+  }
+}
+
 function normalizeDeclaredOverrides(
   input: WorkspaceDescriptor['declaredOverrides'] | null | undefined,
 ): WorkspaceDescriptor['declaredOverrides'] {
@@ -207,10 +243,10 @@ export function createDefaultWorkspaceDescriptor(
     ...createDefaultWorkspacePaths(profileId),
     ...(existing?.paths ?? {}),
   }
-  const resolvedEnvironment = {
-    ...createResolvedWorkspaceEnvironment(fingerprintConfig, paths),
-    ...(existing?.resolvedEnvironment ?? {}),
-  }
+  const resolvedEnvironment = coalesceWorkspaceEnvironment(
+    existing?.resolvedEnvironment,
+    createResolvedWorkspaceEnvironment(fingerprintConfig, paths),
+  )
   const legacyTemplateId =
     typeof (existing as { templateId?: unknown } | null)?.templateId === 'string' ?
       String((existing as { templateId?: string }).templateId || '').trim()
