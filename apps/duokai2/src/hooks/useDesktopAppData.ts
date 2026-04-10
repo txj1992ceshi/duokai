@@ -77,6 +77,13 @@ export function useDesktopAppData({
   const [authReady, setAuthReady] = useState(false)
   const pollInFlightRef = useRef(false)
 
+  const applyRuntimeInfo = useCallback((info: DesktopRuntimeInfo) => {
+    setRuntimeInfo({
+      ...info,
+      rendererVersion,
+    })
+  }, [rendererVersion])
+
   const refreshAll = useCallback(async (options: RefreshAllOptions = {}) => {
     const includeCloudPhoneDiagnostics = options.includeCloudPhoneDiagnostics ?? false
     const api = requireDesktopApi([
@@ -140,10 +147,7 @@ export function useDesktopAppData({
     setDirectoryInfo(dirInfo)
     setAgentState(nextAgentState)
     setUpdateState(nextUpdateState)
-    setRuntimeInfo({
-      ...info,
-      rendererVersion,
-    })
+    applyRuntimeInfo(info)
 
     if (!includeCloudPhoneDiagnostics) {
       return
@@ -159,7 +163,7 @@ export function useDesktopAppData({
     ])
     setCloudPhoneProviderHealth(nextCloudPhoneProviderHealth)
     setLocalEmulatorDevices(nextLocalEmulatorDevices)
-  }, [rendererVersion, requireDesktopApi, setSettings])
+  }, [applyRuntimeInfo, requireDesktopApi, setSettings])
 
   useEffect(() => {
     void (async () => {
@@ -271,6 +275,24 @@ export function useDesktopAppData({
       })()
     })
   }, [localizeError, refreshAll, requireDesktopApi, setErrorMessage, setSyncWarningMessage])
+
+  useEffect(() => {
+    const api = window.desktop as DesktopApi | undefined
+    if (!api?.meta?.onWindowFrameChanged) {
+      return
+    }
+    return api.meta.onWindowFrameChanged((windowFrame) => {
+      setRuntimeInfo((current) => {
+        if (!current) {
+          return current
+        }
+        return {
+          ...current,
+          windowFrame,
+        }
+      })
+    })
+  }, [])
 
   const clearAuthenticatedWorkspace = useCallback(() => {
     setProfiles([])

@@ -6,6 +6,7 @@ import type {
   CreateProfileInput,
   CreateProxyInput,
   CreateTemplateInput,
+  DesktopWindowFrameMetrics,
   ProfileBulkActionPayload,
   SettingsPayload,
   UpdateCloudPhoneInput,
@@ -36,6 +37,15 @@ const api: DesktopApi = {
       ipcRenderer.on('meta.configChanged', wrapped)
       return () => {
         ipcRenderer.removeListener('meta.configChanged', wrapped)
+      }
+    },
+    onWindowFrameChanged: (listener) => {
+      const wrapped = (_event: Electron.IpcRendererEvent, payload: unknown) => {
+        listener(payload as DesktopWindowFrameMetrics)
+      }
+      ipcRenderer.on('meta.windowFrameChanged', wrapped)
+      return () => {
+        ipcRenderer.removeListener('meta.windowFrameChanged', wrapped)
       }
     },
   },

@@ -104,6 +104,7 @@ import type {
   CreateTemplateInput,
   DesktopRuntimeInfo,
   DesktopAuthState,
+  DesktopWindowFrameMetrics,
   ExportBundle,
   FingerprintConfig,
   LogLevel,
@@ -3394,6 +3395,50 @@ function getTitleBarOverlayOptions(): TitleBarOverlay | undefined {
   }
 }
 
+function getWindowFrameMetrics(win: BrowserWindow | null = mainWindow): DesktopWindowFrameMetrics {
+  const overlay = getTitleBarOverlayOptions()
+  if (process.platform !== 'win32') {
+    return {
+      platform: process.platform,
+      titleBarOverlayHeight: overlay?.height ?? 0,
+      windowControlsRightInset: 0,
+      topDragRegionHeight: overlay?.height ?? 0,
+    }
+  }
+
+  const isMaximized = Boolean(win && !win.isDestroyed() && win.isMaximized())
+  const titleBarOverlayHeight = overlay?.height ?? 40
+  return {
+    platform: process.platform,
+    titleBarOverlayHeight,
+    windowControlsRightInset: isMaximized ? 168 : 156,
+    topDragRegionHeight: titleBarOverlayHeight,
+  }
+}
+
+function getDesktopRuntimeInfo(): DesktopRuntimeInfo {
+  return {
+    mode: isDev ? 'development' : 'production',
+    appVersion: app.getVersion(),
+    mainVersion: app.getVersion(),
+    preloadVersion: PRELOAD_VERSION,
+    rendererVersion: app.getVersion(),
+    buildMarker: BUILD_MARKER,
+    capabilities: CAPABILITIES,
+    windowFrame: getWindowFrameMetrics(),
+  }
+}
+
+function broadcastWindowFrameMetrics(): void {
+  const payload = getWindowFrameMetrics()
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.isDestroyed()) {
+      continue
+    }
+    window.webContents.send('meta.windowFrameChanged', payload)
+  }
+}
+
 function buildLocalizedMenuTemplate(locale: 'zh-CN' | 'en-US'): MenuItemConstructorOptions[] {
   const isZh = locale === 'zh-CN'
   return [
@@ -3477,6 +3522,7 @@ function syncNativeChrome(): void {
       // Best-effort for platforms or Electron builds without overlay support.
     }
   }
+  broadcastWindowFrameMetrics()
 }
 
 async function createMainWindow(): Promise<void> {
@@ -3521,12 +3567,22 @@ async function createMainWindow(): Promise<void> {
     mainWindow = null
   })
 
+  const syncWindowFrameMetrics = () => {
+    broadcastWindowFrameMetrics()
+  }
+  mainWindow.on('resize', syncWindowFrameMetrics)
+  mainWindow.on('maximize', syncWindowFrameMetrics)
+  mainWindow.on('unmaximize', syncWindowFrameMetrics)
+  mainWindow.on('enter-full-screen', syncWindowFrameMetrics)
+  mainWindow.on('leave-full-screen', syncWindowFrameMetrics)
+
   mainWindow.once('ready-to-show', () => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       return
     }
     mainWindow.show()
     mainWindow.focus()
+    broadcastWindowFrameMetrics()
     traceStartup('main_window_ready_to_show')
   })
 
@@ -5429,15 +5485,7 @@ async function registerIpcHandlers(): Promise<void> {
     count: await syncProfilesFromControlPlane(options),
   }))
 
-  ipcMain.handle('meta.getInfo', async () => ({
-    mode: isDev ? 'development' : 'production',
-    appVersion: app.getVersion(),
-    mainVersion: app.getVersion(),
-    preloadVersion: PRELOAD_VERSION,
-    rendererVersion: app.getVersion(),
-    buildMarker: BUILD_MARKER,
-    capabilities: CAPABILITIES,
-  }))
+  ipcMain.handle('meta.getInfo', async () => getDesktopRuntimeInfo())
   ipcMain.handle('meta.getAgentState', async () => getAgentStateSnapshot())
   ipcMain.handle('updater.getState', async () => updateState)
   ipcMain.handle('updater.check', async () => checkForDesktopUpdates())

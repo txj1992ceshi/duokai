@@ -12,6 +12,7 @@ import type {
   DashboardSummary,
   DesktopAuthState,
   DesktopRuntimeInfo,
+  DesktopWindowFrameMetrics,
   DesktopUpdateState,
   DetectedLocalEmulator,
   ExportBundle,
@@ -75,6 +76,7 @@ export interface DesktopApi {
       lastTaskFinishedAt: string | null
     }>
     onConfigChanged: (listener: () => void) => () => void
+    onWindowFrameChanged: (listener: (metrics: DesktopWindowFrameMetrics) => void) => () => void
   }
   updater: {
     getState: () => Promise<DesktopUpdateState>

@@ -918,6 +918,14 @@ export interface DesktopRuntimeInfo {
   rendererVersion: string
   buildMarker: string
   capabilities: string[]
+  windowFrame?: DesktopWindowFrameMetrics
+}
+
+export interface DesktopWindowFrameMetrics {
+  platform: 'aix' | 'android' | 'darwin' | 'freebsd' | 'haiku' | 'linux' | 'openbsd' | 'sunos' | 'win32' | 'cygwin' | 'netbsd'
+  titleBarOverlayHeight?: number
+  windowControlsRightInset?: number
+  topDragRegionHeight?: number
 }
 
 export type DesktopUpdateStatus =

@@ -1,6 +1,7 @@
 import type { CSSProperties, ReactNode } from 'react'
 import { Badge, Breadcrumb, Button, Card } from '@duokai/ui'
 import { LayoutDashboard, Layers3, Logs, Settings, Shield, UserCircle2 } from 'lucide-react'
+import type { DesktopRuntimeInfo } from '../shared/types'
 
 export type MainNavKey = 'environmentCenter' | 'proxyRepository' | 'groupManagement' | 'settings'
 
@@ -69,6 +70,7 @@ export function MainLayout({
   onLogout,
   actions,
   rendererOperatingSystem,
+  runtimeInfo,
   children,
 }: {
   title: string
@@ -85,14 +87,34 @@ export function MainLayout({
   onLogout: () => void
   actions?: ReactNode
   rendererOperatingSystem?: string
+  runtimeInfo?: DesktopRuntimeInfo | null
   children: ReactNode
 }) {
   const isMacOS = rendererOperatingSystem === 'macOS'
+  const windowFrame = runtimeInfo?.windowFrame
+  const isWindows = windowFrame?.platform === 'win32'
   const dragRegionStyle = { WebkitAppRegion: 'drag' } as CSSProperties
   const noDragRegionStyle = { WebkitAppRegion: 'no-drag' } as CSSProperties
+  const titleBarOverlayHeight = windowFrame?.titleBarOverlayHeight ?? 0
+  const windowControlsRightInset = isWindows ? Math.max(windowFrame?.windowControlsRightInset ?? 0, 0) : 0
+  const shellStyle = {
+    '--desktop-titlebar-height': `${titleBarOverlayHeight}px`,
+    '--desktop-window-controls-right-inset': `${windowControlsRightInset}px`,
+  } as CSSProperties
+  const headerStyle = {
+    ...dragRegionStyle,
+    paddingRight: `calc(2rem + var(--desktop-window-controls-right-inset))`,
+    minHeight: `${Math.max(64, titleBarOverlayHeight + 24)}px`,
+  } as CSSProperties
+  const mainStyle = {
+    paddingTop: `max(2rem, calc(var(--desktop-titlebar-height) * 0.5))`,
+  } as CSSProperties
 
   return (
-    <div className="duokai-app-shell flex h-screen overflow-hidden bg-[var(--duokai-bg)] text-slate-900">
+    <div
+      className="duokai-app-shell flex h-screen overflow-hidden bg-[var(--duokai-bg)] text-slate-900"
+      style={shellStyle}
+    >
       <aside className="flex h-screen w-60 shrink-0 flex-col border-r border-slate-800 bg-[var(--duokai-sidebar)] px-4 py-5 text-white">
         {isMacOS ? <div className="h-8 shrink-0" style={dragRegionStyle} /> : null}
         <div className="mb-6 flex items-center gap-3 px-2" style={noDragRegionStyle}>
@@ -151,7 +173,7 @@ export function MainLayout({
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <header
           className="sticky top-0 z-10 flex h-16 items-center gap-4 border-b border-slate-200 bg-[var(--duokai-surface-glass-strong)] px-8 backdrop-blur-xl"
-          style={dragRegionStyle}
+          style={headerStyle}
         >
           <div className="min-w-0 space-y-1">
             <Breadcrumb items={breadcrumbItems} />
@@ -166,7 +188,10 @@ export function MainLayout({
           </div>
         </header>
 
-        <main className="duokai-app-scroll min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-8 py-8">
+        <main
+          className="duokai-app-scroll min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-8 py-8"
+          style={mainStyle}
+        >
           <div className="mb-6">
             <h1 className="m-0 text-3xl font-semibold tracking-tight text-slate-950">{title}</h1>
             <p className="mt-2 mb-0 max-w-3xl text-sm text-slate-500">{subtitle}</p>

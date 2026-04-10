@@ -737,9 +737,16 @@ function App() {
     )
   }
 
+  const toasterOffset = {
+    top: Math.max((runtimeInfo?.windowFrame?.titleBarOverlayHeight ?? 0) + 12, 16),
+    right: Math.max((runtimeInfo?.windowFrame?.windowControlsRightInset ?? 0) + 16, 16),
+    left: 16,
+    bottom: 16,
+  }
+
   return (
     <>
-      <Toaster richColors position="top-right" />
+      <Toaster richColors position="top-right" offset={toasterOffset} />
       <MainLayout
         title={pageHeading.title}
         subtitle={pageHeading.subtitle}
@@ -754,6 +761,7 @@ function App() {
         logoutLabel={shellCopy.logout}
         onLogout={() => void handleDesktopLogout()}
         rendererOperatingSystem={rendererOperatingSystem}
+        runtimeInfo={runtimeInfo}
       >
         <DesktopWorkspaceViews
           view={view}
