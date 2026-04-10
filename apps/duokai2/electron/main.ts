@@ -98,6 +98,7 @@ import type {
   AuthUser,
   CloudPhoneBulkActionPayload,
   CloudPhoneRecord,
+  ConfigSyncResult,
   CreateCloudPhoneInput,
   CreateProfileInput,
   CreateProxyInput,
@@ -167,13 +168,15 @@ const STARTUP_TRACE_FILE = path.join(os.tmpdir(), 'duokai2-startup.log')
 let mainWindow: BrowserWindow | null = null
 let db: DatabaseService | null = null
 let agentService: AgentService | null = null
-type ProfileSyncOptions = {
+type ConfigSyncOptions = {
   force?: boolean
+  useLocalCacheOnError?: boolean
 }
 
-let profileSyncInFlight: Promise<number> | null = null
-let lastProfileSyncAt = 0
-let lastProfileSyncCount = 0
+let configSyncInFlight: Promise<ConfigSyncResult> | null = null
+let lastConfigSyncAt = 0
+let lastConfigSyncResult: ConfigSyncResult | null = null
+let lastUserConfigSyncVersion = 0
 let sessionAuthApiBase = ''
 let sessionAuthToken = ''
 let sessionAuthUser: AuthUser | null = null
@@ -328,31 +331,156 @@ function ensureWritable(action: string): void {
   }
 }
 
-async function syncConfigFromControlPlane(): Promise<void> {
-  if (!agentService || !agentService.getState().enabled) {
-    return
+function setLastConfigSyncResult(result: ConfigSyncResult | null): ConfigSyncResult | null {
+  lastConfigSyncResult = result
+  return result
+}
+
+function buildConfigSyncSuccessResult(
+  source: ConfigSyncResult['source'],
+  snapshot: RemoteConfigSnapshot,
+): ConfigSyncResult {
+  return {
+    count: Array.isArray(snapshot.profiles) ? snapshot.profiles.length : 0,
+    source,
+    usedLocalCache: false,
+    message: '已从云端更新环境数据',
+    warningMessage: '',
   }
-  const snapshot = await agentService.pullConfigSnapshot()
-  if (!snapshot) {
-    return
+}
+
+function buildConfigSyncFallbackResult(message: string): ConfigSyncResult {
+  return {
+    count: requireDatabase().listProfiles().length,
+    source: 'account',
+    usedLocalCache: true,
+    message: '',
+    warningMessage: `云端环境数据拉取失败，当前显示本地缓存：${message}`,
   }
-  requireDatabase().applyRemoteConfigSnapshot(snapshot as RemoteConfigSnapshot)
+}
+
+function applyRemoteConfigSnapshot(snapshot: RemoteConfigSnapshot): void {
+  const localProfiles = requireDatabase().listProfiles()
+  const remoteIds = new Set((snapshot.profiles || []).map((profile) => profile.id))
+  for (const profile of localProfiles) {
+    if (remoteIds.has(profile.id)) {
+      continue
+    }
+    audit('config_pull_removed_local_profile', {
+      profileId: profile.id,
+      name: profile.name,
+    })
+  }
+  requireDatabase().applyRemoteConfigSnapshot(snapshot)
   emitConfigChanged()
 }
 
+async function pullConfigSnapshotFromAccount(): Promise<RemoteConfigSnapshot> {
+  const payload = await requestControlPlane('/api/config/snapshot')
+  const snapshot = (payload.snapshot || null) as RemoteConfigSnapshot | null
+  if (!snapshot) {
+    return {
+      syncVersion: 0,
+      profiles: [],
+      proxies: [],
+      templates: [],
+      cloudPhones: [],
+      settings: {},
+    }
+  }
+  return {
+    syncVersion: Number(snapshot.syncVersion || 0),
+    profiles: Array.isArray(snapshot.profiles) ? snapshot.profiles : [],
+    proxies: Array.isArray(snapshot.proxies) ? snapshot.proxies : [],
+    templates: Array.isArray(snapshot.templates) ? snapshot.templates : [],
+    cloudPhones: Array.isArray(snapshot.cloudPhones) ? snapshot.cloudPhones : [],
+    settings: snapshot.settings && typeof snapshot.settings === 'object' ? snapshot.settings : {},
+  }
+}
+
+async function syncConfigFromControlPlane(options: ConfigSyncOptions = {}): Promise<ConfigSyncResult> {
+  const useLocalCacheOnError = options.useLocalCacheOnError ?? false
+
+  try {
+    let snapshot: RemoteConfigSnapshot | null = null
+    let source: ConfigSyncResult['source'] = 'account'
+
+    if (agentService && agentService.getState().enabled) {
+      snapshot = (await agentService.pullConfigSnapshot()) as RemoteConfigSnapshot | null
+      source = 'agent'
+    } else if (getDesktopAuthState().authenticated) {
+      snapshot = await pullConfigSnapshotFromAccount()
+      lastUserConfigSyncVersion = Number(snapshot.syncVersion || 0)
+      source = 'account'
+    }
+
+    if (!snapshot) {
+      const result = setLastConfigSyncResult({
+        count: requireDatabase().listProfiles().length,
+        source,
+        usedLocalCache: false,
+        message: '',
+        warningMessage: '',
+      })
+      return result!
+    }
+
+    applyRemoteConfigSnapshot(snapshot)
+    const result = setLastConfigSyncResult(buildConfigSyncSuccessResult(source, snapshot))
+    audit('config_pull_succeeded', {
+      source,
+      profileCount: result?.count || 0,
+      syncVersion: Number(snapshot.syncVersion || 0),
+    })
+    return result!
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    audit('config_pull_failed', {
+      err: message,
+      usedLocalCache: useLocalCacheOnError,
+    })
+    if (!useLocalCacheOnError) {
+      throw error
+    }
+    logEvent('warn', 'system', `Config pull failed, using local cache: ${message}`, null)
+    return setLastConfigSyncResult(buildConfigSyncFallbackResult(message))!
+  }
+}
+
 async function syncConfigToControlPlaneOrThrow(mode: 'replace' | 'merge' = 'replace'): Promise<void> {
-  if (!agentService || !agentService.getState().enabled) {
+  if (!agentService?.getState().enabled && !getDesktopAuthState().authenticated) {
     return
   }
-  const snapshot = requireDatabase().exportRemoteConfigSnapshot(agentService.getSyncVersion())
+
+  const syncVersion = agentService?.getState().enabled
+    ? agentService.getSyncVersion()
+    : lastUserConfigSyncVersion
+  const snapshot = requireDatabase().exportRemoteConfigSnapshot(syncVersion)
+
   try {
-    await agentService.pushConfigSnapshot({
-      profiles: snapshot.profiles,
-      proxies: snapshot.proxies,
-      templates: snapshot.templates,
-      cloudPhones: snapshot.cloudPhones,
-      settings: snapshot.settings,
-    }, { mode })
+    if (agentService?.getState().enabled) {
+      await agentService.pushConfigSnapshot({
+        profiles: snapshot.profiles,
+        proxies: snapshot.proxies,
+        templates: snapshot.templates,
+        cloudPhones: snapshot.cloudPhones,
+        settings: snapshot.settings,
+      }, { mode })
+      return
+    }
+
+    const payload = await requestControlPlane('/api/config/push', {
+      method: 'POST',
+      body: JSON.stringify({
+        syncVersion,
+        profiles: snapshot.profiles,
+        proxies: snapshot.proxies,
+        templates: snapshot.templates,
+        cloudPhones: snapshot.cloudPhones,
+        settings: snapshot.settings,
+      }),
+    })
+    lastUserConfigSyncVersion = Number(payload.syncVersion || lastUserConfigSyncVersion)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (/sync version mismatch/i.test(message)) {
@@ -1960,6 +2088,7 @@ function getDesktopAuthState(): DesktopAuthState {
     rememberCredentials: remembered.rememberCredentials,
     rememberedIdentifier: remembered.identifier,
     rememberedPassword: remembered.password,
+    lastConfigSyncResult,
   }
 }
 
@@ -1981,6 +2110,8 @@ function clearDesktopAuth(): DesktopAuthState {
   sessionAuthApiBase = ''
   sessionAuthToken = ''
   sessionAuthUser = null
+  lastUserConfigSyncVersion = 0
+  setLastConfigSyncResult(null)
   requireDatabase().setSettings({
     ...getSettings(),
     [CONTROL_PLANE_AUTH_TOKEN_KEY]: '',
@@ -2289,32 +2420,6 @@ function getSettings(): SettingsPayload {
   return requireDatabase().getSettings()
 }
 
-type ControlPlaneProfile = {
-  id: string
-  name: string
-  createdAt?: string
-  updatedAt?: string
-  status?: string
-  tags?: string[]
-  proxyType?: string
-  proxyHost?: string
-  proxyPort?: string
-  proxyUsername?: string
-  proxyPassword?: string
-  ua?: string
-  seed?: string
-  isMobile?: boolean
-  groupId?: string
-  startupPlatform?: string
-  startupUrl?: string
-  lastResolvedProxyTransport?: string
-  configFingerprintHash?: string
-  proxyFingerprintHash?: string
-  lastQuickIsolationCheck?: TrustedIsolationCheck | null
-  trustedLaunchSnapshot?: TrustedLaunchSnapshot | null
-  workspace?: ProfileRecord['workspace'] | null
-}
-
 function normalizeProfileName(name: string | undefined): string {
   return String(name || '').trim()
 }
@@ -2411,114 +2516,7 @@ function assertProfileNameUniqueOrThrow(name: string | undefined, ignoreProfileI
   }
 }
 
-function resolveRemoteProfileTimestamp(profile: Pick<ControlPlaneProfile, 'createdAt' | 'updatedAt'>): number {
-  const value = Date.parse(profile.updatedAt || profile.createdAt || '')
-  return Number.isFinite(value) ? value : 0
-}
-
-async function dedupeRemoteProfilesByName(remoteProfiles: ControlPlaneProfile[]): Promise<ControlPlaneProfile[]> {
-  const grouped = new Map<string, ControlPlaneProfile[]>()
-  for (const profile of remoteProfiles) {
-    const key = normalizeProfileName(profile.name) || `__EMPTY__:${profile.id}`
-    const list = grouped.get(key)
-    if (list) {
-      list.push(profile)
-    } else {
-      grouped.set(key, [profile])
-    }
-  }
-
-  const deduped: ControlPlaneProfile[] = []
-  for (const [key, list] of grouped.entries()) {
-    list.sort((a, b) => {
-      const timestampDelta = resolveRemoteProfileTimestamp(b) - resolveRemoteProfileTimestamp(a)
-      if (timestampDelta !== 0) {
-        return timestampDelta
-      }
-      return String(b.id || '').localeCompare(String(a.id || ''))
-    })
-    const keep = list[0]
-    deduped.push(keep)
-    if (list.length <= 1) {
-      continue
-    }
-    for (let index = 1; index < list.length; index += 1) {
-      const stale = list[index]
-      try {
-        await requestControlPlane(`/api/profiles/${encodeURIComponent(stale.id)}`, {
-          method: 'DELETE',
-        })
-        audit('profiles_remote_duplicate_removed', {
-          keepId: keep.id,
-          removedId: stale.id,
-          name: key,
-        })
-      } catch (error) {
-        audit('profiles_remote_duplicate_remove_failed', {
-          keepId: keep.id,
-          removedId: stale.id,
-          name: key,
-          err: error instanceof Error ? error.message : String(error),
-        })
-      }
-    }
-  }
-
-  return deduped
-}
-
 type ProxyEntryTransport = 'https-entry' | 'http-entry' | 'socks5-entry' | 'direct'
-
-function findMatchingSavedProxyForRemoteProfile(
-  remoteProfile: Pick<
-    ControlPlaneProfile,
-    'proxyType' | 'proxyHost' | 'proxyPort' | 'proxyUsername' | 'proxyPassword'
-  >,
-  existing?: ProfileRecord | null,
-): ProxyRecord | null {
-  if (!remoteProfile.proxyHost || !remoteProfile.proxyPort) {
-    return null
-  }
-
-  const normalizedPort = Number(remoteProfile.proxyPort || 0)
-  const savedProxies = requireDatabase()
-    .listProxies()
-    .filter(
-      (proxy) =>
-        proxy.host === remoteProfile.proxyHost &&
-        proxy.port === normalizedPort &&
-        proxy.username === (remoteProfile.proxyUsername || '') &&
-        proxy.password === (remoteProfile.proxyPassword || ''),
-    )
-
-  if (savedProxies.length === 0) {
-    return null
-  }
-
-  if (existing?.proxyId) {
-    const preferred = savedProxies.find((proxy) => proxy.id === existing.proxyId)
-    if (preferred) {
-      return preferred
-    }
-  }
-
-  const exactType = savedProxies.find((proxy) => proxy.type === remoteProfile.proxyType)
-  if (exactType) {
-    return exactType
-  }
-
-  return savedProxies.length === 1 ? savedProxies[0] : null
-}
-
-function mapControlPlaneStatus(status: string | undefined): ProfileRecord['status'] {
-  if (status === 'Running') {
-    return 'running'
-  }
-  if (status === 'Error') {
-    return 'error'
-  }
-  return 'stopped'
-}
 
 function getBuiltInStartupUrl(platform: string): string {
   const normalized = platform.trim().toLowerCase()
@@ -2700,105 +2698,6 @@ function compareSnapshotWithCheck(
   return { ok: true, message: '快速隔离校验通过' }
 }
 
-function buildFingerprintFromRemoteProfile(
-  remoteProfile: ControlPlaneProfile,
-  existing?: ProfileRecord | null,
-): FingerprintConfig {
-  const fingerprint = existing
-    ? createDefaultFingerprint()
-    : createDefaultFingerprint()
-  const next = existing?.fingerprintConfig
-    ? {
-        ...existing.fingerprintConfig,
-        basicSettings: { ...existing.fingerprintConfig.basicSettings },
-        proxySettings: { ...existing.fingerprintConfig.proxySettings },
-        commonSettings: { ...existing.fingerprintConfig.commonSettings },
-        advanced: { ...existing.fingerprintConfig.advanced },
-        runtimeMetadata: { ...existing.fingerprintConfig.runtimeMetadata },
-      }
-    : fingerprint
-
-  next.userAgent = remoteProfile.ua || next.userAgent
-  next.basicSettings.platform = remoteProfile.startupPlatform || next.basicSettings.platform
-  next.basicSettings.customPlatformUrl = remoteProfile.startupUrl || next.basicSettings.customPlatformUrl
-  const matchedSavedProxy = findMatchingSavedProxyForRemoteProfile(remoteProfile, existing)
-  if (remoteProfile.proxyType === 'direct' || !remoteProfile.proxyHost) {
-    next.proxySettings.proxyMode = 'direct'
-    next.proxySettings.host = ''
-    next.proxySettings.port = 0
-    next.proxySettings.username = ''
-    next.proxySettings.password = ''
-  } else if (matchedSavedProxy) {
-    next.proxySettings.proxyMode = 'manager'
-    next.proxySettings.proxyType = matchedSavedProxy.type
-    next.proxySettings.host = matchedSavedProxy.host
-    next.proxySettings.port = matchedSavedProxy.port
-    next.proxySettings.username = matchedSavedProxy.username
-    next.proxySettings.password = matchedSavedProxy.password
-  } else {
-    next.proxySettings.proxyMode = 'custom'
-    next.proxySettings.proxyType =
-      remoteProfile.proxyType === 'http' ||
-      remoteProfile.proxyType === 'https' ||
-      remoteProfile.proxyType === 'socks5'
-        ? remoteProfile.proxyType
-        : next.proxySettings.proxyType
-    next.proxySettings.host = remoteProfile.proxyHost || ''
-    next.proxySettings.port = Number(remoteProfile.proxyPort || 0)
-    next.proxySettings.username = remoteProfile.proxyUsername || ''
-    next.proxySettings.password = remoteProfile.proxyPassword || ''
-  }
-  next.advanced.deviceMode = remoteProfile.isMobile ? 'android' : 'desktop'
-  next.runtimeMetadata.lastEffectiveProxyTransport =
-    remoteProfile.lastResolvedProxyTransport ||
-    remoteProfile.trustedLaunchSnapshot?.effectiveProxyTransport ||
-    next.runtimeMetadata.lastEffectiveProxyTransport
-  next.runtimeMetadata.trustedSnapshotStatus =
-    remoteProfile.trustedLaunchSnapshot?.status || next.runtimeMetadata.trustedSnapshotStatus
-  next.runtimeMetadata.configFingerprintHash =
-    remoteProfile.configFingerprintHash ||
-    remoteProfile.trustedLaunchSnapshot?.configFingerprintHash ||
-    next.runtimeMetadata.configFingerprintHash
-  next.runtimeMetadata.proxyFingerprintHash =
-    remoteProfile.proxyFingerprintHash ||
-    remoteProfile.trustedLaunchSnapshot?.proxyFingerprintHash ||
-    next.runtimeMetadata.proxyFingerprintHash
-  next.runtimeMetadata.lastQuickIsolationCheck =
-    remoteProfile.lastQuickIsolationCheck || next.runtimeMetadata.lastQuickIsolationCheck
-  next.runtimeMetadata.trustedLaunchSnapshot =
-    remoteProfile.trustedLaunchSnapshot || next.runtimeMetadata.trustedLaunchSnapshot
-  return next
-}
-
-function mapRemoteProfileToLocalInput(
-  remoteProfile: ControlPlaneProfile,
-  localFallback?: Partial<UpdateProfileInput | ProfileRecord> | null,
-): UpdateProfileInput {
-  const existing = requireDatabase().getProfileById(remoteProfile.id)
-  const matchedSavedProxy = findMatchingSavedProxyForRemoteProfile(remoteProfile, existing)
-  const fingerprintConfig = buildFingerprintFromRemoteProfile(remoteProfile, existing)
-  return {
-    id: remoteProfile.id,
-    name: remoteProfile.name || 'Remote Profile',
-    proxyId: matchedSavedProxy?.id || null,
-    groupName: remoteProfile.groupId || localFallback?.groupName || existing?.groupName || '',
-    tags: Array.isArray(remoteProfile.tags) ? remoteProfile.tags : localFallback?.tags || existing?.tags || [],
-    notes: localFallback?.notes || existing?.notes || '',
-    environmentPurpose:
-      localFallback?.environmentPurpose || existing?.environmentPurpose || DEFAULT_ENVIRONMENT_PURPOSE,
-    deviceProfile: createDeviceProfileFromFingerprint(
-      fingerprintConfig,
-      localFallback?.deviceProfile?.createdAt ||
-        existing?.deviceProfile?.createdAt ||
-        existing?.createdAt ||
-        new Date().toISOString(),
-      localFallback?.deviceProfile || existing?.deviceProfile,
-    ),
-    fingerprintConfig,
-    workspace: remoteProfile.workspace ?? localFallback?.workspace ?? existing?.workspace ?? null,
-  }
-}
-
 function mapLocalProfileToRemotePayload(profile: UpdateProfileInput | ProfileRecord) {
   const proxySettings = profile.fingerprintConfig.proxySettings
   const resolvedProxy = resolveProfileProxy(profile, requireDatabase())
@@ -2826,59 +2725,33 @@ function mapLocalProfileToRemotePayload(profile: UpdateProfileInput | ProfileRec
   }
 }
 
-function syncRemoteProfileIntoLocal(
-  remoteProfile: ControlPlaneProfile,
-  localFallback?: Partial<UpdateProfileInput | ProfileRecord> | null,
-): ProfileRecord {
-  const database = requireDatabase()
-  const localInput = mapRemoteProfileToLocalInput(remoteProfile, localFallback)
-  const profile = database.updateProfile(localInput)
-  database.setProfileStatus(profile.id, mapControlPlaneStatus(remoteProfile.status))
-  return database.getProfileById(profile.id) || profile
-}
-
-function syncProfileMutationToControlPlaneInBackground(
+function syncLegacyProfileMutationInBackground(
   action: 'create' | 'update',
   payload: ProfileRecord,
 ): void {
   void (async () => {
-    let syncedProfile = payload
-
     if (getDesktopAuthState().authenticated) {
       try {
         if (action === 'create') {
-          const remotePayload = await requestControlPlane('/api/profiles', {
+          await requestControlPlane('/api/profiles', {
             method: 'POST',
             body: JSON.stringify(mapLocalProfileToRemotePayload(payload)),
           })
-          const remoteProfile = (remotePayload.profile || {}) as ControlPlaneProfile
-          const remoteId = String(remoteProfile.id || payload.id)
-          if (remoteId !== payload.id) {
-            requireDatabase().deleteProfile(payload.id)
-          }
-          syncedProfile = syncRemoteProfileIntoLocal(remoteProfile, payload)
         } else {
           try {
-            const remotePayload = await requestControlPlane(`/api/profiles/${encodeURIComponent(payload.id)}`, {
+            await requestControlPlane(`/api/profiles/${encodeURIComponent(payload.id)}`, {
               method: 'PATCH',
               body: JSON.stringify(mapLocalProfileToRemotePayload(payload)),
             })
-            syncedProfile = syncRemoteProfileIntoLocal((remotePayload.profile || {}) as ControlPlaneProfile, payload)
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
             if (!/profile not found/i.test(message)) {
               throw error
             }
-            const remotePayload = await requestControlPlane('/api/profiles', {
+            await requestControlPlane('/api/profiles', {
               method: 'POST',
               body: JSON.stringify(mapLocalProfileToRemotePayload(payload)),
             })
-            const remoteProfile = (remotePayload.profile || {}) as ControlPlaneProfile
-            const remoteId = String(remoteProfile.id || payload.id)
-            if (remoteId !== payload.id) {
-              requireDatabase().deleteProfile(payload.id)
-            }
-            syncedProfile = syncRemoteProfileIntoLocal(remoteProfile, payload)
           }
         }
       } catch (error) {
@@ -2896,136 +2769,47 @@ function syncProfileMutationToControlPlaneInBackground(
         )
       }
     }
-
-    try {
-      await syncConfigToControlPlaneOrThrow()
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      audit('profile_config_sync_failed', {
-        action,
-        profileId: syncedProfile.id,
-        err: message,
-      })
-      logEvent(
-        'warn',
-        'profile',
-        `${action === 'create' ? 'Create' : 'Update'} profile config sync failed for "${syncedProfile.name}": ${message}`,
-        syncedProfile.id,
-      )
-    }
   })()
 }
 
-async function performProfilesSyncFromControlPlane(): Promise<number> {
-  const database = requireDatabase()
-  const cachedProfiles = database.listProfiles()
-  let payload: Record<string, unknown>
-  try {
-    payload = await requestControlPlane('/api/profiles')
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    audit('profiles_sync_failed', {
-      message,
-      cachedCount: cachedProfiles.length,
-    })
-    if (cachedProfiles.length > 0) {
-      logEvent('warn', 'runtime', `Control plane profile sync failed, using cached profiles: ${message}`, null)
-      return cachedProfiles.length
-    }
-    throw error
-  }
-  const remoteProfilesRaw = Array.isArray(payload.profiles)
-    ? (payload.profiles as ControlPlaneProfile[])
-    : []
-  try {
-    const remoteProfiles = await dedupeRemoteProfilesByName(remoteProfilesRaw)
-    const remoteIds = new Set(remoteProfiles.map((item) => item.id))
-    const remoteNames = new Set(remoteProfiles.map((item) => normalizeProfileName(item.name)))
-
-    for (const localProfile of database.listProfiles()) {
-      if (remoteIds.has(localProfile.id)) {
-        continue
-      }
-      const localName = normalizeProfileName(localProfile.name)
-      if (localName && remoteNames.has(localName)) {
-        database.deleteProfile(localProfile.id)
-        audit('profiles_local_stale_removed', {
-          profileId: localProfile.id,
-          name: localName,
-        })
-        continue
-      }
-      const createdPayload = await requestControlPlane('/api/profiles', {
-        method: 'POST',
-        body: JSON.stringify(mapLocalProfileToRemotePayload(localProfile)),
-      })
-      const createdRemote = (createdPayload.profile || {}) as ControlPlaneProfile
-      remoteProfiles.push(createdRemote)
-      remoteIds.add(createdRemote.id)
-      remoteNames.add(normalizeProfileName(createdRemote.name))
-      if (createdRemote.id && createdRemote.id !== localProfile.id) {
-        database.deleteProfile(localProfile.id)
-      }
-    }
-
-    for (const remoteProfile of remoteProfiles) {
-      syncRemoteProfileIntoLocal(remoteProfile)
-    }
-    return remoteProfiles.length
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    audit('profiles_sync_failed', {
-      message,
-      cachedCount: cachedProfiles.length,
-      stage: 'reconcile',
-    })
-    if (cachedProfiles.length > 0) {
-      logEvent(
-        'warn',
-        'runtime',
-        `Control plane profile reconciliation failed, using cached profiles: ${message}`,
-        null,
-      )
-      return database.listProfiles().length
-    }
-    throw error
-  }
-}
-
-async function syncProfilesFromControlPlane(options: ProfileSyncOptions = {}): Promise<number> {
-  const database = requireDatabase()
-  const cachedCount = database.listProfiles().length
-
-  if (!getDesktopAuthState().authenticated) {
-    return cachedCount
+async function syncConfigFromControlPlaneIfForced(options: ConfigSyncOptions = {}): Promise<ConfigSyncResult> {
+  const cachedResult: ConfigSyncResult = {
+    count: requireDatabase().listProfiles().length,
+    source: agentService?.getState().enabled ? 'agent' : 'account',
+    usedLocalCache: false,
+    message: '',
+    warningMessage: '',
   }
 
-  // Keep desktop startup and idle usage local-first. We only force a remote
-  // profile reconciliation on explicit flows such as a successful login.
+  if (!getDesktopAuthState().authenticated && !agentService?.getState().enabled) {
+    return cachedResult
+  }
   if (!options.force) {
-    return cachedCount
+    return cachedResult
   }
-
-  if (profileSyncInFlight) {
-    return profileSyncInFlight
+  if (configSyncInFlight) {
+    return configSyncInFlight
   }
 
   const now = Date.now()
-  if (now - lastProfileSyncAt < PROFILE_SYNC_COOLDOWN_MS) {
-    return lastProfileSyncCount || cachedCount
+  if (now - lastConfigSyncAt < PROFILE_SYNC_COOLDOWN_MS && lastConfigSyncResult) {
+    return lastConfigSyncResult
   }
 
-  profileSyncInFlight = (async () => {
-    const count = await performProfilesSyncFromControlPlane()
-    lastProfileSyncAt = Date.now()
-    lastProfileSyncCount = count
-    return count
+  configSyncInFlight = (async () => {
+    const result = await syncConfigFromControlPlane({
+      force: true,
+      useLocalCacheOnError: options.useLocalCacheOnError,
+    })
+    lastConfigSyncAt = Date.now()
+    setLastConfigSyncResult(result)
+    return result
   })()
 
   try {
-    return await profileSyncInFlight
+    return await configSyncInFlight
   } finally {
-    profileSyncInFlight = null
+    configSyncInFlight = null
   }
 }
 
@@ -4918,20 +4702,15 @@ async function performDesktopLogin(payload: {
       if (!user || !token) {
         throw new Error('登录响应缺少用户或令牌')
       }
-      const nextAuthState = saveDesktopAuth(apiBase, token, user)
-      try {
-        await syncProfilesFromControlPlane({ force: true })
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        audit('auth_login_profile_sync_failed', { apiBase, err: message })
-        logEvent(
-          'warn',
-          'system',
-          `Desktop login profile sync failed, continuing with local cache: ${message}`,
-          null,
-        )
+      saveDesktopAuth(apiBase, token, user)
+      const syncResult = await syncConfigFromControlPlaneIfForced({
+        force: true,
+        useLocalCacheOnError: true,
+      })
+      if (syncResult.usedLocalCache) {
+        audit('auth_login_config_sync_fallback', { apiBase, warning: syncResult.warningMessage })
       }
-      return nextAuthState
+      return getDesktopAuthState()
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error))
       audit('auth_login_failed', { apiBase, err: lastError.message })
@@ -5481,9 +5260,18 @@ async function registerIpcHandlers(): Promise<void> {
     return saveDesktopAuth(getControlPlaneApiBase(), getStoredAuthToken(), user)
   })
   ipcMain.handle('auth.logout', async () => clearDesktopAuth())
-  ipcMain.handle('auth.syncProfiles', async (_event, options?: ProfileSyncOptions) => ({
-    count: await syncProfilesFromControlPlane(options),
-  }))
+  ipcMain.handle('auth.syncConfig', async (_event, options?: ConfigSyncOptions) =>
+    syncConfigFromControlPlaneIfForced({
+      force: options?.force ?? true,
+      useLocalCacheOnError: options?.useLocalCacheOnError ?? true,
+    }),
+  )
+  ipcMain.handle('auth.syncProfiles', async (_event, options?: ConfigSyncOptions) =>
+    syncConfigFromControlPlaneIfForced({
+      force: options?.force ?? true,
+      useLocalCacheOnError: options?.useLocalCacheOnError ?? true,
+    }),
+  )
 
   ipcMain.handle('meta.getInfo', async () => getDesktopRuntimeInfo())
   ipcMain.handle('meta.getAgentState', async () => getAgentStateSnapshot())
@@ -5673,7 +5461,8 @@ async function registerIpcHandlers(): Promise<void> {
     )
     assertProfileNameUniqueOrThrow(payload.name)
     const profile = requireDatabase().createProfile(payload)
-    syncProfileMutationToControlPlaneInBackground('create', profile)
+    await syncConfigToControlPlaneOrThrow()
+    syncLegacyProfileMutationInBackground('create', profile)
     logEvent('info', 'profile', `Created profile "${profile.name}"`, profile.id)
     return profile
   })
@@ -5692,7 +5481,8 @@ async function registerIpcHandlers(): Promise<void> {
     if (existingProfile?.status === 'error' && !runtimeContexts.has(profile.id)) {
       requireDatabase().setProfileStatus(profile.id, 'stopped')
     }
-    syncProfileMutationToControlPlaneInBackground('update', profile)
+    await syncConfigToControlPlaneOrThrow()
+    syncLegacyProfileMutationInBackground('update', profile)
     logEvent('info', 'profile', `Updated profile "${profile.name}"`, profile.id)
     return profile
   })

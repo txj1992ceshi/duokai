@@ -391,6 +391,7 @@ function App() {
     saveAccountProfile,
     saveAccountPassword,
     uploadAccountAvatar,
+    syncEnvironmentConfig,
     revokeAccountDevice,
     deleteAccountDevice,
   } = useDesktopAppActions({
@@ -410,6 +411,7 @@ function App() {
     localizeError,
     setErrorMessage,
     setNoticeMessage,
+    setSyncWarningMessage,
     setAuthState,
     setUpdateState,
     refreshAll,
@@ -716,6 +718,7 @@ function App() {
     saveAccountProfile,
     uploadAccountAvatar,
     saveAccountPassword,
+    syncEnvironmentConfig,
     revokeAccountDevice,
     deleteAccountDevice,
   })

@@ -59,13 +59,13 @@ jobs:
           New-Item -ItemType Directory -Force -Path release-assets | Out-Null
           $exe = Get-ChildItem -Path release -Recurse -Filter *.exe | Select-Object -First 1
           if (-not $exe) { throw 'Windows installer (.exe) not found under release/' }
-          Copy-Item $exe.FullName (Join-Path $PWD 'release-assets/Duokai2 Setup.exe') -Force
+          Copy-Item $exe.FullName (Join-Path $PWD "release-assets/Duokai2 Setup ${{ steps.desktop-version.outputs.package_version }}.exe") -Force
 
           $zip = Get-ChildItem -Path release -Recurse -Filter *.zip |
             Where-Object { $_.Name -notmatch 'mac' } |
             Select-Object -First 1
           if (-not $zip) { throw 'Windows zip package not found under release/' }
-          Copy-Item $zip.FullName (Join-Path $PWD 'release-assets/Duokai2-win.zip') -Force
+          Copy-Item $zip.FullName (Join-Path $PWD "release-assets/Duokai2-${{ steps.desktop-version.outputs.package_version }}-win.zip") -Force
 
       - name: Upload Actions artifacts
         uses: actions/upload-artifact@v4
@@ -82,7 +82,7 @@ jobs:
           name: Duokai2 ${{ steps.desktop-version.outputs.release_tag }}
           generate_release_notes: true
           files: |
-            apps/duokai2/release-assets/Duokai2 Setup.exe
-            apps/duokai2/release-assets/Duokai2-win.zip
+            apps/duokai2/release-assets/Duokai2 Setup ${{ steps.desktop-version.outputs.package_version }}.exe
+            apps/duokai2/release-assets/Duokai2-${{ steps.desktop-version.outputs.package_version }}-win.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

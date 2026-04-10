@@ -858,6 +858,15 @@ export interface DesktopAuthState {
   rememberCredentials: boolean
   rememberedIdentifier: string
   rememberedPassword: string
+  lastConfigSyncResult: ConfigSyncResult | null
+}
+
+export interface ConfigSyncResult {
+  count: number
+  source: 'agent' | 'account'
+  usedLocalCache: boolean
+  message: string
+  warningMessage: string
 }
 
 export interface ProfileDirectoryInfo {

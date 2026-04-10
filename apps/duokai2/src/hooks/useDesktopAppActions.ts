@@ -28,6 +28,7 @@ export function useDesktopAppActions({
   localizeError,
   setErrorMessage,
   setNoticeMessage,
+  setSyncWarningMessage,
   setAuthState,
   setUpdateState,
   refreshAll,
@@ -51,6 +52,7 @@ export function useDesktopAppActions({
   localizeError: (error: unknown) => string
   setErrorMessage: (value: string) => void
   setNoticeMessage: (value: string) => void
+  setSyncWarningMessage: (value: string) => void
   setAuthState: (value: DesktopAuthState | null) => void
   setUpdateState: (value: DesktopUpdateState | null) => void
   refreshAll: (options?: RefreshAllOptions) => Promise<void>
@@ -83,6 +85,8 @@ export function useDesktopAppActions({
           deletingDevice: '正在删除设备...',
           currentDeviceDeleted: '当前设备已删除，请重新登录。',
           deviceDeleted: '设备已删除。',
+          syncingEnvironmentConfig: '正在从云端刷新环境数据...',
+          environmentConfigSynced: '已从云端更新环境数据。',
         }
       : {
           latestVersion: 'You already have the latest version.',
@@ -107,7 +111,24 @@ export function useDesktopAppActions({
           deletingDevice: 'Deleting device...',
           currentDeviceDeleted: 'Current device was deleted. Please log in again.',
           deviceDeleted: 'Device deleted.',
+          syncingEnvironmentConfig: 'Refreshing environment data from cloud...',
+          environmentConfigSynced: 'Environment data updated from cloud.',
         }
+
+  function applyConfigSyncFeedback(authState: DesktopAuthState | null) {
+    const result = authState?.lastConfigSyncResult
+    if (!result) {
+      return
+    }
+    if (result.usedLocalCache) {
+      setSyncWarningMessage(result.warningMessage)
+      return
+    }
+    setSyncWarningMessage('')
+    if (result.message) {
+      setNoticeMessage(result.message || copy.environmentConfigSynced)
+    }
+  }
 
   async function checkForUpdates(manual = true) {
     setErrorMessage('')
@@ -190,6 +211,7 @@ export function useDesktopAppActions({
       })
       setAuthState(nextAuthState)
       setAuthPassword('')
+      applyConfigSyncFeedback(nextAuthState)
       await refreshAll({ includeCloudPhoneDiagnostics: true })
     } catch (error) {
       setErrorMessage(localizeError(error))
@@ -204,9 +226,27 @@ export function useDesktopAppActions({
       const nextAuthState = await api.auth.logout()
       setAuthState(nextAuthState)
       clearAuthenticatedWorkspace()
+      setSyncWarningMessage('')
     } catch (error) {
       setErrorMessage(localizeError(error))
     }
+  }
+
+  async function syncEnvironmentConfig() {
+    await withBusy(copy.syncingEnvironmentConfig, async () => {
+      const api = requireDesktopApi(['auth.syncConfig'])
+      const result = await api.auth.syncConfig()
+      if (result.usedLocalCache) {
+        setSyncWarningMessage(result.warningMessage)
+      } else {
+        setSyncWarningMessage('')
+        setNoticeMessage(result.message || copy.environmentConfigSynced)
+      }
+      const authApi = requireDesktopApi(['auth.getState'])
+      const nextAuthState = await authApi.auth.getState()
+      setAuthState(nextAuthState)
+      await refreshAll({ includeCloudPhoneDiagnostics: true })
+    })
   }
 
   async function saveAccountProfile() {
@@ -309,6 +349,7 @@ export function useDesktopAppActions({
     saveAccountProfile,
     saveAccountPassword,
     uploadAccountAvatar,
+    syncEnvironmentConfig,
     revokeAccountDevice,
     deleteAccountDevice,
   }

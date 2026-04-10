@@ -25,7 +25,7 @@ const api: DesktopApi = {
     revokeDevice: (deviceId) => ipcRenderer.invoke('auth.revokeDevice', deviceId),
     deleteDevice: (deviceId) => ipcRenderer.invoke('auth.deleteDevice', deviceId),
     logout: () => ipcRenderer.invoke('auth.logout'),
-    syncProfiles: () => ipcRenderer.invoke('auth.syncProfiles'),
+    syncConfig: () => ipcRenderer.invoke('auth.syncConfig'),
   },
   meta: {
     getInfo: () => ipcRenderer.invoke('meta.getInfo'),

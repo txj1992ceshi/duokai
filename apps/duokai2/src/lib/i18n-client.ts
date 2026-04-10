@@ -146,6 +146,11 @@ const resources = {
           status: '状态',
           expiresAt: '到期时间',
         },
+        syncConfig: {
+          title: '环境数据同步',
+          description: '手动从云端刷新当前账号下的环境配置。',
+          action: '从云端刷新环境',
+        },
         profile: {
           title: '基础资料',
           description: '修改名称、账号、邮箱和头像地址。',
@@ -333,6 +338,11 @@ const resources = {
           plan: 'Plan',
           status: 'Status',
           expiresAt: 'Expires at',
+        },
+        syncConfig: {
+          title: 'Environment sync',
+          description: 'Refresh environment configuration from the cloud for this account.',
+          action: 'Refresh from cloud',
         },
         profile: {
           title: 'Basic profile',

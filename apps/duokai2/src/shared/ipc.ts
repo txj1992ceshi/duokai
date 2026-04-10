@@ -32,6 +32,7 @@ import type {
   UpdateProxyInput,
   UpdateTemplateInput,
   WorkspaceSnapshotRecord,
+  ConfigSyncResult,
 } from './types'
 
 export interface DesktopApi {
@@ -58,7 +59,7 @@ export interface DesktopApi {
     revokeDevice: (deviceId: string) => Promise<DesktopAuthState>
     deleteDevice: (deviceId: string) => Promise<DesktopAuthState>
     logout: () => Promise<DesktopAuthState>
-    syncProfiles: () => Promise<{ count: number }>
+    syncConfig: () => Promise<ConfigSyncResult>
   }
   meta: {
     getInfo: () => Promise<DesktopRuntimeInfo>

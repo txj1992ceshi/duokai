@@ -187,6 +187,7 @@ export function useDesktopWorkspaceViewProps({
   saveAccountProfile,
   uploadAccountAvatar,
   saveAccountPassword,
+  syncEnvironmentConfig,
   revokeAccountDevice,
   deleteAccountDevice,
 }: {
@@ -344,6 +345,7 @@ export function useDesktopWorkspaceViewProps({
   saveAccountProfile: () => void | Promise<void>
   uploadAccountAvatar: () => void | Promise<void>
   saveAccountPassword: () => void | Promise<void>
+  syncEnvironmentConfig: () => void | Promise<void>
   revokeAccountDevice: (deviceId: string) => void | Promise<void>
   deleteAccountDevice: (deviceId: string) => void | Promise<void>
 }) {
@@ -598,6 +600,7 @@ export function useDesktopWorkspaceViewProps({
     onSaveProfile: () => void saveAccountProfile(),
     onUploadAvatar: () => void uploadAccountAvatar(),
     onSavePassword: () => void saveAccountPassword(),
+    onSyncEnvironmentConfig: () => void syncEnvironmentConfig(),
     onRevokeDevice: (deviceId) => void revokeAccountDevice(deviceId),
     onDeleteDevice: (deviceId) => void deleteAccountDevice(deviceId),
   }

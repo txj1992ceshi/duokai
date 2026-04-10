@@ -24,6 +24,10 @@ module.exports = {
   mac: {
     ...(baseBuild.mac ?? {}),
     bundleShortVersion: normalizedVersion.bundleShortVersion,
-    bundleVersion: normalizedVersion.bundleShortVersion,
+    bundleVersion: normalizedVersion.buildVersion,
+  },
+  dmg: {
+    ...((baseBuild.dmg ?? {})),
+    artifactName: '${productName}-${version}-${arch}.${ext}',
   },
 }

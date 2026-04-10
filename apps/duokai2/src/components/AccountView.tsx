@@ -18,6 +18,7 @@ export function AccountView({
   onSaveProfile,
   onUploadAvatar,
   onSavePassword,
+  onSyncEnvironmentConfig,
   onRevokeDevice,
   onDeleteDevice,
 }: {
@@ -31,6 +32,7 @@ export function AccountView({
   onSaveProfile: () => void
   onUploadAvatar: () => void
   onSavePassword: () => void
+  onSyncEnvironmentConfig: () => void
   onRevokeDevice: (deviceId: string) => void
   onDeleteDevice: (deviceId: string) => void
 }) {
@@ -95,6 +97,9 @@ export function AccountView({
                 {desktopT('account.subscription.description')}
               </div>
             </div>
+            <Button type="button" variant="secondary" onClick={onSyncEnvironmentConfig}>
+              {desktopT('account.syncConfig.action')}
+            </Button>
             <div className="grid gap-3">
               <div className="rounded-2xl border border-slate-200 px-4 py-3">
                 <div className="text-xs uppercase tracking-[0.12em] text-slate-400">
@@ -102,6 +107,14 @@ export function AccountView({
                 </div>
                 <div className="mt-1 text-sm text-slate-700">
                   {currentAuthUser?.subscription?.plan || 'free'}
+                </div>
+              </div>
+              <div className="rounded-2xl border border-slate-200 px-4 py-3">
+                <div className="text-xs uppercase tracking-[0.12em] text-slate-400">
+                  {desktopT('account.syncConfig.title')}
+                </div>
+                <div className="mt-1 text-sm text-slate-700">
+                  {desktopT('account.syncConfig.description')}
                 </div>
               </div>
               <div className="rounded-2xl border border-slate-200 px-4 py-3">
