@@ -52,14 +52,8 @@ jobs:
             exit 1
           fi
           RELEASE_TAG="${EXPECTED_TAG}"
-          if [[ "${PACKAGE_VERSION}" == *-* ]]; then
-            PRERELEASE=true
-          else
-            PRERELEASE=false
-          fi
           echo "package_version=${PACKAGE_VERSION}" >> "$GITHUB_OUTPUT"
           echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
-          echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
         run: npm install
@@ -130,13 +124,7 @@ jobs:
             exit 1
           fi
           RELEASE_TAG="${EXPECTED_TAG}"
-          if [[ "${PACKAGE_VERSION}" == *-* ]]; then
-            PRERELEASE=true
-          else
-            PRERELEASE=false
-          fi
           echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
-          echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
 
       - name: Download matrix artifacts
         uses: actions/download-artifact@v4
@@ -187,5 +175,6 @@ jobs:
           tag_name: ${{ steps.desktop-version.outputs.release_tag }}
           name: Duokai2 ${{ steps.desktop-version.outputs.release_tag }}
           draft: false
-          prerelease: ${{ steps.desktop-version.outputs.prerelease }}
+          prerelease: false
+          make_latest: true
           files: release-assets/*

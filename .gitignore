@@ -1,3 +1,4 @@
 .DS_Store
 Duokai2.app
 node_modules
+.workbuddy/
