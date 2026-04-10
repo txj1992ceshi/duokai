@@ -147,6 +147,8 @@ const REMOTE_SYNC_EXCLUDED_SETTINGS = new Set([
   'controlPlaneAuthIdentifier',
   'controlPlaneAuthPassword',
   'controlPlaneDeviceId',
+  'uiLanguage',
+  'themeMode',
 ])
 
 export class DatabaseService {

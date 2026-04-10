@@ -1,4 +1,14 @@
-import { appendFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import {
+  appendFileSync,
+  copyFileSync,
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import dns from 'node:dns'
@@ -2086,13 +2096,39 @@ async function installDownloadedUpdate(): Promise<{ success: boolean; message: s
   })
   audit('update_install_start', { installerPath, platform: process.platform })
   if (process.platform === 'win32') {
-    const child = spawn(installerPath, [], {
-      detached: true,
-      stdio: 'ignore',
-    })
-    child.unref()
-    setTimeout(() => app.quit(), 500)
-    return { success: true, message: '安装程序已打开，应用即将退出' }
+    const installerCopyDir = path.join(os.tmpdir(), 'duokai2-updater')
+    mkdirSync(installerCopyDir, { recursive: true })
+    const installerCopyPath = path.join(
+      installerCopyDir,
+      `${path.parse(installerPath).name}-${Date.now()}-${randomUUID()}${path.extname(installerPath) || '.exe'}`,
+    )
+    copyFileSync(installerPath, installerCopyPath)
+
+    let lastError: unknown = null
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const child = spawn(installerCopyPath, [], {
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: false,
+        })
+        child.unref()
+        setTimeout(() => app.quit(), 500)
+        return { success: true, message: '安装程序已打开，应用即将退出' }
+      } catch (error) {
+        lastError = error
+        const spawnError = error as NodeJS.ErrnoException
+        if (spawnError?.code !== 'EBUSY' || attempt === 2) {
+          break
+        }
+        await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)))
+      }
+    }
+
+    const failureMessage =
+      lastError instanceof Error ? lastError.message : '安装程序启动失败，请稍后重试'
+    audit('update_install_failed', { installerPath, installerCopyPath, error: failureMessage })
+    throw new Error(failureMessage)
   }
   const openResult = await shell.openPath(installerPath)
   if (openResult) {

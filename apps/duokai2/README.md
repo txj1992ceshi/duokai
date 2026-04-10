@@ -69,7 +69,7 @@ npm run build:win
 
 当前版本：
 
-- `0.1.0-test.3.3`
+- `0.1.0-test.3.4`
 
 ### macOS
 
@@ -83,8 +83,8 @@ npm run build:mac
 
 会生成类似以下文件：
 
-- `Duokai2-0.1.0-test.3.3-arm64.dmg`
-- `Duokai2-0.1.0-test.3.3-arm64-mac.zip`
+- `Duokai2-0.1.0-test.3.4-arm64.dmg`
+- `Duokai2-0.1.0-test.3.4-arm64-mac.zip`
 - `mac-arm64/Duokai2.app`
 
 安装方式：
@@ -109,7 +109,7 @@ Windows 一键安装包有两种获取方式：
 #### 方式 1：直接下载已发布安装包（推荐）
 
 1. 打开 GitHub 仓库的 `Releases` 页面
-2. 下载：`Duokai2 Setup 0.1.0-test.3.3.exe`
+2. 下载：`Duokai2 Setup 0.1.0-test.3.4.exe`
 3. 双击安装
 4. 安装完成后从桌面快捷方式或开始菜单启动
 
@@ -131,8 +131,8 @@ npm run build:win
 
 会生成类似以下文件：
 
-- `Duokai2 Setup 0.1.0-test.3.3.exe` 或等价 `NSIS` 安装器
-- `Duokai2-0.1.0-test.3.3-win.zip` 便携包
+- `Duokai2 Setup 0.1.0-test.3.4.exe` 或等价 `NSIS` 安装器
+- `Duokai2-0.1.0-test.3.4-win.zip` 便携包
 
 说明：
 
@@ -173,7 +173,7 @@ git push origin main
 
 - 这个 workflow 会同时在 `macos-latest` 和 `windows-latest` 上构建桌面安装包
 - 如果不填写 `release_tag`，workflow 会自动使用 `v` + `apps/duokai2/package.json` 里的版本号
-- 例如 package 版本是 `0.1.0-test.3.3`，则 release tag 会自动使用 `v0.1.0-test.3.3`
+- 例如 package 版本是 `0.1.0-test.3.4`，则 release tag 会自动使用 `v0.1.0-test.3.4`
 
 ### 4. 如果只想单独构建 Windows 测试包
 
@@ -206,7 +206,7 @@ npm run build:mac
 最终测试包获取方式：
 
 - mac：GitHub `Releases` 中的 `.dmg` 或 `.zip`，也可使用本地 `release/` 目录中的构建产物
-- Windows：GitHub `Releases` 中的 `Duokai2 Setup 0.1.0-test.3.3.exe` 和 `Duokai2-0.1.0-test.3.3-win.zip`
+- Windows：GitHub `Releases` 中的 `Duokai2 Setup 0.1.0-test.3.4.exe` 和 `Duokai2-0.1.0-test.3.4-win.zip`
 
 ## 说明
 
