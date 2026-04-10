@@ -567,9 +567,11 @@ export function SettingsView({
                 <Button variant="secondary" onClick={onCheckForUpdates}>
                   {desktopT('settings.updates.checkAgain')}
                 </Button>
-                <Button variant="secondary" onClick={onOpenReleasePage}>
-                  {desktopT('settings.updates.openReleasePage')}
-                </Button>
+                {!(updateState?.status === 'error' && updateState.fallbackToManual) ? (
+                  <Button variant="secondary" onClick={onOpenReleasePage}>
+                    {desktopT('settings.updates.openReleasePage')}
+                  </Button>
+                ) : null}
               </div>
             </div>
           </Card>

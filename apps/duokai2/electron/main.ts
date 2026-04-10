@@ -28,7 +28,8 @@ import {
 import type { MenuItemConstructorOptions, TitleBarOverlay } from 'electron'
 import { chromium } from 'playwright'
 import type { BrowserContext } from 'playwright'
-import { autoUpdater, type ProgressInfo, type UpdateDownloadedEvent, type UpdateInfo } from 'electron-updater'
+import electronUpdater from 'electron-updater'
+import type { ProgressInfo, UpdateDownloadedEvent, UpdateInfo } from 'electron-updater'
 import { DatabaseService } from './services/database'
 import {
   createDeviceProfileFromFingerprint,
@@ -133,6 +134,8 @@ import type {
   UpdateProxyInput,
   WorkspaceSnapshotRecord,
 } from '../src/shared/types'
+
+const { autoUpdater } = electronUpdater
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DEFAULT_TIMEZONE_FALLBACK = 'America/Los_Angeles'
