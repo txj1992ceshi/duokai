@@ -83,6 +83,7 @@ const UPDATE_STATUS_COPY: Record<
     actionDownloading: string
     actionInstallWindows: string
     actionInstallOther: string
+    actionOpenRelease: string
   }
 > = {
   'zh-CN': {
@@ -93,15 +94,16 @@ const UPDATE_STATUS_COPY: Record<
       `发现${isPrereleaseCandidate ? '测试版' : '新'}版本 ${latestVersion}${assetName ? `，可下载 ${assetName}` : ''}。`,
     latest: '当前已是最新版本。',
     downloading: (progressPercent) => `正在下载更新 ${progressPercent ? `${progressPercent}%` : ''}`.trim(),
-    downloadedWindows: '安装程序已下载完成，点击下方按钮开始安装。',
-    downloadedOther: '安装包已下载完成，点击下方按钮打开安装。',
+    downloadedWindows: '更新已下载完成，点击下方按钮重启并安装。',
+    downloadedOther: '更新已下载完成，点击下方按钮重启并安装。',
     error: '更新检查失败。',
     ready: '自动更新已就绪，可随时检查。',
     actionCheck: '检查更新',
     actionDownload: '下载更新',
     actionDownloading: '下载中…',
-    actionInstallWindows: '开始安装',
-    actionInstallOther: '打开安装包',
+    actionInstallWindows: '重启并安装',
+    actionInstallOther: '重启并安装',
+    actionOpenRelease: '打开发布页',
   },
   'en-US': {
     loading: 'Loading update status...',
@@ -111,15 +113,16 @@ const UPDATE_STATUS_COPY: Record<
       `${isPrereleaseCandidate ? 'Prerelease' : 'Update'} ${latestVersion} is available${assetName ? ` as ${assetName}` : ''}.`,
     latest: 'You already have the latest version.',
     downloading: (progressPercent) => `Downloading update ${progressPercent ? `${progressPercent}%` : ''}`.trim(),
-    downloadedWindows: 'The installer is ready. Use the button below to start installation.',
-    downloadedOther: 'The update package is ready. Use the button below to open the installer.',
+    downloadedWindows: 'The update is ready. Use the button below to restart and install it.',
+    downloadedOther: 'The update is ready. Use the button below to restart and install it.',
     error: 'Update check failed.',
     ready: 'Auto update is ready. You can check at any time.',
     actionCheck: 'Check for updates',
     actionDownload: 'Download update',
     actionDownloading: 'Downloading...',
-    actionInstallWindows: 'Install update',
-    actionInstallOther: 'Open installer',
+    actionInstallWindows: 'Restart and install',
+    actionInstallOther: 'Restart and install',
+    actionOpenRelease: 'Open release page',
   },
 }
 
@@ -275,6 +278,9 @@ export function getDesktopUpdateActionLabel(
     return rendererOperatingSystem === 'Windows'
       ? copy.actionInstallWindows
       : copy.actionInstallOther
+  }
+  if (state.status === 'error' && state.fallbackToManual) {
+    return copy.actionOpenRelease
   }
   return copy.actionCheck
 }

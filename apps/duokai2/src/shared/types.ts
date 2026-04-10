@@ -954,6 +954,8 @@ export interface DesktopUpdateState {
   latestVersion: string | null
   attentionVersion: string | null
   attentionRequired: boolean
+  canAutoInstall: boolean
+  fallbackToManual: boolean
   isPrereleaseCandidate: boolean
   releaseName: string
   publishedAt: string | null

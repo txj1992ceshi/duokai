@@ -39,20 +39,27 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: apps/duokai2/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Resolve desktop version
         id: desktop-version
         shell: bash
         run: |
           PACKAGE_VERSION=$(node -p "require('./package.json').version")
-          if [ -n "${{ github.event.inputs.release_tag }}" ]; then
-            RELEASE_TAG="${{ github.event.inputs.release_tag }}"
+          EXPECTED_TAG="v${PACKAGE_VERSION}"
+          if [ -n "${{ github.event.inputs.release_tag }}" ] && [ "${{ github.event.inputs.release_tag }}" != "${EXPECTED_TAG}" ]; then
+            echo "release_tag must match package version exactly: ${EXPECTED_TAG}" >&2
+            exit 1
+          fi
+          RELEASE_TAG="${EXPECTED_TAG}"
+          if [[ "${PACKAGE_VERSION}" == *-* ]]; then
+            PRERELEASE=true
           else
-            RELEASE_TAG="v${PACKAGE_VERSION}"
+            PRERELEASE=false
           fi
           echo "package_version=${PACKAGE_VERSION}" >> "$GITHUB_OUTPUT"
           echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
         run: npm install
@@ -69,9 +76,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release-assets
-          find release -type f \( -name '*.dmg' -o -name '*.zip' \) -maxdepth 3 -print0 | while IFS= read -r -d '' file; do
+          find release -maxdepth 3 -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.yml' -o -name '*.blockmap' \) -print0 | while IFS= read -r -d '' file; do
             cp "$file" "release-assets/$(basename "$file")"
           done
+          ls release-assets | grep "${{ steps.desktop-version.outputs.package_version }}"
+          test -f "release-assets/latest-mac.yml"
           ls -la release-assets
 
       - name: Collect release assets (Windows)
@@ -80,10 +89,16 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path release-assets | Out-Null
           Get-ChildItem -Path release -Recurse -File |
-            Where-Object { $_.Extension -in '.exe', '.zip' } |
+            Where-Object { $_.Extension -in '.exe', '.zip', '.yml', '.blockmap' } |
             ForEach-Object {
               Copy-Item $_.FullName (Join-Path $PWD "release-assets/$($_.Name)") -Force
             }
+          if (-not (Get-ChildItem release-assets | Where-Object { $_.Name -like "*${{ steps.desktop-version.outputs.package_version }}*" })) {
+            throw "Release assets do not match package version ${{ steps.desktop-version.outputs.package_version }}"
+          }
+          if (-not (Test-Path "release-assets/latest.yml")) {
+            throw "latest.yml not found in release assets"
+          }
           Get-ChildItem release-assets
 
       - name: Upload build artifacts
@@ -109,12 +124,19 @@ jobs:
         id: desktop-version
         run: |
           PACKAGE_VERSION=$(node -p "require('./apps/duokai2/package.json').version")
-          if [ -n "${{ github.event.inputs.release_tag }}" ]; then
-            RELEASE_TAG="${{ github.event.inputs.release_tag }}"
+          EXPECTED_TAG="v${PACKAGE_VERSION}"
+          if [ -n "${{ github.event.inputs.release_tag }}" ] && [ "${{ github.event.inputs.release_tag }}" != "${EXPECTED_TAG}" ]; then
+            echo "release_tag must match package version exactly: ${EXPECTED_TAG}" >&2
+            exit 1
+          fi
+          RELEASE_TAG="${EXPECTED_TAG}"
+          if [[ "${PACKAGE_VERSION}" == *-* ]]; then
+            PRERELEASE=true
           else
-            RELEASE_TAG="v${PACKAGE_VERSION}"
+            PRERELEASE=false
           fi
           echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
 
       - name: Download matrix artifacts
         uses: actions/download-artifact@v4
@@ -129,5 +151,5 @@ jobs:
           tag_name: ${{ steps.desktop-version.outputs.release_tag }}
           name: Duokai2 ${{ steps.desktop-version.outputs.release_tag }}
           draft: false
-          prerelease: false
+          prerelease: ${{ steps.desktop-version.outputs.prerelease }}
           files: release-assets/*

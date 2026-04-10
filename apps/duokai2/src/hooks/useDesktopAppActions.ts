@@ -184,6 +184,10 @@ export function useDesktopAppActions({
       await installUpdate()
       return
     }
+    if (state?.status === 'error' && state.fallbackToManual) {
+      await openReleasePage()
+      return
+    }
     if (state?.status === 'downloading') {
       return
     }

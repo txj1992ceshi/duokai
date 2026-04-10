@@ -1,4 +1,6 @@
 const pkg = require('./package.json')
+const REPO_OWNER = 'txj1992ceshi'
+const REPO_NAME = 'duokai'
 
 function parseVersion(version) {
   const match = String(version).match(/^(\d+)\.(\d+)\.(\d+)/)
@@ -15,11 +17,24 @@ function parseVersion(version) {
   }
 }
 
+function isPrerelease(version) {
+  return String(version || '').includes('-')
+}
+
 const baseBuild = pkg.build ?? {}
 const normalizedVersion = parseVersion(pkg.version)
 
 module.exports = {
   ...baseBuild,
+  publish:
+    baseBuild.publish ?? [
+      {
+        provider: 'github',
+        owner: REPO_OWNER,
+        repo: REPO_NAME,
+        releaseType: isPrerelease(pkg.version) ? 'prerelease' : 'release',
+      },
+    ],
   buildVersion: normalizedVersion.buildVersion,
   mac: {
     ...(baseBuild.mac ?? {}),
@@ -29,5 +44,9 @@ module.exports = {
   dmg: {
     ...((baseBuild.dmg ?? {})),
     artifactName: '${productName}-${version}-${arch}.${ext}',
+  },
+  zip: {
+    ...((baseBuild.zip ?? {})),
+    artifactName: '${productName}-${version}-${arch}-mac.${ext}',
   },
 }
