@@ -108,19 +108,31 @@ export function useDesktopFeedback({
     if (!updateState) {
       return
     }
-    const noticeKey = `${updateState.status}:${updateState.latestVersion || ''}:${updateState.progressPercent}`
+    const noticeKey = `${updateState.status}:${updateState.attentionVersion || updateState.latestVersion || ''}:${updateState.isPrereleaseCandidate ? 'pre' : 'stable'}`
     if (lastUpdateNoticeKeyRef.current === noticeKey) {
       return
     }
     if (updateState.status === 'available' && updateState.latestVersion) {
       lastUpdateNoticeKeyRef.current = noticeKey
-      setNoticeMessage(desktopT('feedback.updateAvailable', { version: updateState.latestVersion }))
+      toast.success(
+        desktopT(
+          updateState.isPrereleaseCandidate ? 'feedback.prereleaseUpdateAvailable' : 'feedback.updateAvailable',
+          { version: updateState.latestVersion },
+        ),
+        {
+          id: `desktop-update-available:${updateState.attentionVersion || updateState.latestVersion}`,
+          duration: 7000,
+        },
+      )
     }
     if (updateState.status === 'downloaded') {
       lastUpdateNoticeKeyRef.current = noticeKey
-      setNoticeMessage(desktopT('feedback.updateDownloaded'))
+      toast.success(desktopT('feedback.updateDownloaded'), {
+        id: `desktop-update-downloaded:${updateState.attentionVersion || updateState.latestVersion || 'current'}`,
+        duration: 5000,
+      })
     }
-  }, [desktopT, lastUpdateNoticeKeyRef, setNoticeMessage, updateState])
+  }, [desktopT, lastUpdateNoticeKeyRef, updateState])
 
   useEffect(() => {
     setPendingProfileLaunches((current) => {

@@ -71,7 +71,7 @@ const UPDATE_STATUS_COPY: Record<
     loading: string
     unsupported: string
     checking: string
-    available: (latestVersion: string, assetName?: string | null) => string
+    available: (latestVersion: string, assetName?: string | null, isPrereleaseCandidate?: boolean) => string
     latest: string
     downloading: (progressPercent?: number | null) => string
     downloadedWindows: string
@@ -89,8 +89,8 @@ const UPDATE_STATUS_COPY: Record<
     loading: '正在读取更新状态…',
     unsupported: '当前是开发环境，自动更新只在正式打包后的桌面端启用。',
     checking: '正在检查最新版本…',
-    available: (latestVersion, assetName) =>
-      `发现新版本 ${latestVersion}${assetName ? `，可下载 ${assetName}` : ''}。`,
+    available: (latestVersion, assetName, isPrereleaseCandidate) =>
+      `发现${isPrereleaseCandidate ? '测试版' : '新'}版本 ${latestVersion}${assetName ? `，可下载 ${assetName}` : ''}。`,
     latest: '当前已是最新版本。',
     downloading: (progressPercent) => `正在下载更新 ${progressPercent ? `${progressPercent}%` : ''}`.trim(),
     downloadedWindows: '安装程序已下载完成，点击下方按钮开始安装。',
@@ -107,8 +107,8 @@ const UPDATE_STATUS_COPY: Record<
     loading: 'Loading update status...',
     unsupported: 'Auto update is only enabled in packaged desktop builds.',
     checking: 'Checking for the latest version...',
-    available: (latestVersion, assetName) =>
-      `Update ${latestVersion} is available${assetName ? ` as ${assetName}` : ''}.`,
+    available: (latestVersion, assetName, isPrereleaseCandidate) =>
+      `${isPrereleaseCandidate ? 'Prerelease' : 'Update'} ${latestVersion} is available${assetName ? ` as ${assetName}` : ''}.`,
     latest: 'You already have the latest version.',
     downloading: (progressPercent) => `Downloading update ${progressPercent ? `${progressPercent}%` : ''}`.trim(),
     downloadedWindows: 'The installer is ready. Use the button below to start installation.',
@@ -240,7 +240,7 @@ export function describeDesktopUpdateStatus(
     case 'checking':
       return copy.checking
     case 'available':
-      return copy.available(state.latestVersion || '', state.assetName)
+      return copy.available(state.latestVersion || '', state.assetName, state.isPrereleaseCandidate)
     case 'not-available':
       return copy.latest
     case 'downloading':

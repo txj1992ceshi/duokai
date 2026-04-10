@@ -952,6 +952,9 @@ export interface DesktopUpdateState {
   status: DesktopUpdateStatus
   currentVersion: string
   latestVersion: string | null
+  attentionVersion: string | null
+  attentionRequired: boolean
+  isPrereleaseCandidate: boolean
   releaseName: string
   publishedAt: string | null
   releaseUrl: string

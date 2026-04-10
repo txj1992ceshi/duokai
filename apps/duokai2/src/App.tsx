@@ -377,6 +377,7 @@ function App() {
     setMainSection,
     view,
     setView,
+    updateState,
     setResourceMode,
     setProfilePageMode,
   })

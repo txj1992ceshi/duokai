@@ -187,7 +187,7 @@ const runtimeLockHeartbeatTimers = new Map<string, NodeJS.Timeout>()
 const runtimeShutdownFinalizing = new Set<string>()
 const MAX_QUEUE = Number(process.env.MAX_QUEUE_LENGTH || 200)
 const CONTROL_PLANE_FETCH_RETRY_MS = 1200
-const DESKTOP_RELEASES_API = 'https://api.github.com/repos/txj1992ceshi/duokai/releases/latest'
+const DESKTOP_RELEASES_API = 'https://api.github.com/repos/txj1992ceshi/duokai/releases?per_page=20'
 const DESKTOP_RELEASES_PAGE = 'https://github.com/txj1992ceshi/duokai/releases'
 const UPDATE_DOWNLOAD_DIR = 'updates'
 const AUTO_UPDATE_CHECK_DELAY_MS = 12_000
@@ -1611,6 +1611,8 @@ type GitHubLatestRelease = {
   name?: string
   html_url?: string
   published_at?: string
+  prerelease?: boolean
+  draft?: boolean
   assets?: GitHubReleaseAsset[]
 }
 
@@ -1619,6 +1621,9 @@ let updateState: DesktopUpdateState = {
   status: app.isPackaged ? 'idle' : 'unsupported',
   currentVersion: app.getVersion(),
   latestVersion: null,
+  attentionVersion: null,
+  attentionRequired: false,
+  isPrereleaseCandidate: false,
   releaseName: '',
   publishedAt: null,
   releaseUrl: DESKTOP_RELEASES_PAGE,
@@ -1649,6 +1654,10 @@ function setUpdateState(next: Partial<DesktopUpdateState>): DesktopUpdateState {
 
 function normalizeReleaseVersion(input: string): string {
   return String(input || '').trim().replace(/^v/i, '')
+}
+
+function isPrereleaseVersion(input: string): boolean {
+  return parseComparableVersion(input).pre.length > 0
 }
 
 function parseComparableVersion(input: string): { main: number[]; pre: Array<string | number> } {
@@ -1737,7 +1746,8 @@ async function fetchLatestRelease(): Promise<{
   release: GitHubLatestRelease
   latestVersion: string
   asset: GitHubReleaseAsset | null
-}> {
+  isPrereleaseCandidate: boolean
+} | null> {
   const response = await fetch(DESKTOP_RELEASES_API, {
     headers: {
       Accept: 'application/vnd.github+json',
@@ -1747,16 +1757,54 @@ async function fetchLatestRelease(): Promise<{
   if (!response.ok) {
     throw new Error(`GitHub release check failed (${response.status})`)
   }
-  const release = (await response.json()) as GitHubLatestRelease
-  const latestVersion = normalizeReleaseVersion(release.tag_name || release.name || '')
-  if (!latestVersion) {
+  const releases = (await response.json()) as GitHubLatestRelease[]
+  const allowPrerelease = isPrereleaseVersion(app.getVersion())
+  const candidates = releases
+    .map((release) => {
+      const latestVersion = normalizeReleaseVersion(release.tag_name || release.name || '')
+      return {
+        release,
+        latestVersion,
+        asset: pickReleaseAsset(release.assets || []),
+        isPrereleaseCandidate: Boolean(release.prerelease),
+      }
+    })
+    .filter((candidate) => {
+      if (!candidate.latestVersion) {
+        return false
+      }
+      if (candidate.release.draft) {
+        return false
+      }
+      if (candidate.release.prerelease && !allowPrerelease) {
+        return false
+      }
+      return true
+    })
+
+  if (candidates.length === 0) {
+    return null
+  }
+
+  return candidates.reduce((best, candidate) => {
+    if (compareVersions(candidate.latestVersion, best.latestVersion) > 0) {
+      return candidate
+    }
+    return best
+  })
+}
+
+async function fetchLatestReleaseOrThrow(): Promise<{
+  release: GitHubLatestRelease
+  latestVersion: string
+  asset: GitHubReleaseAsset | null
+  isPrereleaseCandidate: boolean
+}> {
+  const releaseInfo = await fetchLatestRelease()
+  if (!releaseInfo) {
     throw new Error('未获取到有效的发布版本号')
   }
-  return {
-    release,
-    latestVersion,
-    asset: pickReleaseAsset(release.assets || []),
-  }
+  return releaseInfo
 }
 
 async function checkForDesktopUpdates(options: { silent?: boolean } = {}): Promise<DesktopUpdateState> {
@@ -1764,6 +1812,9 @@ async function checkForDesktopUpdates(options: { silent?: boolean } = {}): Promi
     return setUpdateState({
       supported: false,
       status: 'unsupported',
+      attentionRequired: false,
+      attentionVersion: null,
+      isPrereleaseCandidate: false,
       message: '仅打包后的桌面端支持自动更新检测',
     })
   }
@@ -1782,13 +1833,35 @@ async function checkForDesktopUpdates(options: { silent?: boolean } = {}): Promi
       message: options.silent ? '后台检查更新中' : '正在检查更新',
     })
     try {
-      const { release, latestVersion, asset } = await fetchLatestRelease()
+      const releaseInfo = await fetchLatestRelease()
+      if (!releaseInfo) {
+        return setUpdateState({
+          supported: true,
+          status: 'not-available',
+          latestVersion: null,
+          attentionVersion: null,
+          attentionRequired: false,
+          isPrereleaseCandidate: false,
+          releaseName: '',
+          publishedAt: null,
+          releaseUrl: DESKTOP_RELEASES_PAGE,
+          assetName: '',
+          downloadedFile: '',
+          progressPercent: 100,
+          checkedAt: new Date().toISOString(),
+          message: '当前已是最新版本',
+        })
+      }
+      const { release, latestVersion, asset, isPrereleaseCandidate } = releaseInfo
       const releaseUrl = String(release.html_url || DESKTOP_RELEASES_PAGE)
       if (compareVersions(latestVersion, app.getVersion()) <= 0) {
         return setUpdateState({
           supported: true,
           status: 'not-available',
           latestVersion,
+          attentionVersion: null,
+          attentionRequired: false,
+          isPrereleaseCandidate,
           releaseName: String(release.name || release.tag_name || latestVersion),
           publishedAt: release.published_at || null,
           releaseUrl,
@@ -1803,6 +1876,9 @@ async function checkForDesktopUpdates(options: { silent?: boolean } = {}): Promi
         supported: true,
         status: 'available',
         latestVersion,
+        attentionVersion: latestVersion,
+        attentionRequired: true,
+        isPrereleaseCandidate,
         releaseName: String(release.name || release.tag_name || latestVersion),
         publishedAt: release.published_at || null,
         releaseUrl,
@@ -1810,13 +1886,18 @@ async function checkForDesktopUpdates(options: { silent?: boolean } = {}): Promi
         downloadedFile: '',
         progressPercent: 0,
         checkedAt: new Date().toISOString(),
-        message: asset?.name ? `发现新版本 ${latestVersion}` : `发现新版本 ${latestVersion}，请前往发布页安装`,
+        message: asset?.name
+          ? `发现${isPrereleaseCandidate ? '测试版' : '新'}版本 ${latestVersion}`
+          : `发现${isPrereleaseCandidate ? '测试版' : '新'}版本 ${latestVersion}，请前往发布页安装`,
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       audit('update_check_failed', { error: message })
       return setUpdateState({
         status: 'error',
+        attentionRequired: false,
+        attentionVersion: null,
+        isPrereleaseCandidate: false,
         checkedAt: new Date().toISOString(),
         message,
       })
@@ -1832,6 +1913,9 @@ async function downloadDesktopUpdate(): Promise<DesktopUpdateState> {
     return setUpdateState({
       supported: false,
       status: 'unsupported',
+      attentionRequired: false,
+      attentionVersion: null,
+      isPrereleaseCandidate: false,
       message: '仅打包后的桌面端支持自动更新检测',
     })
   }
@@ -1840,11 +1924,14 @@ async function downloadDesktopUpdate(): Promise<DesktopUpdateState> {
   }
   updateDownloadPromise = (async () => {
     try {
-      let releaseInfo: Awaited<ReturnType<typeof fetchLatestRelease>> | null = null
+      let releaseInfo: Awaited<ReturnType<typeof fetchLatestReleaseOrThrow>> | null = null
       if (updateState.status !== 'available' || !updateState.latestVersion) {
-        releaseInfo = await fetchLatestRelease()
+        releaseInfo = await fetchLatestReleaseOrThrow()
         setUpdateState({
           latestVersion: releaseInfo.latestVersion,
+          attentionVersion: releaseInfo.latestVersion,
+          attentionRequired: true,
+          isPrereleaseCandidate: releaseInfo.isPrereleaseCandidate,
           releaseName: String(releaseInfo.release.name || releaseInfo.release.tag_name || releaseInfo.latestVersion),
           publishedAt: releaseInfo.release.published_at || null,
           releaseUrl: String(releaseInfo.release.html_url || DESKTOP_RELEASES_PAGE),
@@ -1853,7 +1940,7 @@ async function downloadDesktopUpdate(): Promise<DesktopUpdateState> {
       }
       const latestAsset =
         releaseInfo?.asset ||
-        (await fetchLatestRelease()).asset
+        (await fetchLatestReleaseOrThrow()).asset
       if (!latestAsset?.browser_download_url || !latestAsset.name) {
         throw new Error('当前平台暂无可下载的安装包，请前往发布页获取新版')
       }
@@ -1878,6 +1965,7 @@ async function downloadDesktopUpdate(): Promise<DesktopUpdateState> {
       setUpdateState({
         status: 'downloading',
         assetName: latestAsset.name,
+        attentionRequired: false,
         downloadedFile: '',
         progressPercent: 0,
         message: `正在下载更新 ${latestAsset.name}`,
@@ -1909,6 +1997,7 @@ async function downloadDesktopUpdate(): Promise<DesktopUpdateState> {
           setUpdateState({
             status: 'downloading',
             progressPercent,
+            attentionRequired: false,
             message:
               totalBytes > 0
                 ? `正在下载更新 ${latestAsset.name}（${progressPercent}%）`
@@ -1923,6 +2012,7 @@ async function downloadDesktopUpdate(): Promise<DesktopUpdateState> {
       audit('update_downloaded', { assetName: latestAsset.name, destination })
       return setUpdateState({
         status: 'downloaded',
+        attentionRequired: false,
         downloadedFile: destination,
         progressPercent: 100,
         checkedAt: new Date().toISOString(),
@@ -1936,6 +2026,9 @@ async function downloadDesktopUpdate(): Promise<DesktopUpdateState> {
       audit('update_download_failed', { error: message })
       return setUpdateState({
         status: 'error',
+        attentionRequired: false,
+        attentionVersion: null,
+        isPrereleaseCandidate: false,
         message,
       })
     } finally {
@@ -1950,6 +2043,9 @@ async function installDownloadedUpdate(): Promise<{ success: boolean; message: s
     throw new Error('尚未下载更新安装包')
   }
   const installerPath = updateState.downloadedFile
+  setUpdateState({
+    attentionRequired: false,
+  })
   audit('update_install_start', { installerPath, platform: process.platform })
   if (process.platform === 'win32') {
     const child = spawn(installerPath, [], {

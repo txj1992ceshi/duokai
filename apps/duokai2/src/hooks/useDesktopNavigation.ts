@@ -1,6 +1,7 @@
 import type { Dispatch, SetStateAction } from 'react'
 import type { LocaleCode } from '../i18n'
 import i18nClient from '../lib/i18n-client'
+import type { DesktopUpdateState } from '../shared/types'
 import type {
   MainNavItem,
   MainNavKey,
@@ -27,6 +28,7 @@ export function useDesktopNavigation({
   setMainSection,
   view,
   setView,
+  updateState,
   setResourceMode,
   setProfilePageMode,
 }: {
@@ -35,6 +37,7 @@ export function useDesktopNavigation({
   setMainSection: Dispatch<SetStateAction<MainNavKey>>
   view: DesktopViewKey
   setView: Dispatch<SetStateAction<DesktopViewKey>>
+  updateState: DesktopUpdateState | null
   setResourceMode: Dispatch<SetStateAction<ResourceMode>>
   setProfilePageMode: Dispatch<SetStateAction<ProfilePageMode>>
 }) {
@@ -135,6 +138,7 @@ export function useDesktopNavigation({
       key: 'settings',
       label: desktopT('navigation.main.settings'),
       active: mainSection === 'settings' || view === 'settings',
+      attentionDot: Boolean(updateState?.attentionRequired),
       onClick: () => {
         setMainSection('settings')
         setView('settings')

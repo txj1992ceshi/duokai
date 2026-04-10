@@ -551,6 +551,11 @@ export function SettingsView({
                   {desktopT('settings.updates.macOsHint')}
                 </div>
               ) : null}
+              {updateState?.isPrereleaseCandidate ? (
+                <div className="rounded-2xl bg-amber-50 p-4 text-sm text-amber-700">
+                  {desktopT('settings.updates.prereleaseHint')}
+                </div>
+              ) : null}
               <div className="flex flex-wrap items-center gap-2">
                 <Button
                   variant="primary"

@@ -85,6 +85,7 @@ const resources = {
       },
       feedback: {
         updateAvailable: '发现新版本 {{version}}，可在设置中下载安装。',
+        prereleaseUpdateAvailable: '发现测试版更新 {{version}}，可在设置中下载安装。',
         updateDownloaded: '更新包已准备好，可在设置中开始安装。',
         logsCleared: '日志已清空。',
         configurationBundleExported: '配置包已导出。',
@@ -127,6 +128,7 @@ const resources = {
           lastChecked: '最近检查',
           downloadedTo: '已下载到：{{path}}',
           macOsHint: 'Mac 当前采用“检测更新并提示安装”模式，下载后会打开安装包。',
+          prereleaseHint: '当前检测到的是测试版更新，适合验证 test 包升级链路。',
           checkAgain: '重新检查',
           openReleasePage: '打开发布页',
         },
@@ -278,6 +280,7 @@ const resources = {
       },
       feedback: {
         updateAvailable: 'Update {{version}} is available. Download it from Settings.',
+        prereleaseUpdateAvailable: 'Prerelease update {{version}} is available. Download it from Settings.',
         updateDownloaded: 'The update package is ready to install from Settings.',
         logsCleared: 'Logs cleared.',
         configurationBundleExported: 'Configuration bundle exported.',
@@ -320,6 +323,7 @@ const resources = {
           lastChecked: 'Last checked',
           downloadedTo: 'Downloaded to: {{path}}',
           macOsHint: 'On macOS the app checks for updates and opens the installer package after download.',
+          prereleaseHint: 'This available update is a prerelease build intended for test-package validation.',
           checkAgain: 'Check again',
           openReleasePage: 'Open release page',
         },

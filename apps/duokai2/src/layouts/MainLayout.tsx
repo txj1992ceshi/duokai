@@ -9,6 +9,7 @@ export interface MainNavItem {
   key: MainNavKey
   label: string
   active: boolean
+  attentionDot?: boolean
   onClick: () => void
 }
 
@@ -31,11 +32,13 @@ const navIcons = {
 function SidebarButton({
   label,
   active,
+  attentionDot,
   onClick,
   icon: Icon,
 }: {
   label: string
   active: boolean
+  attentionDot?: boolean
   onClick: () => void
   icon: typeof LayoutDashboard
 }) {
@@ -50,7 +53,15 @@ function SidebarButton({
       }`}
     >
       <Icon size={18} />
-      <span className="font-medium">{label}</span>
+      <span className="flex items-center gap-2 font-medium">
+        <span>{label}</span>
+        {attentionDot ? (
+          <span
+            aria-hidden="true"
+            className={`h-2.5 w-2.5 rounded-full ${active ? 'bg-white' : 'bg-rose-500'}`}
+          />
+        ) : null}
+      </span>
     </button>
   )
 }
@@ -133,6 +144,7 @@ export function MainLayout({
               key={item.key}
               label={item.label}
               active={item.active}
+              attentionDot={item.attentionDot}
               onClick={item.onClick}
               icon={navIcons[item.key]}
             />
