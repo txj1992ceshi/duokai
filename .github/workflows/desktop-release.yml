@@ -145,6 +145,42 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Delete existing release assets for tag
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = '${{ steps.desktop-version.outputs.release_tag }}'
+            let release
+            try {
+              const response = await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag,
+              })
+              release = response.data
+            } catch (error) {
+              if (error.status === 404) {
+                core.info(`No existing release found for ${tag}; skipping asset cleanup.`)
+                return
+              }
+              throw error
+            }
+
+            if (!Array.isArray(release.assets) || release.assets.length === 0) {
+              core.info(`Release ${tag} has no existing assets to delete.`)
+              return
+            }
+
+            core.info(`Deleting ${release.assets.length} existing assets from release ${tag}.`)
+            for (const asset of release.assets) {
+              core.info(`Deleting asset: ${asset.name}`)
+              await github.rest.repos.deleteReleaseAsset({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                asset_id: asset.id,
+              })
+            }
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
