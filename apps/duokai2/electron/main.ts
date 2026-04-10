@@ -362,6 +362,34 @@ function buildConfigSyncFallbackResult(message: string): ConfigSyncResult {
   }
 }
 
+function hasConfigSnapshotData(snapshot: RemoteConfigSnapshot | null | undefined): boolean {
+  if (!snapshot) {
+    return false
+  }
+  return (
+    (snapshot.profiles?.length || 0) > 0 ||
+    (snapshot.proxies?.length || 0) > 0 ||
+    (snapshot.templates?.length || 0) > 0 ||
+    (snapshot.cloudPhones?.length || 0) > 0 ||
+    Object.keys(snapshot.settings || {}).length > 0
+  )
+}
+
+function hasLocalConfigData(): boolean {
+  const database = requireDatabase()
+  return hasConfigSnapshotData(database.exportRemoteConfigSnapshot(0))
+}
+
+function buildConfigSyncBootstrapResult(source: ConfigSyncResult['source']): ConfigSyncResult {
+  return {
+    count: requireDatabase().listProfiles().length,
+    source,
+    usedLocalCache: true,
+    message: '云端暂无配置，已保留并上传本地环境数据',
+    warningMessage: '',
+  }
+}
+
 function applyRemoteConfigSnapshot(snapshot: RemoteConfigSnapshot): void {
   const localProfiles = requireDatabase().listProfiles()
   const remoteIds = new Set((snapshot.profiles || []).map((profile) => profile.id))
@@ -426,6 +454,16 @@ async function syncConfigFromControlPlane(options: ConfigSyncOptions = {}): Prom
         warningMessage: '',
       })
       return result!
+    }
+
+    if (Number(snapshot.syncVersion || 0) === 0 && !hasConfigSnapshotData(snapshot) && hasLocalConfigData()) {
+      audit('config_pull_bootstrap_from_local', {
+        source,
+        localProfileCount: requireDatabase().listProfiles().length,
+        localProxyCount: requireDatabase().listProxies().length,
+      })
+      await syncConfigToControlPlaneOrThrow()
+      return setLastConfigSyncResult(buildConfigSyncBootstrapResult(source))!
     }
 
     applyRemoteConfigSnapshot(snapshot)
