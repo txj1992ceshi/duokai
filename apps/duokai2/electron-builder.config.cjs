@@ -21,11 +21,25 @@ function isPrerelease(version) {
   return String(version || '').includes('-')
 }
 
+function resolveProductName(version) {
+  if (!isPrerelease(version)) {
+    return 'Duokai'
+  }
+
+  const numericParts = String(version).match(/\d+/g) ?? []
+  const suffixParts = numericParts.slice(-2)
+  const suffix = suffixParts.length > 0 ? suffixParts.join('.') : 'test'
+
+  return `Duokai-${suffix}`
+}
+
 const baseBuild = pkg.build ?? {}
 const normalizedVersion = parseVersion(pkg.version)
+const productName = resolveProductName(pkg.version)
 
 module.exports = {
   ...baseBuild,
+  productName,
   publish:
     baseBuild.publish ?? [
       {
