@@ -45,8 +45,4 @@ module.exports = {
     ...((baseBuild.dmg ?? {})),
     artifactName: '${productName}-${version}-${arch}.${ext}',
   },
-  zip: {
-    ...((baseBuild.zip ?? {})),
-    artifactName: '${productName}-${version}-${arch}-mac.${ext}',
-  },
 }
