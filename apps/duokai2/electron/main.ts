@@ -2213,16 +2213,30 @@ function buildPowerShellHashtableLiteral(values: Record<string, string>): string
   return `@{\n${entries}\n}`
 }
 
+function encodePowerShellCommand(script: string): string {
+  return Buffer.from(script, 'utf16le').toString('base64')
+}
+
 async function requestJsonViaPowerShell(input: string, init: JsonRequestInit = {}): Promise<JsonResponse> {
   const headers = headersToObject(init.headers)
   const body = init.body || ''
   const method = String(init.method || 'GET').toUpperCase()
+  const bodyFilePath =
+    body.length > 0 ? path.join(os.tmpdir(), `duokai-request-body-${randomUUID()}.txt`) : null
+  if (bodyFilePath) {
+    writeFileSync(bodyFilePath, body, 'utf8')
+  }
   const script = `
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $uri = '${escapePowerShellString(input)}'
 $method = '${escapePowerShellString(method)}'
 $headers = ${buildPowerShellHashtableLiteral(headers)}
-$body = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${Buffer.from(body, 'utf8').toString('base64')}'))
+$bodyPath = ${bodyFilePath ? `'${escapePowerShellString(bodyFilePath)}'` : '$null'}
+$body = if ($null -ne $bodyPath -and (Test-Path -LiteralPath $bodyPath)) {
+  Get-Content -LiteralPath $bodyPath -Raw -Encoding UTF8
+} else {
+  ''
+}
 try {
   $requestParams = @{
     Uri = $uri
@@ -2256,14 +2270,25 @@ try {
 }
 $payload | ConvertTo-Json -Compress
 `.trim()
+  const encodedScript = encodePowerShellCommand(script)
 
   return await new Promise<JsonResponse>((resolve, reject) => {
-    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encodedScript], {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     const stdoutChunks: Buffer[] = []
     const stderrChunks: Buffer[] = []
+    const cleanupBodyFile = () => {
+      if (!bodyFilePath) {
+        return
+      }
+      try {
+        unlinkSync(bodyFilePath)
+      } catch {
+        // Best-effort cleanup for a short-lived temp request body file.
+      }
+    }
 
     child.stdout.on('data', (chunk) => {
       stdoutChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
@@ -2271,8 +2296,8 @@ $payload | ConvertTo-Json -Compress
     child.stderr.on('data', (chunk) => {
       stderrChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
     })
-    child.on('error', reject)
     child.on('close', (code) => {
+      cleanupBodyFile()
       const stdout = Buffer.concat(stdoutChunks).toString('utf8').trim()
       const stderr = Buffer.concat(stderrChunks).toString('utf8').trim()
       if (code !== 0 && !stdout) {
@@ -2298,6 +2323,10 @@ $payload | ConvertTo-Json -Compress
       } catch (error) {
         reject(error instanceof Error ? error : new Error(String(error)))
       }
+    })
+    child.on('error', (error) => {
+      cleanupBodyFile()
+      reject(error)
     })
   })
 }
