@@ -579,6 +579,14 @@ export interface RuntimeHostInfo {
   available: boolean
   reason: string
   activeHosts: number
+  networkDiagnostics?: {
+    level: 'ok' | 'warn' | 'block'
+    message: string
+    checkedAt: string
+    egressIp: string
+    country: string
+    timezone: string
+  }
   effectiveRuntimeMode?: RuntimeMode
   supportedRuntimeModes?: RuntimeMode[]
   degraded?: boolean

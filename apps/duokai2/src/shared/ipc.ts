@@ -74,6 +74,7 @@ export interface DesktopApi {
       lastTaskStatus: 'RECEIVED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | null
       lastTaskFinishedAt: string | null
     }>
+    onConfigChanged: (listener: () => void) => () => void
   }
   updater: {
     getState: () => Promise<DesktopUpdateState>

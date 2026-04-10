@@ -336,6 +336,7 @@ async function syncConfigFromControlPlane(): Promise<void> {
     return
   }
   requireDatabase().applyRemoteConfigSnapshot(snapshot as RemoteConfigSnapshot)
+  emitConfigChanged()
 }
 
 async function syncConfigToControlPlaneOrThrow(mode: 'replace' | 'merge' = 'replace'): Promise<void> {
@@ -364,6 +365,115 @@ async function syncConfigToControlPlaneOrThrow(mode: 'replace' | 'merge' = 'repl
 const AUDIT_LOG_PATH = resolveAuditLogPath()
 let gracefulShutdownInFlight = false
 let beforeQuitHandled = false
+let lastRuntimeNetworkDiagnostics: NonNullable<RuntimeHostInfo['networkDiagnostics']> | null = null
+
+function emitConfigChanged(): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.isDestroyed()) {
+      continue
+    }
+    window.webContents.send('meta.configChanged')
+  }
+}
+
+function rememberRuntimeNetworkDiagnostics(
+  payload: NonNullable<RuntimeHostInfo['networkDiagnostics']>,
+): void {
+  lastRuntimeNetworkDiagnostics = payload
+}
+
+function readLatestRuntimeNetworkDiagnosticsFromAudit():
+  | NonNullable<RuntimeHostInfo['networkDiagnostics']>
+  | null {
+  if (lastRuntimeNetworkDiagnostics) {
+    return lastRuntimeNetworkDiagnostics
+  }
+  if (!existsSync(AUDIT_LOG_PATH)) {
+    return null
+  }
+
+  try {
+    const lines = readFileSync(AUDIT_LOG_PATH, 'utf8')
+      .split(/\r?\n/)
+      .filter(Boolean)
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const raw = lines[index]
+      let record: Record<string, unknown>
+      try {
+        record = JSON.parse(raw) as Record<string, unknown>
+      } catch {
+        continue
+      }
+      if (record.action !== 'runtime_network_diagnostics') {
+        continue
+      }
+      const level =
+        record.level === 'ok' || record.level === 'warn' || record.level === 'block'
+          ? record.level
+          : 'warn'
+      const messages = Array.isArray(record.messages)
+        ? record.messages.map((item) => String(item)).filter(Boolean)
+        : []
+      const payload: NonNullable<RuntimeHostInfo['networkDiagnostics']> = {
+        level,
+        message: String(record.message || messages[0] || ''),
+        checkedAt: String(record.checkedAt || record.ts || ''),
+        egressIp: String(record.egressIp || ''),
+        country: String(record.country || record.region || ''),
+        timezone: String(record.timezone || ''),
+      }
+      rememberRuntimeNetworkDiagnostics(payload)
+      return payload
+    }
+  } catch (error) {
+    console.warn(
+      '[duokai2] failed to hydrate runtime network diagnostics:',
+      error instanceof Error ? error.message : String(error),
+    )
+  }
+
+  return null
+}
+
+async function syncConfigToControlPlaneBestEffort(action: string, details: Record<string, unknown>): Promise<void> {
+  try {
+    await syncConfigToControlPlaneOrThrow()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    audit('config_sync_best_effort_failed', {
+      action,
+      err: message,
+      ...details,
+    })
+    logEvent('warn', 'system', `${action} config sync failed: ${message}`, null)
+  }
+}
+
+async function deleteRemoteProfileBestEffort(profileId: string): Promise<void> {
+  if (!getDesktopAuthState().authenticated) {
+    return
+  }
+
+  try {
+    await requestControlPlane(`/api/profiles/${encodeURIComponent(profileId)}`, {
+      method: 'DELETE',
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (/profile not found/i.test(message) || /请先登录桌面端/i.test(message)) {
+      audit('profile_remote_delete_skipped', {
+        profileId,
+        err: message,
+      })
+      return
+    }
+    audit('profile_remote_delete_failed', {
+      profileId,
+      err: message,
+    })
+    logEvent('warn', 'profile', `Remote delete failed for profile ${profileId}: ${message}`, profileId)
+  }
+}
 
 function audit(action: string, payload: Record<string, unknown> = {}) {
   try {
@@ -3359,7 +3469,10 @@ function syncNativeChrome(): void {
   mainWindow.setBackgroundColor(backgroundColor)
   if (process.platform === 'win32') {
     try {
-      mainWindow.setTitleBarOverlay(getTitleBarOverlayOptions())
+      const overlay = getTitleBarOverlayOptions()
+      if (overlay) {
+        mainWindow.setTitleBarOverlay(overlay)
+      }
     } catch {
       // Best-effort for platforms or Electron builds without overlay support.
     }
@@ -3920,6 +4033,7 @@ function getRuntimeHostInfo() {
   if (isRuntimeHostSupported('container')) {
     supportedRuntimeModes.push('container')
   }
+  const diagnostics = readLatestRuntimeNetworkDiagnosticsFromAudit()
   return {
     kind,
     label: available ? kind : `local fallback for ${kind}`,
@@ -3928,6 +4042,7 @@ function getRuntimeHostInfo() {
       ? 'runtime host ready'
       : `runtime host "${kind}" is unavailable on this platform; falling back to local`,
     activeHosts: runtimeHostManager.listEnvironments().length,
+    networkDiagnostics: diagnostics ?? undefined,
     effectiveRuntimeMode: available ? effectiveRuntimeMode : 'local',
     supportedRuntimeModes,
     degraded: !available && kind !== 'local',
@@ -4474,10 +4589,24 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
   launchOptions.env = buildChromiumLaunchEnv()
 
     const diagnostics = buildNetworkDiagnosticsSummary(runtimeHost, check)
+    rememberRuntimeNetworkDiagnostics({
+      level: diagnostics.level,
+      message: diagnostics.messages[0] || check.message || '',
+      checkedAt: check.checkedAt,
+      egressIp: check.ip,
+      country: check.country || check.region,
+      timezone: check.timezone,
+    })
     audit('runtime_network_diagnostics', {
-    profileId,
-    level: diagnostics.level,
-    messages: diagnostics.messages,
+      profileId,
+      level: diagnostics.level,
+      messages: diagnostics.messages,
+      message: diagnostics.messages[0] || check.message || '',
+      checkedAt: check.checkedAt,
+      egressIp: check.ip,
+      country: check.country,
+      region: check.region,
+      timezone: check.timezone,
     })
 
     // Launch reads userDataDir and runtime config from workspace only. Legacy fingerprint fields are mirrors.
@@ -5522,20 +5651,9 @@ async function registerIpcHandlers(): Promise<void> {
   ipcMain.handle('profiles.delete', async (_event, profileId: string) => {
     ensureWritable('profiles.delete')
     await stopRuntime(profileId)
-    if (getDesktopAuthState().authenticated) {
-      try {
-        await requestControlPlane(`/api/profiles/${encodeURIComponent(profileId)}`, {
-          method: 'DELETE',
-        })
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        if (!/profile not found/i.test(message)) {
-          throw error
-        }
-      }
-    }
+    await deleteRemoteProfileBestEffort(profileId)
     requireDatabase().deleteProfile(profileId)
-    await syncConfigToControlPlaneOrThrow()
+    await syncConfigToControlPlaneBestEffort('profiles.delete', { profileId })
     logEvent('warn', 'profile', `Deleted profile ${profileId}`, profileId)
   })
   ipcMain.handle('profiles.clone', async (_event, profileId: string) => {
@@ -5562,22 +5680,14 @@ async function registerIpcHandlers(): Promise<void> {
   ipcMain.handle('profiles.bulkDelete', async (_event, payload: ProfileBulkActionPayload) => {
     ensureWritable('profiles.bulkDelete')
     await stopMany(payload.profileIds)
-    if (getDesktopAuthState().authenticated) {
-      for (const profileId of payload.profileIds) {
-        try {
-          await requestControlPlane(`/api/profiles/${encodeURIComponent(profileId)}`, {
-            method: 'DELETE',
-          })
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          if (!/profile not found/i.test(message)) {
-            throw error
-          }
-        }
-      }
+    for (const profileId of payload.profileIds) {
+      await deleteRemoteProfileBestEffort(profileId)
     }
     requireDatabase().bulkDeleteProfiles(payload.profileIds)
-    await syncConfigToControlPlaneOrThrow()
+    await syncConfigToControlPlaneBestEffort('profiles.bulkDelete', {
+      profileIds: payload.profileIds,
+      count: payload.profileIds.length,
+    })
     logEvent('warn', 'profile', `Deleted ${payload.profileIds.length} profiles`, null)
   })
   ipcMain.handle('profiles.bulkAssignGroup', async (_event, payload: ProfileBulkActionPayload) => {

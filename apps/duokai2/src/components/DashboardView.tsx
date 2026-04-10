@@ -65,30 +65,36 @@ export function DashboardView({
   const copy =
     locale === 'zh-CN'
       ? {
-          runtimeHost: '运行宿主',
-          fallback: '降级',
-          running: '运行中',
-          queued: '排队',
-          networkCheck: '网络检查',
-          failed: '失败',
-          ready: '正常',
-          unresolved: '未解析',
-          unknownCountry: '未知地区',
-          timezonePending: '未生成时区',
-          latestNetworkCheckHint: '最近一次代理/出口检查结果。',
+          hostNetwork: '\u4e3b\u673a\u7f51\u7edc',
+          runtimeHost: '\u8fd0\u884c\u5bbf\u4e3b',
+          environmentEgress: '\u73af\u5883\u51fa\u53e3\u68c0\u67e5',
+          fallback: '\u964d\u7ea7',
+          running: '\u8fd0\u884c\u4e2d',
+          queued: '\u6392\u961f',
+          failed: '\u5931\u8d25',
+          ready: '\u6b63\u5e38',
+          warning: '\u8b66\u544a',
+          unresolved: '\u672a\u89e3\u6790',
+          unknownCountry: '\u672a\u77e5\u5730\u533a',
+          timezonePending: '\u65f6\u533a\u5f85\u5b9a',
+          hostNetworkHint: '\u7b49\u5f85\u4e3b\u673a\u7f51\u7edc\u8bca\u65ad\u7ed3\u679c\u3002',
+          latestNetworkCheckHint: '\u6700\u8fd1\u4e00\u6b21\u73af\u5883\u4ee3\u7406\u51fa\u53e3\u68c0\u67e5\u7ed3\u679c\u3002',
         }
       : {
+          hostNetwork: 'Host network',
           runtimeHost: 'Runtime host',
+          environmentEgress: 'Environment egress',
           fallback: 'Fallback',
           running: 'Running',
           queued: 'Queued',
-          networkCheck: 'Network check',
           failed: 'Failed',
           ready: 'Ready',
+          warning: 'Warning',
           unresolved: 'unresolved',
           unknownCountry: 'unknown',
           timezonePending: 'timezone pending',
-          latestNetworkCheckHint: 'Latest proxy/egress check result.',
+          hostNetworkHint: 'Waiting for host network diagnostics.',
+          latestNetworkCheckHint: 'Latest environment proxy/egress check result.',
         }
 
   const summaryCards: SummaryCardItem[] = [
@@ -128,6 +134,23 @@ export function DashboardView({
     },
   ]
 
+  const hostDiagnosticsTone =
+    runtimeHostInfo?.networkDiagnostics?.level === 'block'
+      ? 'danger'
+      : runtimeHostInfo?.networkDiagnostics?.level === 'warn'
+        ? 'warning'
+        : runtimeHostInfo?.networkDiagnostics
+          ? 'success'
+          : 'neutral'
+
+  const hostDiagnosticsLabel = !runtimeHostInfo?.networkDiagnostics
+    ? t.common.loading
+    : runtimeHostInfo.networkDiagnostics.level === 'block'
+      ? copy.failed
+      : runtimeHostInfo.networkDiagnostics.level === 'warn'
+        ? copy.warning
+        : copy.ready
+
   return (
     <section className="space-y-6">
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -146,9 +169,11 @@ export function DashboardView({
         <Card className="rounded-[24px] border border-slate-200 shadow-none">
           <div className="space-y-4 p-5">
             <div>
-              <div className="text-sm font-medium text-slate-500">{copy.runtimeHost}</div>
+              <div className="text-sm font-medium text-slate-500">{copy.hostNetwork}</div>
               <div className="mt-2 flex flex-wrap items-center gap-2">
+                <Badge tone={hostDiagnosticsTone}>{hostDiagnosticsLabel}</Badge>
                 <Badge tone={runtimeHostInfo?.available ? 'success' : 'warning'}>
+                  {copy.runtimeHost}{' '}
                   {runtimeHostInfo
                     ? runtimeHostInfo.available
                       ? runtimeHostInfo.label
@@ -164,15 +189,28 @@ export function DashboardView({
               </div>
             </div>
             <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">
-              {runtimeHostInfo?.reason ?? t.common.loading}
+              {runtimeHostInfo?.networkDiagnostics
+                ? `${runtimeHostInfo.networkDiagnostics.message || runtimeHostInfo.reason} / ${
+                    runtimeHostInfo.networkDiagnostics.egressIp || copy.unresolved
+                  } / ${
+                    runtimeHostInfo.networkDiagnostics.country || copy.unknownCountry
+                  } / ${
+                    runtimeHostInfo.networkDiagnostics.timezone || copy.timezonePending
+                  }`
+                : runtimeHostInfo?.reason || copy.hostNetworkHint}
             </div>
+            {runtimeHostInfo?.networkDiagnostics?.checkedAt ? (
+              <div className="text-xs text-slate-400">
+                {formatDate(runtimeHostInfo.networkDiagnostics.checkedAt)}
+              </div>
+            ) : null}
           </div>
         </Card>
 
         <Card className="rounded-[24px] border border-slate-200 shadow-none">
           <div className="space-y-4 p-5">
             <div>
-              <div className="text-sm font-medium text-slate-500">{copy.networkCheck}</div>
+              <div className="text-sm font-medium text-slate-500">{copy.environmentEgress}</div>
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <Badge
                   tone={
@@ -196,11 +234,11 @@ export function DashboardView({
             </div>
             <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">
               {latestNetworkCheck
-                ? `${latestNetworkCheck.profileName} · ${
+                ? `${latestNetworkCheck.profileName} / ${
                     latestNetworkCheck.ip || copy.unresolved
-                  } · ${
+                  } / ${
                     latestNetworkCheck.country || copy.unknownCountry
-                  } · ${
+                  } / ${
                     latestNetworkCheck.timezone || copy.timezonePending
                   }`
                 : copy.latestNetworkCheckHint}

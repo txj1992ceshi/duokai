@@ -139,6 +139,16 @@ type CloudPhoneRow = {
 
 type CountRow = { count: number }
 
+const REMOTE_SYNC_EXCLUDED_SETTINGS = new Set([
+  'controlPlaneAuthToken',
+  'controlPlaneAuthUser',
+  'controlPlaneAuthRemember',
+  'controlPlaneRememberCredentials',
+  'controlPlaneAuthIdentifier',
+  'controlPlaneAuthPassword',
+  'controlPlaneDeviceId',
+])
+
 export class DatabaseService {
   private readonly db: Database.Database
   private logsTableRecoveryAttempted = false
@@ -1151,6 +1161,14 @@ export class DatabaseService {
     }, {})
   }
 
+  private getRemoteSyncedSettings(settings: SettingsPayload = this.getSettings()): SettingsPayload {
+    return Object.fromEntries(
+      Object.entries(settings).filter(([key, value]) => {
+        return typeof value === 'string' && !REMOTE_SYNC_EXCLUDED_SETTINGS.has(key)
+      }),
+    )
+  }
+
   setSettings(payload: SettingsPayload): SettingsPayload {
     const stmt = this.db.prepare(
       `INSERT INTO settings (key, value) VALUES (?, ?)
@@ -1186,17 +1204,22 @@ export class DatabaseService {
       proxies: this.listProxies(),
       templates: this.listTemplates(),
       cloudPhones: this.listCloudPhones(),
-      settings: this.getSettings(),
+      settings: this.getRemoteSyncedSettings(),
     }
   }
 
   applyRemoteConfigSnapshot(snapshot: RemoteConfigSnapshot): void {
+    const existingSettings = this.getSettings()
+    const sharedSettingKeys = Object.keys(this.getRemoteSyncedSettings(existingSettings))
     const tx = this.db.transaction(() => {
       this.db.prepare(`DELETE FROM profiles`).run()
       this.db.prepare(`DELETE FROM templates`).run()
       this.db.prepare(`DELETE FROM proxies`).run()
       this.db.prepare(`DELETE FROM cloud_phones`).run()
-      this.db.prepare(`DELETE FROM settings`).run()
+      const deleteSettingStmt = this.db.prepare(`DELETE FROM settings WHERE key = ?`)
+      for (const key of sharedSettingKeys) {
+        deleteSettingStmt.run(key)
+      }
 
       for (const proxy of snapshot.proxies || []) {
         this.insertProxy({
@@ -1296,6 +1319,9 @@ export class DatabaseService {
          ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
       )
       for (const [key, value] of Object.entries(snapshot.settings || {})) {
+        if (REMOTE_SYNC_EXCLUDED_SETTINGS.has(key)) {
+          continue
+        }
         settingsStmt.run(key, String(value))
       }
     })

@@ -167,12 +167,13 @@ export function useDesktopAppData({
         const api = requireDesktopApi(['auth.getState'])
         const nextAuthState = await api.auth.getState()
         setAuthState(nextAuthState)
-        setAuthReady(true)
-        if (nextAuthState.authenticated) {
-          await refreshAll({ includeCloudPhoneDiagnostics: true })
-        } else {
+        await refreshAll({
+          includeCloudPhoneDiagnostics: nextAuthState.authenticated,
+        })
+        if (!nextAuthState.authenticated) {
           setSyncWarningMessage('')
         }
+        setAuthReady(true)
       } catch (error) {
         setErrorMessage(localizeError(error))
         setAuthReady(true)
@@ -246,6 +247,30 @@ export function useDesktopAppData({
       setUpdateState(nextState)
     })
   }, [])
+
+  useEffect(() => {
+    const api = window.desktop as DesktopApi | undefined
+    if (!api?.meta?.onConfigChanged) {
+      return
+    }
+    return api.meta.onConfigChanged(() => {
+      void (async () => {
+        try {
+          const authApi = requireDesktopApi(['auth.getState'])
+          const nextAuthState = await authApi.auth.getState()
+          setAuthState(nextAuthState)
+          await refreshAll({
+            includeCloudPhoneDiagnostics: nextAuthState.authenticated,
+          })
+          if (!nextAuthState.authenticated) {
+            setSyncWarningMessage('')
+          }
+        } catch (error) {
+          setErrorMessage(localizeError(error))
+        }
+      })()
+    })
+  }, [localizeError, refreshAll, requireDesktopApi, setErrorMessage, setSyncWarningMessage])
 
   const clearAuthenticatedWorkspace = useCallback(() => {
     setProfiles([])

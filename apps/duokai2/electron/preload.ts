@@ -29,6 +29,15 @@ const api: DesktopApi = {
   meta: {
     getInfo: () => ipcRenderer.invoke('meta.getInfo'),
     getAgentState: () => ipcRenderer.invoke('meta.getAgentState'),
+    onConfigChanged: (listener) => {
+      const wrapped = () => {
+        listener()
+      }
+      ipcRenderer.on('meta.configChanged', wrapped)
+      return () => {
+        ipcRenderer.removeListener('meta.configChanged', wrapped)
+      }
+    },
   },
   updater: {
     getState: () => ipcRenderer.invoke('updater.getState'),
