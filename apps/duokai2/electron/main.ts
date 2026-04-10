@@ -7,6 +7,7 @@ import https from 'node:https'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
+import { once } from 'node:events'
 import { fileURLToPath } from 'node:url'
 import {
   app,
@@ -191,6 +192,8 @@ const DESKTOP_RELEASES_PAGE = 'https://github.com/txj1992ceshi/duokai/releases'
 const UPDATE_DOWNLOAD_DIR = 'updates'
 const AUTO_UPDATE_CHECK_DELAY_MS = 12_000
 const UPDATE_CHECK_MIN_INTERVAL_MS = 30 * 60 * 1000
+const UPDATE_PROGRESS_EMIT_INTERVAL_MS = 400
+const UPDATE_PROGRESS_MIN_STEP = 1
 const PROFILE_SYNC_COOLDOWN_MS = 30_000
 
 type ControlPlaneStorageState = {
@@ -1870,6 +1873,8 @@ async function downloadDesktopUpdate(): Promise<DesktopUpdateState> {
       const writer = createWriteStream(destination)
       const reader = response.body.getReader()
       let downloaded = 0
+      let lastReportedProgress = -1
+      let lastProgressEmitAt = 0
       setUpdateState({
         status: 'downloading',
         assetName: latestAsset.name,
@@ -1886,17 +1891,30 @@ async function downloadDesktopUpdate(): Promise<DesktopUpdateState> {
           continue
         }
         downloaded += value.length
-        writer.write(Buffer.from(value))
+        if (!writer.write(Buffer.from(value))) {
+          await once(writer, 'drain')
+        }
         const progressPercent =
           totalBytes > 0 ? Math.max(1, Math.min(100, Math.round((downloaded / totalBytes) * 100))) : 0
-        setUpdateState({
-          status: 'downloading',
-          progressPercent,
-          message:
-            totalBytes > 0
-              ? `正在下载更新 ${latestAsset.name}（${progressPercent}%）`
-              : `正在下载更新 ${latestAsset.name}`,
-        })
+        const now = Date.now()
+        const shouldEmitProgress =
+          totalBytes <= 0 ||
+          lastReportedProgress < 0 ||
+          progressPercent >= 100 ||
+          progressPercent - lastReportedProgress >= UPDATE_PROGRESS_MIN_STEP ||
+          now - lastProgressEmitAt >= UPDATE_PROGRESS_EMIT_INTERVAL_MS
+        if (shouldEmitProgress) {
+          lastReportedProgress = progressPercent
+          lastProgressEmitAt = now
+          setUpdateState({
+            status: 'downloading',
+            progressPercent,
+            message:
+              totalBytes > 0
+                ? `正在下载更新 ${latestAsset.name}（${progressPercent}%）`
+                : `正在下载更新 ${latestAsset.name}`,
+          })
+        }
       }
       await new Promise<void>((resolve, reject) => {
         writer.end(() => resolve())
