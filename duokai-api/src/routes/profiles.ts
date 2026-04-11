@@ -7,7 +7,9 @@ import {
 } from '../lib/configProfiles.js';
 import { asyncHandler } from '../lib/http.js';
 import { normalizeRuntimeMode } from '../lib/runtimeModes.js';
+import { resolveRuntimeProfileForUser } from '../lib/runtimeProfiles.js';
 import { normalizeWorkspacePayload, serializeProfile } from '../lib/serializers.js';
+import { logSyncRouteEvent, resolveProfileIdType } from '../lib/syncRouteLogger.js';
 import { resolveDefaultIpUsageMode } from '../lib/platformPolicies.js';
 import { requireUser } from '../middlewares/auth.js';
 import { ProfileModel } from '../models/Profile.js';
@@ -173,6 +175,7 @@ router.patch(
     const body = req.body || {};
     const profileId = String(req.params.id);
     const updateData: Record<string, unknown> = {};
+    const resolved = await resolveRuntimeProfileForUser(authUser.userId, profileId);
 
     if (typeof body.name === 'string') updateData.name = body.name.trim();
     if (typeof body.platform === 'string') updateData.platform = body.platform.trim();
@@ -244,7 +247,18 @@ router.patch(
 
     let profile: Record<string, unknown> | null = null;
 
-    if (isMongoObjectId(profileId)) {
+    if (!resolved) {
+      logSyncRouteEvent('warn', 'profile_patch_profile_missing', {
+        route: 'PATCH /api/profiles/:id',
+        profileId,
+        profileIdType: resolveProfileIdType(profileId),
+        profileSource: 'missing',
+      });
+      res.status(404).json({ success: false, error: 'Profile not found' });
+      return;
+    }
+
+    if (resolved.source === 'mongo' && isMongoObjectId(profileId)) {
       profile = await ProfileModel.findOneAndUpdate(
         { _id: profileId, userId: authUser.userId },
         updateData,
@@ -263,6 +277,12 @@ router.patch(
     }
 
     if (!profile) {
+      logSyncRouteEvent('warn', 'profile_patch_profile_missing_after_update', {
+        route: 'PATCH /api/profiles/:id',
+        profileId,
+        profileIdType: resolveProfileIdType(profileId),
+        profileSource: resolved.source,
+      });
       res.status(404).json({ success: false, error: 'Profile not found' });
       return;
     }
@@ -284,6 +304,13 @@ router.patch(
               id: profileId,
               storageStateSynced: !!storageState,
             },
+    });
+    logSyncRouteEvent('info', 'profile_patch_applied', {
+      route: 'PATCH /api/profiles/:id',
+      profileId,
+      profileIdType: resolveProfileIdType(profileId),
+      profileSource: resolved.source,
+      updatedWorkspace: body.workspace !== undefined,
     });
   })
 );

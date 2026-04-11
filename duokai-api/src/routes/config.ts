@@ -9,6 +9,7 @@ import {
 import { asyncHandler } from '../lib/http.js';
 import { connectMongo } from '../lib/mongodb.js';
 import { normalizeWorkspacePayload } from '../lib/serializers.js';
+import { logSyncRouteEvent, resolveProfileIdType } from '../lib/syncRouteLogger.js';
 import { requireUser } from '../middlewares/auth.js';
 import { AgentConfigStateModel } from '../models/AgentConfigState.js';
 
@@ -136,6 +137,12 @@ router.get(
 
     const { profile } = await findConfigProfileForUser(req.authUser!.userId, profileId);
     if (!profile) {
+      logSyncRouteEvent('warn', 'config_profile_missing', {
+        route: 'GET /api/config/profiles/:id',
+        profileId,
+        profileIdType: resolveProfileIdType(profileId),
+        profileSource: 'missing',
+      });
       res.status(404).json({ success: false, error: 'Profile not found' });
       return;
     }
@@ -190,6 +197,14 @@ router.put(
       configSyncVersion: nextVersion,
     });
     const { profile: savedProfile } = await findConfigProfileForUser(req.authUser!.userId, profileId);
+    logSyncRouteEvent('info', 'config_profile_upserted', {
+      route: 'PUT /api/config/profiles/:id',
+      profileId,
+      profileIdType: resolveProfileIdType(profileId),
+      profileSource: 'config',
+      syncVersion: nextVersion,
+      updatedAt: savedState?.updatedAt || new Date(),
+    });
 
     res.json({
       success: true,
@@ -213,6 +228,12 @@ router.delete(
 
     const deleted = await deleteConfigProfileForUser(req.authUser!.userId, profileId);
     if (!deleted) {
+      logSyncRouteEvent('warn', 'config_profile_missing', {
+        route: 'DELETE /api/config/profiles/:id',
+        profileId,
+        profileIdType: resolveProfileIdType(profileId),
+        profileSource: 'missing',
+      });
       res.status(404).json({ success: false, error: 'Profile not found' });
       return;
     }

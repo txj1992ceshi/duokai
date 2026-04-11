@@ -1,14 +1,18 @@
 import { Router } from 'express';
-import { findConfigProfileForUser, isMongoObjectId } from '../lib/configProfiles.js';
 import { connectMongo } from '../lib/mongodb.js';
 import { asyncHandler } from '../lib/http.js';
 import { requireUser } from '../middlewares/auth.js';
+import { resolveRuntimeProfileForUser } from '../lib/runtimeProfiles.js';
+import {
+  buildArtifactContext,
+  logSyncRouteEvent,
+  resolveProfileIdType,
+} from '../lib/syncRouteLogger.js';
 import {
   resolveWorkspaceSnapshotArtifact,
   writeWorkspaceSnapshotArtifact,
 } from '../lib/storageArtifacts.js';
 import { compactStorageStatePayload, shouldIncludeArtifactContent } from '../lib/storageView.js';
-import { ProfileModel } from '../models/Profile.js';
 import { WorkspaceSnapshotModel } from '../models/WorkspaceSnapshot.js';
 
 const router = Router();
@@ -55,22 +59,6 @@ function normalizeSnapshotStorageState(value: unknown) {
     return {} as Record<string, unknown>;
   }
   return value as Record<string, unknown>;
-}
-
-async function profileExistsForUser(userId: string, profileId: string): Promise<boolean> {
-  if (isMongoObjectId(profileId)) {
-    const profile = await ProfileModel.findOne({
-      _id: profileId,
-      userId,
-    })
-      .select('_id')
-      .lean();
-    if (profile) {
-      return true;
-    }
-  }
-  const { profile } = await findConfigProfileForUser(userId, profileId);
-  return Boolean(profile);
 }
 
 async function serializeWorkspaceSnapshot(
@@ -132,15 +120,21 @@ router.get(
     await connectMongo();
     const authUser = req.authUser!;
     const profileId = String(req.params.profileId);
-
-    if (!(await profileExistsForUser(authUser.userId, profileId))) {
+    const resolved = await resolveRuntimeProfileForUser(authUser.userId, profileId);
+    if (!resolved) {
+      logSyncRouteEvent('warn', 'workspace_snapshot_profile_missing', {
+        route: 'GET /api/workspace-snapshots/:profileId',
+        profileId,
+        profileIdType: resolveProfileIdType(profileId),
+        profileSource: 'missing',
+      });
       res.status(404).json({ success: false, error: 'Profile not found' });
       return;
     }
 
     const snapshots = await WorkspaceSnapshotModel.find({
       userId: authUser.userId,
-      profileId,
+      profileId: resolved.profileId,
     })
       .sort({ updatedAt: -1 })
       .lean();
@@ -164,15 +158,22 @@ router.get(
     const authUser = req.authUser!;
     const profileId = String(req.params.profileId);
     const snapshotId = String(req.params.snapshotId);
-
-    if (!(await profileExistsForUser(authUser.userId, profileId))) {
+    const resolved = await resolveRuntimeProfileForUser(authUser.userId, profileId);
+    if (!resolved) {
+      logSyncRouteEvent('warn', 'workspace_snapshot_profile_missing', {
+        route: 'GET /api/workspace-snapshots/:profileId/:snapshotId',
+        profileId,
+        snapshotId,
+        profileIdType: resolveProfileIdType(profileId),
+        profileSource: 'missing',
+      });
       res.status(404).json({ success: false, error: 'Profile not found' });
       return;
     }
 
     const snapshot = await WorkspaceSnapshotModel.findOne({
       userId: authUser.userId,
-      profileId,
+      profileId: resolved.profileId,
       snapshotId,
     }).lean();
     const includeContent = shouldIncludeArtifactContent(req.query.includeContent);
@@ -197,44 +198,66 @@ router.put(
     const profileId = String(req.params.profileId);
     const snapshotId = String(req.params.snapshotId);
     const body = req.body || {};
-
-    if (!(await profileExistsForUser(authUser.userId, profileId))) {
+    const resolved = await resolveRuntimeProfileForUser(authUser.userId, profileId);
+    if (!resolved) {
+      logSyncRouteEvent('warn', 'workspace_snapshot_profile_missing', {
+        route: 'PUT /api/workspace-snapshots/:profileId/:snapshotId',
+        profileId,
+        snapshotId,
+        profileIdType: resolveProfileIdType(profileId),
+        profileSource: 'missing',
+      });
       res.status(404).json({ success: false, error: 'Profile not found' });
       return;
     }
 
-    const payload = normalizeWorkspaceSnapshotPayload(profileId, snapshotId, body);
+    const payload = normalizeWorkspaceSnapshotPayload(resolved.profileId, snapshotId, body);
 
-    const artifact = await writeWorkspaceSnapshotArtifact({
-      userId: String(authUser.userId),
-      profileId,
-      snapshotId: payload.snapshotId,
-      payload: {
+    let artifact;
+    try {
+      artifact = await writeWorkspaceSnapshotArtifact({
+        userId: String(authUser.userId),
+        profileId: resolved.profileId,
         snapshotId: payload.snapshotId,
+        payload: {
+          snapshotId: payload.snapshotId,
+          profileId: resolved.profileId,
+          templateRevision: payload.templateRevision,
+          templateFingerprintHash: payload.templateFingerprintHash,
+          manifest: payload.manifest,
+          workspaceMetadata: payload.workspaceMetadata,
+          storageState: payload.storageState,
+          directoryManifest: payload.directoryManifest,
+          healthSummary: payload.healthSummary,
+          consistencySummary: payload.consistencySummary,
+          validatedStartAt: payload.validatedStartAt,
+          createdAt: payload.createdAt,
+          updatedAt: payload.updatedAt,
+        },
+      });
+    } catch (error) {
+      logSyncRouteEvent('error', 'workspace_snapshot_artifact_write_failed', {
+        route: 'PUT /api/workspace-snapshots/:profileId/:snapshotId',
         profileId,
-        templateRevision: payload.templateRevision,
-        templateFingerprintHash: payload.templateFingerprintHash,
-        manifest: payload.manifest,
-        workspaceMetadata: payload.workspaceMetadata,
-        storageState: payload.storageState,
-        directoryManifest: payload.directoryManifest,
-        healthSummary: payload.healthSummary,
-        consistencySummary: payload.consistencySummary,
-        validatedStartAt: payload.validatedStartAt,
-        createdAt: payload.createdAt,
-        updatedAt: payload.updatedAt,
-      },
-    });
+        resolvedProfileId: resolved.profileId,
+        snapshotId: payload.snapshotId,
+        profileIdType: resolveProfileIdType(profileId),
+        profileSource: resolved.source,
+        errorMessage: error instanceof Error ? error.message : String(error),
+        ...buildArtifactContext(),
+      });
+      throw error;
+    }
 
     const snapshot = await WorkspaceSnapshotModel.findOneAndUpdate(
       {
         userId: authUser.userId,
-        profileId,
+        profileId: resolved.profileId,
         snapshotId: payload.snapshotId,
       },
       {
         userId: authUser.userId,
-        profileId,
+        profileId: resolved.profileId,
         snapshotId: payload.snapshotId,
         templateRevision: payload.templateRevision,
         templateFingerprintHash: payload.templateFingerprintHash,
@@ -265,6 +288,16 @@ router.put(
     res.json({
       success: true,
       snapshot: await serializeWorkspaceSnapshot(snapshot as Record<string, unknown>, true),
+    });
+    logSyncRouteEvent('info', 'workspace_snapshot_upserted', {
+      route: 'PUT /api/workspace-snapshots/:profileId/:snapshotId',
+      profileId,
+      resolvedProfileId: resolved.profileId,
+      snapshotId: payload.snapshotId,
+      profileIdType: resolveProfileIdType(profileId),
+      profileSource: resolved.source,
+      fileRef: String((snapshot as Record<string, unknown> | null)?.fileRef || ''),
+      ...buildArtifactContext(),
     });
   })
 );

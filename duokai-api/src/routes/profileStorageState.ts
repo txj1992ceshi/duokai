@@ -1,14 +1,18 @@
 import { Router } from 'express';
-import { findConfigProfileForUser, isMongoObjectId } from '../lib/configProfiles.js';
 import { connectMongo } from '../lib/mongodb.js';
 import { asyncHandler } from '../lib/http.js';
 import { requireUser } from '../middlewares/auth.js';
+import { resolveRuntimeProfileForUser } from '../lib/runtimeProfiles.js';
+import {
+  buildArtifactContext,
+  logSyncRouteEvent,
+  resolveProfileIdType,
+} from '../lib/syncRouteLogger.js';
 import {
   resolveStorageStateJson,
   writeStorageStateArtifact,
 } from '../lib/storageArtifacts.js';
 import { shouldIncludeArtifactContent } from '../lib/storageView.js';
-import { ProfileModel } from '../models/Profile.js';
 import { ProfileStorageStateModel } from '../models/ProfileStorageState.js';
 
 const router = Router();
@@ -68,37 +72,27 @@ async function serializeStorageStateRecord(
   };
 }
 
-async function profileExistsForUser(userId: string, profileId: string): Promise<boolean> {
-  if (isMongoObjectId(profileId)) {
-    const profile = await ProfileModel.findOne({
-      _id: profileId,
-      userId,
-    })
-      .select('_id')
-      .lean();
-    if (profile) {
-      return true;
-    }
-  }
-  const { profile } = await findConfigProfileForUser(userId, profileId);
-  return Boolean(profile);
-}
-
 router.get(
   '/:profileId',
   asyncHandler(async (req, res) => {
     await connectMongo();
     const authUser = req.authUser!;
     const profileId = String(req.params.profileId || '').trim();
-
-    if (!(await profileExistsForUser(authUser.userId, profileId))) {
+    const resolved = await resolveRuntimeProfileForUser(authUser.userId, profileId);
+    if (!resolved) {
+      logSyncRouteEvent('warn', 'profile_storage_state_profile_missing', {
+        route: 'GET /api/profile-storage-state/:profileId',
+        profileId,
+        profileIdType: resolveProfileIdType(profileId),
+        profileSource: 'missing',
+      });
       res.status(404).json({ success: false, error: 'Profile not found' });
       return;
     }
 
     const storageState = await ProfileStorageStateModel.findOne({
       userId: authUser.userId,
-      profileId,
+      profileId: resolved.profileId,
     }).lean();
     const includeContent = shouldIncludeArtifactContent(req.query.includeContent);
 
@@ -119,8 +113,14 @@ router.put(
     const authUser = req.authUser!;
     const profileId = String(req.params.profileId || '').trim();
     const body = req.body || {};
-
-    if (!(await profileExistsForUser(authUser.userId, profileId))) {
+    const resolved = await resolveRuntimeProfileForUser(authUser.userId, profileId);
+    if (!resolved) {
+      logSyncRouteEvent('warn', 'profile_storage_state_profile_missing', {
+        route: 'PUT /api/profile-storage-state/:profileId',
+        profileId,
+        profileIdType: resolveProfileIdType(profileId),
+        profileSource: 'missing',
+      });
       res.status(404).json({ success: false, error: 'Profile not found' });
       return;
     }
@@ -143,7 +143,7 @@ router.put(
 
     const existing = await ProfileStorageStateModel.findOne({
       userId: authUser.userId,
-      profileId,
+      profileId: resolved.profileId,
     }).lean();
 
     if ((existing?.version || 0) !== baseVersion) {
@@ -161,26 +161,42 @@ router.put(
     }
 
     const nextVersion = existing ? (existing.version || 0) + 1 : 1;
-    const artifact =
-      normalized.inlineStateJson !== null
-        ? await writeStorageStateArtifact({
-            userId: String(authUser.userId),
-            profileId,
-            version: nextVersion,
-            stateJson: normalized.inlineStateJson,
-            stateHash: normalized.stateHash,
-            deviceId: normalized.deviceId,
-            source: normalized.source,
-          })
-        : null;
+    let artifact = null;
+    try {
+      artifact =
+        normalized.inlineStateJson !== null
+          ? await writeStorageStateArtifact({
+              userId: String(authUser.userId),
+              profileId: resolved.profileId,
+              version: nextVersion,
+              stateJson: normalized.inlineStateJson,
+              stateHash: normalized.stateHash,
+              deviceId: normalized.deviceId,
+              source: normalized.source,
+            })
+          : null;
+    } catch (error) {
+      logSyncRouteEvent('error', 'profile_storage_state_artifact_write_failed', {
+        route: 'PUT /api/profile-storage-state/:profileId',
+        profileId,
+        resolvedProfileId: resolved.profileId,
+        profileIdType: resolveProfileIdType(profileId),
+        profileSource: resolved.source,
+        version: nextVersion,
+        deviceId: normalized.deviceId,
+        errorMessage: error instanceof Error ? error.message : String(error),
+        ...buildArtifactContext(),
+      });
+      throw error;
+    }
     const storageState = await ProfileStorageStateModel.findOneAndUpdate(
       {
         userId: authUser.userId,
-        profileId,
+        profileId: resolved.profileId,
       },
       {
         userId: authUser.userId,
-        profileId,
+        profileId: resolved.profileId,
         stateJson: null,
         inlineStateJson: null,
         encrypted: normalized.encrypted,
@@ -202,6 +218,16 @@ router.put(
     ).lean();
 
     const serialized = await serializeStorageStateRecord(storageState as Record<string, unknown> | null);
+    logSyncRouteEvent('info', 'profile_storage_state_upserted', {
+      route: 'PUT /api/profile-storage-state/:profileId',
+      profileId,
+      resolvedProfileId: resolved.profileId,
+      profileIdType: resolveProfileIdType(profileId),
+      profileSource: resolved.source,
+      version: Number(serialized?.version || nextVersion),
+      fileRef: serialized?.fileRef || '',
+      ...buildArtifactContext(),
+    });
     res.json({
       success: true,
       storageState: serialized

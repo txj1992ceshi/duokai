@@ -2,7 +2,7 @@ import type { NextFunction, Request, Response } from 'express';
 
 export function errorMiddleware(
   error: Error & { statusCode?: number },
-  _req: Request,
+  req: Request,
   res: Response,
   _next: NextFunction
 ) {
@@ -11,7 +11,13 @@ export function errorMiddleware(
     statusCode === 500 ? 'Internal Server Error' : error.message || 'Request failed';
 
   if (statusCode >= 500) {
-    console.error('[duokai-api]', error);
+    console.error('[duokai-api]', {
+      method: req.method,
+      path: req.originalUrl || req.url,
+      errorName: error.name,
+      errorMessage: error.message,
+      stack: error.stack,
+    });
   }
 
   res.status(statusCode).json({
