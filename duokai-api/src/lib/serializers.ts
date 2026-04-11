@@ -245,8 +245,11 @@ export function serializeProfile(profile: any, storageStateSynced = false) {
     startupNavigation: profile.startupNavigation || {
       ok: false,
       requestedUrl: '',
+      attemptedUrl: '',
       finalUrl: '',
+      reasonCode: '',
       error: '',
+      checkedAt: '',
     },
     storageStateSynced,
     proxyVerification: profile.proxyVerification || null,

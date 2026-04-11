@@ -15,6 +15,11 @@ const AgentConfigStateSchema = new Schema(
       default: 0,
       index: true,
     },
+    globalConfigSyncVersion: {
+      type: Number,
+      default: 0,
+      index: true,
+    },
     profiles: {
       type: [Schema.Types.Mixed],
       default: [],

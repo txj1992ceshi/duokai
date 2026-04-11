@@ -85,8 +85,10 @@ export function useDesktopAppActions({
           deletingDevice: '正在删除设备...',
           currentDeviceDeleted: '当前设备已删除，请重新登录。',
           deviceDeleted: '设备已删除。',
-          syncingEnvironmentConfig: '正在从云端刷新环境数据...',
-          environmentConfigSynced: '已从云端更新环境数据。',
+          syncingGlobalConfig: '正在上传全局配置...',
+          pullingGlobalConfig: '正在从云端拉取全局配置...',
+          globalConfigSynced: '全局配置同步完成。',
+          globalConfigPulled: '已从云端拉取全局配置。',
         }
       : {
           latestVersion: 'You already have the latest version.',
@@ -111,12 +113,14 @@ export function useDesktopAppActions({
           deletingDevice: 'Deleting device...',
           currentDeviceDeleted: 'Current device was deleted. Please log in again.',
           deviceDeleted: 'Device deleted.',
-          syncingEnvironmentConfig: 'Refreshing environment data from cloud...',
-          environmentConfigSynced: 'Environment data updated from cloud.',
+          syncingGlobalConfig: 'Uploading global configuration...',
+          pullingGlobalConfig: 'Pulling global configuration from cloud...',
+          globalConfigSynced: 'Global configuration sync finished.',
+          globalConfigPulled: 'Global configuration pulled from cloud.',
         }
 
   function applyConfigSyncFeedback(authState: DesktopAuthState | null) {
-    const result = authState?.lastConfigSyncResult
+    const result = authState?.lastGlobalConfigSyncResult
     if (!result) {
       return
     }
@@ -126,7 +130,7 @@ export function useDesktopAppActions({
     }
     setSyncWarningMessage('')
     if (result.message) {
-      setNoticeMessage(result.message || copy.environmentConfigSynced)
+      setNoticeMessage(result.message || copy.globalConfigSynced)
     }
   }
 
@@ -236,15 +240,32 @@ export function useDesktopAppActions({
     }
   }
 
-  async function syncEnvironmentConfig() {
-    await withBusy(copy.syncingEnvironmentConfig, async () => {
-      const api = requireDesktopApi(['auth.syncConfig'])
-      const result = await api.auth.syncConfig()
+  async function syncGlobalConfig() {
+    await withBusy(copy.syncingGlobalConfig, async () => {
+      const api = requireDesktopApi(['auth.syncGlobalConfig'])
+      const result = await api.auth.syncGlobalConfig()
       if (result.usedLocalCache) {
         setSyncWarningMessage(result.warningMessage)
       } else {
         setSyncWarningMessage('')
-        setNoticeMessage(result.message || copy.environmentConfigSynced)
+        setNoticeMessage(result.message || copy.globalConfigSynced)
+      }
+      const authApi = requireDesktopApi(['auth.getState'])
+      const nextAuthState = await authApi.auth.getState()
+      setAuthState(nextAuthState)
+      await refreshAll({ includeCloudPhoneDiagnostics: true })
+    })
+  }
+
+  async function pullGlobalConfig() {
+    await withBusy(copy.pullingGlobalConfig, async () => {
+      const api = requireDesktopApi(['auth.pullGlobalConfig'])
+      const result = await api.auth.pullGlobalConfig()
+      if (result.usedLocalCache) {
+        setSyncWarningMessage(result.warningMessage)
+      } else {
+        setSyncWarningMessage('')
+        setNoticeMessage(result.message || copy.globalConfigPulled)
       }
       const authApi = requireDesktopApi(['auth.getState'])
       const nextAuthState = await authApi.auth.getState()
@@ -353,7 +374,8 @@ export function useDesktopAppActions({
     saveAccountProfile,
     saveAccountPassword,
     uploadAccountAvatar,
-    syncEnvironmentConfig,
+    syncGlobalConfig,
+    pullGlobalConfig,
     revokeAccountDevice,
     deleteAccountDevice,
   }

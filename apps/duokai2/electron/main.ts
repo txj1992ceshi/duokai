@@ -119,6 +119,7 @@ import type {
   DesktopWindowFrameMetrics,
   ExportBundle,
   FingerprintConfig,
+  GlobalConfigSnapshot,
   LogLevel,
   ProfileBulkActionPayload,
   ProfileRecord,
@@ -126,6 +127,8 @@ import type {
   RemoteConfigSnapshot,
   RuntimeHostInfo,
   SettingsPayload,
+  StartupNavigationReasonCode,
+  StartupNavigationResult,
   DesktopUpdateState,
   TrustedIsolationCheck,
   TrustedLaunchSnapshot,
@@ -357,30 +360,39 @@ function setLastConfigSyncResult(result: ConfigSyncResult | null): ConfigSyncRes
 
 function buildConfigSyncSuccessResult(
   source: ConfigSyncResult['source'],
-  snapshot: RemoteConfigSnapshot,
+  snapshot: GlobalConfigSnapshot,
 ): ConfigSyncResult {
   return {
-    count: Array.isArray(snapshot.profiles) ? snapshot.profiles.length : 0,
+    count:
+      (Array.isArray(snapshot.proxies) ? snapshot.proxies.length : 0) +
+      (Array.isArray(snapshot.templates) ? snapshot.templates.length : 0) +
+      (Array.isArray(snapshot.cloudPhones) ? snapshot.cloudPhones.length : 0),
     source,
     usedLocalCache: false,
-    message: '已从云端更新环境数据',
+    message: '已从云端更新全局配置数据',
     warningMessage: '',
   }
 }
 
 function buildConfigSyncFallbackResult(message: string): ConfigSyncResult {
   return {
-    count: requireDatabase().listProfiles().length,
+    count:
+      requireDatabase().listTemplates().length +
+      requireDatabase().listProxies().length +
+      requireDatabase().listCloudPhones().length,
     source: 'account',
     usedLocalCache: true,
     message: '',
-    warningMessage: `云端环境数据拉取失败，当前显示本地缓存：${message}`,
+    warningMessage: `云端全局配置拉取失败，当前显示本地缓存：${message}`,
   }
 }
 
-function buildConfigSyncPendingResult(message = '本地修改已保存，等待同步到云端'): ConfigSyncResult {
+function buildConfigSyncPendingResult(message = '本地全局配置已保存，等待同步到云端'): ConfigSyncResult {
   return {
-    count: requireDatabase().listProfiles().length,
+    count:
+      requireDatabase().listTemplates().length +
+      requireDatabase().listProxies().length +
+      requireDatabase().listCloudPhones().length,
     source: agentService?.getState().enabled ? 'agent' : 'account',
     usedLocalCache: true,
     message: '',
@@ -388,9 +400,12 @@ function buildConfigSyncPendingResult(message = '本地修改已保存，等待�
   }
 }
 
-function buildConfigSyncInFlightResult(message = '正在同步本地环境数据到云端'): ConfigSyncResult {
+function buildConfigSyncInFlightResult(message = '正在同步本地全局配置到云端'): ConfigSyncResult {
   return {
-    count: requireDatabase().listProfiles().length,
+    count:
+      requireDatabase().listTemplates().length +
+      requireDatabase().listProxies().length +
+      requireDatabase().listCloudPhones().length,
     source: agentService?.getState().enabled ? 'agent' : 'account',
     usedLocalCache: true,
     message: '',
@@ -398,9 +413,12 @@ function buildConfigSyncInFlightResult(message = '正在同步本地环境数据
   }
 }
 
-function buildConfigSyncPushSuccessResult(message = '本地环境数据已同步到云端'): ConfigSyncResult {
+function buildConfigSyncPushSuccessResult(message = '本地全局配置已同步到云端'): ConfigSyncResult {
   return {
-    count: requireDatabase().listProfiles().length,
+    count:
+      requireDatabase().listTemplates().length +
+      requireDatabase().listProxies().length +
+      requireDatabase().listCloudPhones().length,
     source: agentService?.getState().enabled ? 'agent' : 'account',
     usedLocalCache: false,
     message,
@@ -410,7 +428,10 @@ function buildConfigSyncPushSuccessResult(message = '本地环境数据已同步
 
 function buildConfigSyncPushFailedResult(message: string): ConfigSyncResult {
   return {
-    count: requireDatabase().listProfiles().length,
+    count:
+      requireDatabase().listTemplates().length +
+      requireDatabase().listProxies().length +
+      requireDatabase().listCloudPhones().length,
     source: agentService?.getState().enabled ? 'agent' : 'account',
     usedLocalCache: true,
     message: '',
@@ -428,12 +449,11 @@ function markLocalConfigDirty(message?: string): number {
   return localConfigMutationVersion
 }
 
-function hasConfigSnapshotData(snapshot: RemoteConfigSnapshot | null | undefined): boolean {
+function hasConfigSnapshotData(snapshot: GlobalConfigSnapshot | null | undefined): boolean {
   if (!snapshot) {
     return false
   }
   return (
-    (snapshot.profiles?.length || 0) > 0 ||
     (snapshot.proxies?.length || 0) > 0 ||
     (snapshot.templates?.length || 0) > 0 ||
     (snapshot.cloudPhones?.length || 0) > 0 ||
@@ -443,42 +463,20 @@ function hasConfigSnapshotData(snapshot: RemoteConfigSnapshot | null | undefined
 
 function hasLocalConfigData(): boolean {
   const database = requireDatabase()
-  return hasConfigSnapshotData(database.exportRemoteConfigSnapshot(0))
+  return hasConfigSnapshotData(database.exportGlobalConfigSnapshot(0))
 }
 
-function buildConfigSyncBootstrapResult(source: ConfigSyncResult['source']): ConfigSyncResult {
-  return {
-    count: requireDatabase().listProfiles().length,
-    source,
-    usedLocalCache: true,
-    message: '云端暂无配置，已保留并上传本地环境数据',
-    warningMessage: '',
-  }
-}
-
-function applyRemoteConfigSnapshot(snapshot: RemoteConfigSnapshot): void {
-  const localProfiles = requireDatabase().listProfiles()
-  const remoteIds = new Set((snapshot.profiles || []).map((profile) => profile.id))
-  for (const profile of localProfiles) {
-    if (remoteIds.has(profile.id)) {
-      continue
-    }
-    audit('config_pull_removed_local_profile', {
-      profileId: profile.id,
-      name: profile.name,
-    })
-  }
-  requireDatabase().applyRemoteConfigSnapshot(snapshot)
+function applyRemoteConfigSnapshot(snapshot: GlobalConfigSnapshot): void {
+  requireDatabase().applyGlobalConfigSnapshot(snapshot)
   emitConfigChanged()
 }
 
-async function pullConfigSnapshotFromAccount(): Promise<RemoteConfigSnapshot> {
-  const payload = await requestControlPlane('/api/config/snapshot')
-  const snapshot = (payload.snapshot || null) as RemoteConfigSnapshot | null
+async function pullConfigSnapshotFromAccount(): Promise<GlobalConfigSnapshot> {
+  const payload = await requestControlPlane('/api/config/global')
+  const snapshot = (payload.snapshot || null) as GlobalConfigSnapshot | null
   if (!snapshot) {
     return {
       syncVersion: 0,
-      profiles: [],
       proxies: [],
       templates: [],
       cloudPhones: [],
@@ -487,7 +485,6 @@ async function pullConfigSnapshotFromAccount(): Promise<RemoteConfigSnapshot> {
   }
   return {
     syncVersion: Number(snapshot.syncVersion || 0),
-    profiles: Array.isArray(snapshot.profiles) ? snapshot.profiles : [],
     proxies: Array.isArray(snapshot.proxies) ? snapshot.proxies : [],
     templates: Array.isArray(snapshot.templates) ? snapshot.templates : [],
     cloudPhones: Array.isArray(snapshot.cloudPhones) ? snapshot.cloudPhones : [],
@@ -499,7 +496,7 @@ async function syncConfigFromControlPlane(options: ConfigSyncOptions = {}): Prom
   const useLocalCacheOnError = options.useLocalCacheOnError ?? false
 
   try {
-    let snapshot: RemoteConfigSnapshot | null = null
+    let snapshot: GlobalConfigSnapshot | null = null
     let source: ConfigSyncResult['source'] = 'account'
 
     if (agentService && agentService.getState().enabled) {
@@ -513,7 +510,9 @@ async function syncConfigFromControlPlane(options: ConfigSyncOptions = {}): Prom
 
     if (!snapshot) {
       const result = setLastConfigSyncResult({
-        count: requireDatabase().listProfiles().length,
+        count: requireDatabase().listTemplates().length +
+          requireDatabase().listProxies().length +
+          requireDatabase().listCloudPhones().length,
         source,
         usedLocalCache: false,
         message: '',
@@ -523,13 +522,21 @@ async function syncConfigFromControlPlane(options: ConfigSyncOptions = {}): Prom
     }
 
     if (Number(snapshot.syncVersion || 0) === 0 && !hasConfigSnapshotData(snapshot) && hasLocalConfigData()) {
-      audit('config_pull_bootstrap_from_local', {
+      audit('config_pull_bootstrap_skipped_local_first', {
         source,
         localProfileCount: requireDatabase().listProfiles().length,
         localProxyCount: requireDatabase().listProxies().length,
       })
-      await syncConfigToControlPlaneOrThrow()
-      return setLastConfigSyncResult(buildConfigSyncBootstrapResult(source))!
+      return setLastConfigSyncResult({
+        count:
+          requireDatabase().listTemplates().length +
+          requireDatabase().listProxies().length +
+          requireDatabase().listCloudPhones().length,
+        source,
+        usedLocalCache: true,
+        message: '',
+        warningMessage: '云端暂无全局配置，已保留本地模板、代理和设置数据',
+      })!
     }
 
     applyRemoteConfigSnapshot(snapshot)
@@ -565,12 +572,12 @@ async function syncConfigToControlPlaneOrThrow(
   const syncVersion = agentService?.getState().enabled
     ? agentService.getSyncVersion()
     : lastUserConfigSyncVersion
-  const snapshot = requireDatabase().exportRemoteConfigSnapshot(syncVersion)
+  const snapshot = requireDatabase().exportGlobalConfigSnapshot(syncVersion)
 
   try {
     if (agentService?.getState().enabled) {
       await agentService.pushConfigSnapshot({
-        profiles: snapshot.profiles,
+        profiles: [],
         proxies: snapshot.proxies,
         templates: snapshot.templates,
         cloudPhones: snapshot.cloudPhones,
@@ -579,11 +586,10 @@ async function syncConfigToControlPlaneOrThrow(
       return
     }
 
-    const payload = await requestControlPlane('/api/config/push', {
+    const payload = await requestControlPlane('/api/config/global', {
       method: 'POST',
       body: JSON.stringify({
         syncVersion,
-        profiles: snapshot.profiles,
         proxies: snapshot.proxies,
         templates: snapshot.templates,
         cloudPhones: snapshot.cloudPhones,
@@ -677,20 +683,6 @@ function readLatestRuntimeNetworkDiagnosticsFromAudit():
   return null
 }
 
-async function syncConfigToControlPlaneBestEffort(action: string, details: Record<string, unknown>): Promise<void> {
-  try {
-    await syncConfigToControlPlaneOrThrow()
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    audit('config_sync_best_effort_failed', {
-      action,
-      err: message,
-      ...details,
-    })
-    logEvent('warn', 'system', `${action} config sync failed: ${message}`, null)
-  }
-}
-
 async function flushPendingLocalConfigSync(
   reason: string,
   details: Record<string, unknown> = {},
@@ -736,17 +728,36 @@ async function flushPendingLocalConfigSync(
       )
     } finally {
       configPushInFlight = null
-      if (
-        hasPendingLocalConfigChanges() &&
-        lastSyncedLocalConfigMutationVersion < localConfigMutationVersion &&
-        (agentService?.getState().enabled || getDesktopAuthState().authenticated)
-      ) {
-        void flushPendingLocalConfigSync('coalesced', { fromReason: reason })
-      }
     }
   })()
 
   return configPushInFlight
+}
+
+async function pushLocalConfigToControlPlaneManually(reason: string): Promise<ConfigSyncResult> {
+  if (!hasLocalConfigData()) {
+    const result = buildConfigSyncPushFailedResult('当前没有可上传的本地全局配置')
+    return setLastConfigSyncResult(result)!
+  }
+  if (hasPendingLocalConfigChanges()) {
+    await flushPendingLocalConfigSync(reason, { source: 'user' })
+    return lastConfigSyncResult ?? buildConfigSyncPushSuccessResult()
+  }
+  setLastConfigSyncResult(buildConfigSyncInFlightResult())
+  try {
+    await syncConfigToControlPlaneOrThrow('replace', {
+      onConflict: 'preserve-local-and-throw',
+    })
+    const result = buildConfigSyncPushSuccessResult()
+    audit('config_push_manual_succeeded', { reason })
+    return setLastConfigSyncResult(result)!
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    audit('config_push_manual_failed', { reason, err: message })
+    return setLastConfigSyncResult(
+      buildConfigSyncPushFailedResult(`本地修改已保留，但云端同步失败：${message}`),
+    )!
+  }
 }
 
 function scheduleProfileConfigAfterLocalMutation(
@@ -756,51 +767,149 @@ function scheduleProfileConfigAfterLocalMutation(
   markLocalConfigDirty(
     `${action === 'create' ? '环境已创建' : action === 'update' ? '环境已更新' : '环境已复制'}，等待同步到云端`,
   )
-  void flushPendingLocalConfigSync(`profiles.${action}`, {
-    profileId: profile.id,
-    profileName: profile.name,
-  }).catch((error) => {
-    const message = error instanceof Error ? error.message : String(error)
-    audit('profile_config_sync_failed_after_local_save', {
-      action,
-      profileId: profile.id,
-      profileName: profile.name,
-      err: message,
-      route: agentService?.getState().enabled ? '/api/agent/v1/config/push' : '/api/config/push',
-    })
-    logEvent(
-      'warn',
-      'profile',
-      `${action === 'create' ? 'Created' : action === 'update' ? 'Updated' : 'Cloned'} profile "${profile.name}" locally, but cloud sync failed: ${message}`,
-      profile.id,
-    )
+  updateEnvironmentSyncMetadata(profile.id, {
+    status: 'pending',
+    message:
+      action === 'create'
+        ? '环境已在本地创建，等待上传到云端'
+        : action === 'update'
+          ? '环境改动已保存到本地，等待上传到云端'
+          : '环境副本已创建，等待上传到云端',
   })
 }
 
-async function deleteRemoteProfileBestEffort(profileId: string): Promise<void> {
+function scheduleGlobalConfigMutation(message: string): void {
+  markLocalConfigDirty(message)
+}
+
+function hasPendingProfileConfigChanges(profileId: string): boolean {
+  const profile = requireDatabase().getProfileById(profileId)
+  if (!profile) {
+    return false
+  }
+  return profile.fingerprintConfig.runtimeMetadata.lastEnvironmentSyncStatus === 'pending'
+}
+
+function buildPortableProfileConfig(profile: ProfileRecord): ProfileRecord {
+  return {
+    ...profile,
+    workspace: createPortableWorkspaceDescriptor(
+      profile.workspace ?? null,
+      profile.id,
+      profile.fingerprintConfig,
+    ),
+    fingerprintConfig: {
+      ...profile.fingerprintConfig,
+      runtimeMetadata: {
+        ...profile.fingerprintConfig.runtimeMetadata,
+        lastEnvironmentSyncStatus: 'idle',
+        lastEnvironmentSyncMessage: '',
+      },
+    },
+  }
+}
+
+async function pushProfileConfigToControlPlane(profileId: string, reason: string): Promise<ConfigSyncResult> {
+  const profile = requireDatabase().getProfileById(profileId)
+  if (!profile) {
+    throw new Error('Profile not found')
+  }
   if (!getDesktopAuthState().authenticated) {
-    return
+    updateEnvironmentSyncMetadata(profileId, {
+      status: 'pending',
+      message: '本地共享环境配置已保存，登录后可上传到云端',
+    })
+    return buildConfigSyncPendingResult('本地共享环境配置已保存，登录后可上传到云端')
   }
 
+  updateEnvironmentSyncMetadata(profileId, {
+    status: 'syncing',
+    message: reason.includes('manual') ? '正在上传当前环境到云端' : '正在同步当前环境配置到云端',
+  })
   try {
-    await requestControlPlane(`/api/profiles/${encodeURIComponent(profileId)}`, {
-      method: 'DELETE',
+    const payload = await requestControlPlane(`/api/config/profiles/${encodeURIComponent(profileId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        baseVersion: profile.fingerprintConfig.runtimeMetadata.lastEnvironmentSyncVersion || 0,
+        profile: buildPortableProfileConfig(profile),
+      }),
     })
+    const syncVersion = Number(payload.syncVersion || 0)
+    const updatedProfile = requireDatabase().getProfileById(profileId)
+    if (updatedProfile) {
+      updateRuntimeMetadata(updatedProfile, {
+        lastEnvironmentSyncStatus: 'synced',
+        lastEnvironmentSyncMessage: '环境共享配置已同步到云端',
+        lastEnvironmentSyncAt: new Date().toISOString(),
+        lastEnvironmentSyncVersion: syncVersion,
+      })
+    }
+    return buildConfigSyncPushSuccessResult('当前环境已同步到云端')
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    if (/profile not found/i.test(message) || /请先登录桌面端/i.test(message)) {
-      audit('profile_remote_delete_skipped', {
-        profileId,
-        err: message,
-      })
-      return
-    }
-    audit('profile_remote_delete_failed', {
-      profileId,
-      err: message,
+    const isConflict = /profile config sync version mismatch|版本冲突|sync version mismatch/i.test(message)
+    updateEnvironmentSyncMetadata(profileId, {
+      status: isConflict ? 'conflict' : 'error',
+      message,
     })
-    logEvent('warn', 'profile', `Remote delete failed for profile ${profileId}: ${message}`, profileId)
+    return buildConfigSyncPushFailedResult(`当前环境同步失败：${message}`)
   }
+}
+
+async function pullProfileConfigFromControlPlane(profileId: string): Promise<ConfigSyncResult> {
+  if (hasPendingProfileConfigChanges(profileId)) {
+    throw new Error('当前环境存在本地待同步改动，请先上传到云端，避免覆盖本地环境')
+  }
+  const payload = await requestControlPlane(`/api/config/profiles/${encodeURIComponent(profileId)}`)
+  const remoteProfile = (payload.profile || null) as ProfileRecord | null
+  if (!remoteProfile) {
+    throw new Error('云端未找到当前环境配置')
+  }
+  const localProfile = requireDatabase().getProfileById(profileId)
+  if (!localProfile) {
+    throw new Error('Profile not found')
+  }
+  const nextProfile = requireDatabase().updateProfile({
+    id: profileId,
+    name: remoteProfile.name,
+    proxyId: remoteProfile.proxyId,
+    groupName: remoteProfile.groupName,
+    tags: remoteProfile.tags,
+    notes: remoteProfile.notes,
+    environmentPurpose: remoteProfile.environmentPurpose,
+    deviceProfile: remoteProfile.deviceProfile,
+    fingerprintConfig: {
+      ...remoteProfile.fingerprintConfig,
+      runtimeMetadata: {
+        ...localProfile.fingerprintConfig.runtimeMetadata,
+        ...remoteProfile.fingerprintConfig.runtimeMetadata,
+        lastEnvironmentSyncStatus: 'synced',
+        lastEnvironmentSyncMessage: '已从云端拉取当前环境配置',
+        lastEnvironmentSyncAt: new Date().toISOString(),
+        lastEnvironmentSyncVersion: Number(payload.syncVersion || remoteProfile.fingerprintConfig.runtimeMetadata.lastEnvironmentSyncVersion || 0),
+      },
+    },
+    workspace: remoteProfile.workspace ?? null,
+  })
+  const normalizedWorkspace = ensureWorkspaceLayoutForProfile(app, nextProfile, (nextWorkspace) => {
+    persistProfile({
+      ...nextProfile,
+      workspace: nextWorkspace,
+    })
+  })
+  if (normalizedWorkspace !== nextProfile.workspace) {
+    persistProfile({
+      ...nextProfile,
+      workspace: normalizedWorkspace,
+    })
+  }
+  return buildConfigSyncSuccessResult('account', {
+    syncVersion: Number(payload.syncVersion || 0),
+    proxies: [],
+    templates: [],
+    cloudPhones: [],
+    settings: {},
+  })
 }
 
 function audit(action: string, payload: Record<string, unknown> = {}) {
@@ -1226,17 +1335,46 @@ async function fetchRemoteProfileStorageState(profileId: string): Promise<Contro
   return (payload.storageState || null) as ControlPlaneStorageState | null
 }
 
-async function syncWorkspaceSnapshotToControlPlane(snapshot: WorkspaceSnapshotRecord): Promise<void> {
+async function syncWorkspaceSnapshotToControlPlane(
+  snapshot: WorkspaceSnapshotRecord,
+): Promise<void> {
   if (!getDesktopAuthState().authenticated) {
     return
   }
-  await requestControlPlane(
-    `/api/workspace-snapshots/${encodeURIComponent(snapshot.profileId)}/${encodeURIComponent(snapshot.snapshotId)}`,
-    {
-      method: 'PUT',
-      body: JSON.stringify(snapshot),
-    },
-  )
+  const profile = requireDatabase().getProfileById(snapshot.profileId)
+  if (profile) {
+    updateRuntimeMetadata(profile, {
+      lastWorkspaceSnapshotSyncStatus: 'syncing',
+      lastWorkspaceSnapshotSyncMessage: '正在同步环境快照到云端',
+    })
+  }
+  try {
+    await requestControlPlane(
+      `/api/workspace-snapshots/${encodeURIComponent(snapshot.profileId)}/${encodeURIComponent(snapshot.snapshotId)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(snapshot),
+      },
+    )
+    const latestProfile = requireDatabase().getProfileById(snapshot.profileId)
+    if (latestProfile) {
+      updateRuntimeMetadata(latestProfile, {
+        lastWorkspaceSnapshotSyncAt: new Date().toISOString(),
+        lastWorkspaceSnapshotSyncStatus: 'synced',
+        lastWorkspaceSnapshotSyncMessage: '环境快照已同步到云端',
+      })
+    }
+  } catch (error) {
+    const latestProfile = requireDatabase().getProfileById(snapshot.profileId)
+    if (latestProfile) {
+      updateRuntimeMetadata(latestProfile, {
+        lastWorkspaceSnapshotSyncStatus: 'error',
+        lastWorkspaceSnapshotSyncMessage:
+          error instanceof Error ? error.message : String(error),
+      })
+    }
+    throw error
+  }
 }
 
 async function fetchWorkspaceSnapshotFromControlPlane(
@@ -1252,20 +1390,46 @@ async function fetchWorkspaceSnapshotFromControlPlane(
   return (payload.snapshot || null) as WorkspaceSnapshotRecord | null
 }
 
-async function syncWorkspaceSummaryToControlPlane(profile: ProfileRecord): Promise<void> {
+async function syncWorkspaceSummaryToControlPlane(
+  profile: ProfileRecord,
+): Promise<void> {
   if (!getDesktopAuthState().authenticated || !profile.workspace) {
     return
   }
-  await requestControlPlane(`/api/profiles/${encodeURIComponent(profile.id)}`, {
-    method: 'PATCH',
-    body: JSON.stringify({
-      workspace: createPortableWorkspaceDescriptor(
-        profile.workspace,
-        profile.id,
-        profile.fingerprintConfig,
-      ),
-    }),
+  updateRuntimeMetadata(profile, {
+    lastWorkspaceSummarySyncStatus: 'syncing',
+    lastWorkspaceSummarySyncMessage: '正在同步环境摘要到云端',
   })
+  try {
+    await requestControlPlane(`/api/profiles/${encodeURIComponent(profile.id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        workspace: createPortableWorkspaceDescriptor(
+          profile.workspace,
+          profile.id,
+          profile.fingerprintConfig,
+        ),
+      }),
+    })
+    const latestProfile = requireDatabase().getProfileById(profile.id)
+    if (latestProfile) {
+      updateRuntimeMetadata(latestProfile, {
+        lastWorkspaceSummarySyncAt: new Date().toISOString(),
+        lastWorkspaceSummarySyncStatus: 'synced',
+        lastWorkspaceSummarySyncMessage: '环境摘要已同步到云端',
+      })
+    }
+  } catch (error) {
+    const latestProfile = requireDatabase().getProfileById(profile.id)
+    if (latestProfile) {
+      updateRuntimeMetadata(latestProfile, {
+        lastWorkspaceSummarySyncStatus: 'error',
+        lastWorkspaceSummarySyncMessage:
+          error instanceof Error ? error.message : String(error),
+      })
+    }
+    throw error
+  }
 }
 
 async function createWorkspaceSnapshotForProfile(
@@ -1615,16 +1779,17 @@ async function finalizeRuntimeShutdown(
       }
     }
 
-    try {
-      await flushPendingLocalConfigSync(`runtime-shutdown:${reason}`, {
-        profileId,
-      })
-    } catch (error) {
-      audit('shutdown_config_sync_failed', {
-        profileId,
-        reason,
-        err: error instanceof Error ? error.message : String(error),
-      })
+    const latestProfileBeforeConfigSync = requireDatabase().getProfileById(profileId)
+    if (latestProfileBeforeConfigSync && hasPendingProfileConfigChanges(profileId)) {
+      try {
+        await pushProfileConfigToControlPlane(profileId, `runtime-shutdown:${reason}`)
+      } catch (error) {
+        audit('shutdown_config_sync_failed', {
+          profileId,
+          reason,
+          err: error instanceof Error ? error.message : String(error),
+        })
+      }
     }
 
     const latestProfile = requireDatabase().getProfileById(profileId)
@@ -2280,7 +2445,7 @@ function getDesktopAuthState(): DesktopAuthState {
     rememberCredentials: remembered.rememberCredentials,
     rememberedIdentifier: remembered.identifier,
     rememberedPassword: remembered.password,
-    lastConfigSyncResult,
+    lastGlobalConfigSyncResult: lastConfigSyncResult,
   }
 }
 
@@ -2690,8 +2855,9 @@ function resetCachedProfileStatesOnStartup(): void {
     const needsMetadataReset =
       metadata.launchValidationStage !== 'idle' ||
       metadata.launchRetryCount !== 0
+    const needsEnvironmentSyncReset = metadata.lastEnvironmentSyncStatus === 'syncing'
 
-    if (!needsStatusReset && !needsMetadataReset) {
+    if (!needsStatusReset && !needsMetadataReset && !needsEnvironmentSyncReset) {
       continue
     }
 
@@ -2708,6 +2874,13 @@ function resetCachedProfileStatesOnStartup(): void {
           ...metadata,
           launchValidationStage: 'idle',
           launchRetryCount: 0,
+          ...(needsEnvironmentSyncReset
+            ? {
+                lastEnvironmentSyncStatus: 'recovery',
+                lastEnvironmentSyncMessage: '检测到上次未完成同步，请选择上传当前环境或从云端拉取',
+                lastEnvironmentSyncAt: new Date().toISOString(),
+              }
+            : {}),
         },
       },
     })
@@ -2716,6 +2889,7 @@ function resetCachedProfileStatesOnStartup(): void {
       profileId: profile.id,
       previousStatus: profile.status,
       previousLaunchStage: metadata.launchValidationStage,
+      previousEnvironmentSyncStatus: metadata.lastEnvironmentSyncStatus,
     })
   }
 }
@@ -2752,16 +2926,126 @@ function getBuiltInStartupUrl(platform: string): string {
   return ''
 }
 
+function shareStartupOrigin(candidateUrl: string, expectedUrl: string): boolean {
+  try {
+    return new URL(candidateUrl).origin === new URL(expectedUrl).origin
+  } catch {
+    return false
+  }
+}
+
 function resolveProfileStartupUrl(profile: Pick<ProfileRecord, 'fingerprintConfig'>): string {
   const basicSettings = profile.fingerprintConfig.basicSettings
+  const customPlatformUrl = basicSettings.customPlatformUrl.trim()
   if (basicSettings.platform === 'custom') {
-    return basicSettings.customPlatformUrl.trim()
+    return customPlatformUrl
+  }
+  const builtInStartupUrl = getBuiltInStartupUrl(basicSettings.platform)
+  if (customPlatformUrl && builtInStartupUrl && shareStartupOrigin(customPlatformUrl, builtInStartupUrl)) {
+    return customPlatformUrl
   }
   return (
-    basicSettings.customPlatformUrl.trim() ||
-    getBuiltInStartupUrl(basicSettings.platform) ||
+    builtInStartupUrl ||
+    customPlatformUrl ||
     ''
   )
+}
+
+function classifyStartupNavigationError(error: unknown): StartupNavigationReasonCode {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase()
+  if (message.includes('timeout') || message.includes('timed out')) {
+    return 'timeout'
+  }
+  if (message.includes('proxy')) {
+    return 'proxy_error'
+  }
+  if (message.includes('dns') || message.includes('enotfound') || message.includes('eai_again')) {
+    return 'dns_error'
+  }
+  if (message.includes('ssl') || message.includes('tls') || message.includes('certificate')) {
+    return 'tls_error'
+  }
+  if (message.includes('redirect')) {
+    return 'redirect_unstable'
+  }
+  if (
+    message.includes('blocked') ||
+    message.includes('forbidden') ||
+    message.includes('denied') ||
+    message.includes('access denied')
+  ) {
+    return 'page_blocked'
+  }
+  if (message.includes('challenge') || message.includes('captcha') || message.includes('verify')) {
+    return 'challenge_or_gate'
+  }
+  if (
+    message.includes('net::') ||
+    message.includes('connection') ||
+    message.includes('socket') ||
+    message.includes('network')
+  ) {
+    return 'net_error'
+  }
+  return 'unknown'
+}
+
+async function navigateToStartupUrl(
+  page: import('playwright').Page,
+  profileId: string,
+  startupUrl: string,
+): Promise<StartupNavigationResult> {
+  const checkedAt = new Date().toISOString()
+  const requestedUrl = startupUrl
+  try {
+    await page.goto(startupUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: 20_000,
+    })
+    return {
+      requestedUrl,
+      attemptedUrl: startupUrl,
+      finalUrl: page.url(),
+      success: true,
+      reasonCode: 'ok',
+      message: 'Startup page loaded successfully',
+      checkedAt,
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    audit('startup_navigation_retry', {
+      profileId,
+      startupUrl,
+      strategy: 'commit',
+      err: message,
+    })
+    try {
+      await page.goto(startupUrl, {
+        waitUntil: 'commit',
+        timeout: 15_000,
+      })
+      return {
+        requestedUrl,
+        attemptedUrl: startupUrl,
+        finalUrl: page.url(),
+        success: true,
+        reasonCode: 'ok',
+        message: 'Startup page loaded successfully after fallback navigation',
+        checkedAt,
+      }
+    } catch (retryError) {
+      const retryMessage = retryError instanceof Error ? retryError.message : String(retryError)
+      return {
+        requestedUrl,
+        attemptedUrl: startupUrl,
+        finalUrl: page.url(),
+        success: false,
+        reasonCode: classifyStartupNavigationError(retryError),
+        message: retryMessage,
+        checkedAt,
+      }
+    }
+  }
 }
 
 function mapLocalStatusToControlPlaneStatus(
@@ -2919,80 +3203,6 @@ function compareSnapshotWithCheck(
   return { ok: true, message: '快速隔离校验通过' }
 }
 
-function mapLocalProfileToRemotePayload(profile: UpdateProfileInput | ProfileRecord) {
-  const proxySettings = profile.fingerprintConfig.proxySettings
-  const resolvedProxy = resolveProfileProxy(profile, requireDatabase())
-  const startupUrl = resolveProfileStartupUrl(profile)
-  return {
-    name: profile.name,
-    tags: profile.tags,
-    status: 'Ready',
-    proxyType: resolvedProxy ? resolvedProxy.type : proxySettings.proxyMode === 'direct' ? 'direct' : proxySettings.proxyType,
-    proxyHost: resolvedProxy?.host || proxySettings.host,
-    proxyPort: resolvedProxy ? String(resolvedProxy.port) : proxySettings.port > 0 ? String(proxySettings.port) : '',
-    proxyUsername: resolvedProxy?.username || proxySettings.username,
-    proxyPassword: resolvedProxy?.password || proxySettings.password,
-    ua: profile.fingerprintConfig.userAgent,
-    seed: profile.fingerprintConfig.basicSettings.cookieSeed,
-    isMobile: profile.fingerprintConfig.advanced.deviceMode !== 'desktop',
-    groupId: profile.groupName,
-    startupPlatform: profile.fingerprintConfig.basicSettings.platform,
-    startupUrl: startupUrl || getSettings().defaultHomePage || '',
-    configFingerprintHash: profile.fingerprintConfig.runtimeMetadata.configFingerprintHash,
-    proxyFingerprintHash: profile.fingerprintConfig.runtimeMetadata.proxyFingerprintHash,
-    lastQuickIsolationCheck: profile.fingerprintConfig.runtimeMetadata.lastQuickIsolationCheck,
-    trustedLaunchSnapshot: profile.fingerprintConfig.runtimeMetadata.trustedLaunchSnapshot,
-    workspace: profile.workspace ?? null,
-  }
-}
-
-function syncLegacyProfileMutationInBackground(
-  action: 'create' | 'update',
-  payload: ProfileRecord,
-): void {
-  void (async () => {
-    if (getDesktopAuthState().authenticated) {
-      try {
-        if (action === 'create') {
-          await requestControlPlane('/api/profiles', {
-            method: 'POST',
-            body: JSON.stringify(mapLocalProfileToRemotePayload(payload)),
-          })
-        } else {
-          try {
-            await requestControlPlane(`/api/profiles/${encodeURIComponent(payload.id)}`, {
-              method: 'PATCH',
-              body: JSON.stringify(mapLocalProfileToRemotePayload(payload)),
-            })
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            if (!/profile not found/i.test(message)) {
-              throw error
-            }
-            await requestControlPlane('/api/profiles', {
-              method: 'POST',
-              body: JSON.stringify(mapLocalProfileToRemotePayload(payload)),
-            })
-          }
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        audit('profile_remote_sync_failed', {
-          action,
-          profileId: payload.id,
-          err: message,
-        })
-        logEvent(
-          'warn',
-          'profile',
-          `${action === 'create' ? 'Create' : 'Update'} profile remote sync failed for "${payload.name}": ${message}`,
-          payload.id,
-        )
-      }
-    }
-  })()
-}
-
 async function syncConfigFromControlPlaneIfForced(options: ConfigSyncOptions = {}): Promise<ConfigSyncResult> {
   const cachedResult: ConfigSyncResult = {
     count: requireDatabase().listProfiles().length,
@@ -3004,14 +3214,6 @@ async function syncConfigFromControlPlaneIfForced(options: ConfigSyncOptions = {
 
   if (!getDesktopAuthState().authenticated && !agentService?.getState().enabled) {
     return cachedResult
-  }
-  if (hasPendingLocalConfigChanges()) {
-    await flushPendingLocalConfigSync('auth.syncConfig', {
-      force: Boolean(options.force),
-    })
-    if (hasPendingLocalConfigChanges()) {
-      return lastConfigSyncResult ?? cachedResult
-    }
   }
   if (!options.force) {
     return cachedResult
@@ -3076,6 +3278,7 @@ async function syncProfileLaunchTrustToControlPlane(profile: ProfileRecord): Pro
         lastQuickIsolationCheck: profile.fingerprintConfig.runtimeMetadata.lastQuickIsolationCheck,
         trustedLaunchSnapshot: profile.fingerprintConfig.runtimeMetadata.trustedLaunchSnapshot,
         lastResolvedProxyTransport: profile.fingerprintConfig.runtimeMetadata.lastEffectiveProxyTransport,
+        startupNavigation: profile.startupNavigation || null,
       }),
     })
   } catch (error) {
@@ -4032,10 +4235,17 @@ function getRegistrationCooldownContext(profile: ProfileRecord, check: NetworkHe
   }
 }
 
-function recordProfileIpUsage(profile: ProfileRecord, check: NetworkHealthResult, startupNavigationPassed: boolean): void {
+function recordProfileIpUsage(
+  profile: ProfileRecord,
+  check: NetworkHealthResult,
+  startupNavigation: StartupNavigationResult,
+): void {
   if (!check.ip) {
     return
   }
+  const navigationMessage = startupNavigation.success
+    ? 'Profile runtime launched and startup navigation completed'
+    : `Profile runtime launched but startup navigation failed (${startupNavigation.reasonCode})`
   requireDatabase().createIpUsage({
     profileId: profile.id,
     proxyId: profile.proxyId,
@@ -4049,8 +4259,8 @@ function recordProfileIpUsage(profile: ProfileRecord, check: NetworkHealthResult
     timezone: check.timezone,
     language: check.languageHint,
     geolocation: check.geolocation,
-    success: startupNavigationPassed,
-    message: startupNavigationPassed ? 'Profile startup navigation completed' : 'Profile startup navigation failed',
+    success: true,
+    message: navigationMessage,
   })
 }
 
@@ -4166,6 +4376,49 @@ function updateRuntimeMetadata(
         ...metadataPatch,
       },
     },
+  })
+}
+
+function updateEnvironmentSyncMetadata(
+  profileId: string,
+  patch: {
+    status: ProfileRecord['fingerprintConfig']['runtimeMetadata']['lastEnvironmentSyncStatus'
+    ]
+    message: string
+    syncedAt?: string
+  },
+): ProfileRecord | null {
+  const profile = requireDatabase().getProfileById(profileId)
+  if (!profile) {
+    return null
+  }
+  return updateRuntimeMetadata(profile, {
+    lastEnvironmentSyncStatus: patch.status,
+    lastEnvironmentSyncMessage: patch.message,
+    lastEnvironmentSyncAt: patch.syncedAt ?? new Date().toISOString(),
+  })
+}
+
+function updateEnvironmentSyncMetadataForProfiles(
+  profileIds: string[],
+  patch: {
+    status: ProfileRecord['fingerprintConfig']['runtimeMetadata']['lastEnvironmentSyncStatus'
+    ]
+    message: string
+    syncedAt?: string
+  },
+): void {
+  for (const profileId of new Set(profileIds)) {
+    updateEnvironmentSyncMetadata(profileId, patch)
+  }
+}
+
+async function deleteProfileConfigFromControlPlane(profileId: string): Promise<void> {
+  if (!getDesktopAuthState().authenticated) {
+    return
+  }
+  await requestControlPlane(`/api/config/profiles/${encodeURIComponent(profileId)}`, {
+    method: 'DELETE',
   })
 }
 
@@ -4333,6 +4586,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
   let profile = storedProfile
   let runtimeLockHeld = false
   let workspaceLaunch: ReturnType<typeof resolveWorkspaceLaunchConfig> | null = null
+  let suppressContextCloseSideEffects = false
 
   if (runtimeContexts.has(profileId)) {
     return
@@ -4739,8 +4993,15 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     context.on('close', () => {
     clearProfileStorageSyncTimer(profileId)
     runtimeContexts.delete(profileId)
+    if (suppressContextCloseSideEffects) {
+      scheduler.markStopped(profileId)
+      void releaseProfileRuntimeLock(profileId)
+      return
+    }
     if (!gracefulShutdownInFlight && !runtimeShutdownFinalizing.has(profileId)) {
-      void flushPendingLocalConfigSync('runtime-context-close', { profileId })
+      if (hasPendingProfileConfigChanges(profileId)) {
+        void pushProfileConfigToControlPlane(profileId, 'runtime-context-close').catch(() => {})
+      }
       const persistedProfile = requireDatabase().getProfileById(profileId)
       if (persistedProfile?.workspace) {
         void syncWorkspaceSummaryToControlPlane(persistedProfile).catch(() => {})
@@ -4772,46 +5033,53 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     }
     const startupUrl = resolveProfileStartupUrl(profile) || settings.defaultHomePage || 'https://example.com'
     await applyStorageStateToContext(context, await readProfileStorageStateFromDisk(profileId))
-    let startupNavigationPassed = false
-    try {
-    await page.goto(startupUrl, {
-      waitUntil: 'domcontentloaded',
-    })
-    startupNavigationPassed = true
+    const startupNavigation = await navigateToStartupUrl(page, profileId, startupUrl)
     if (profile.environmentPurpose === 'register') {
       profile = updateRuntimeMetadata(profile, {
         lastRegisterLaunchAt: new Date().toISOString(),
       })
     }
-    recordProfileIpUsage(profile, check, startupNavigationPassed)
-    } finally {
-    if (!startupNavigationPassed) {
-      recordProfileIpUsage(profile, check, startupNavigationPassed)
-    }
+    recordProfileIpUsage(profile, check, startupNavigation)
     const latestProfile = database.getProfileById(profileId) ?? profile
     const latestSnapshot = latestProfile.fingerprintConfig.runtimeMetadata.trustedLaunchSnapshot
     const nextSnapshot = latestSnapshot
       ? {
           ...latestSnapshot,
-          startupNavigationPassed,
+          startupNavigationPassed: startupNavigation.success,
+          status: startupNavigation.success ? latestSnapshot.status : 'stale',
           verificationLevel:
             latestProfile.fingerprintConfig.runtimeMetadata.lastQuickCheckAt ? 'quick' : latestSnapshot.verificationLevel,
           verifiedAt: new Date().toISOString(),
         }
       : latestSnapshot
-    const persisted = updateRuntimeMetadata(latestProfile, {
-      launchValidationStage: 'idle',
-      trustedSnapshotStatus: nextSnapshot?.status || latestProfile.fingerprintConfig.runtimeMetadata.trustedSnapshotStatus,
-      trustedLaunchSnapshot: nextSnapshot,
+    const persisted = persistProfile({
+      ...updateRuntimeMetadata(latestProfile, {
+        launchValidationStage: 'idle',
+        trustedSnapshotStatus:
+          nextSnapshot?.status || latestProfile.fingerprintConfig.runtimeMetadata.trustedSnapshotStatus,
+        trustedLaunchSnapshot: nextSnapshot,
+      }),
+      startupNavigation,
     })
-    audit(startupNavigationPassed ? 'trusted_launch_confirmed' : 'trusted_launch_navigation_failed', {
+    if (!startupNavigation.success) {
+      logEvent(
+        'warn',
+        'runtime',
+        `Profile launched, but default startup page failed to open: ${startupNavigation.message}`,
+        profileId,
+      )
+    }
+    audit(startupNavigation.success ? 'trusted_launch_confirmed' : 'trusted_launch_navigation_failed', {
       profileId,
-      startupNavigationPassed,
+      startupNavigationPassed: startupNavigation.success,
+      startupNavigationReasonCode: startupNavigation.reasonCode,
+      startupNavigationMessage: startupNavigation.message,
       verifiedAt: nextSnapshot?.verifiedAt || '',
       trustedSnapshotStatus: nextSnapshot?.status || latestProfile.fingerprintConfig.runtimeMetadata.trustedSnapshotStatus,
       startupUrl,
+      finalUrl: startupNavigation.finalUrl,
     })
-    if (startupNavigationPassed && latestWorkspaceSnapshot) {
+    if (startupNavigation.success && latestWorkspaceSnapshot) {
       await markWorkspaceSnapshotAsLastKnownGood(
         profileId,
         latestWorkspaceSnapshot.snapshotId,
@@ -4819,8 +5087,17 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       )
     }
     void syncProfileLaunchTrustToControlPlane(persisted)
-    }
   } catch (error) {
+    const activeContext = runtimeContexts.get(profileId)
+    if (activeContext) {
+      suppressContextCloseSideEffects = true
+      runtimeContexts.delete(profileId)
+      try {
+        await activeContext.close()
+      } catch {
+        // Ignore best-effort cleanup failures while surfacing the original launch error.
+      }
+    }
     if (runtimeLockHeld && !runtimeContexts.has(profileId)) {
       await releaseProfileRuntimeLock(profileId)
     }
@@ -4936,18 +5213,6 @@ async function performDesktopLogin(payload: {
         throw new Error('登录响应缺少用户或令牌')
       }
       saveDesktopAuth(apiBase, token, user)
-      if (hasLocalConfigData()) {
-        markLocalConfigDirty('本地环境数据已保留，正在准备同步到云端')
-        void flushPendingLocalConfigSync('auth.login', { apiBase })
-      } else {
-        const syncResult = await syncConfigFromControlPlaneIfForced({
-          force: true,
-          useLocalCacheOnError: true,
-        })
-        if (syncResult.usedLocalCache) {
-          audit('auth_login_config_sync_fallback', { apiBase, warning: syncResult.warningMessage })
-        }
-      }
       return getDesktopAuthState()
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error))
@@ -4961,10 +5226,11 @@ async function performDesktopLogin(payload: {
   throw new Error('登录失败')
 }
 
-async function performRuntimeLaunch(profileId: string): Promise<void> {
+async function performRuntimeLaunch(profileId: string): Promise<{ warningMessage?: string }> {
   ensureWritable('runtime.launch')
   try {
     await enqueueLaunch(profileId)
+    return {}
   } catch (error) {
     await updateProfileStatus(profileId, 'error')
     logEvent(
@@ -5498,12 +5764,18 @@ async function registerIpcHandlers(): Promise<void> {
     return saveDesktopAuth(getControlPlaneApiBase(), getStoredAuthToken(), user)
   })
   ipcMain.handle('auth.logout', async () => clearDesktopAuth())
-  ipcMain.handle('auth.syncConfig', async (_event, options?: ConfigSyncOptions) =>
-    syncConfigFromControlPlaneIfForced({
+  ipcMain.handle('auth.syncGlobalConfig', async () =>
+    pushLocalConfigToControlPlaneManually('auth.manual-upload'),
+  )
+  ipcMain.handle('auth.pullGlobalConfig', async (_event, options?: ConfigSyncOptions) => {
+    if (hasPendingLocalConfigChanges()) {
+      throw new Error('存在本地待同步的全局配置改动，请先上传，再从云端拉取')
+    }
+    return await syncConfigFromControlPlaneIfForced({
       force: options?.force ?? true,
       useLocalCacheOnError: options?.useLocalCacheOnError ?? true,
-    }),
-  )
+    })
+  })
   ipcMain.handle('auth.syncProfiles', async (_event, options?: ConfigSyncOptions) =>
     syncConfigFromControlPlaneIfForced({
       force: options?.force ?? true,
@@ -5551,7 +5823,7 @@ async function registerIpcHandlers(): Promise<void> {
     })
     requireDatabase().setCloudPhoneProviderInstanceId(record.id, providerResult.providerInstanceId)
     requireDatabase().setCloudPhoneStatus(record.id, providerResult.status)
-    await syncConfigToControlPlaneOrThrow()
+    scheduleGlobalConfigMutation('云手机环境已创建，等待上传到云端')
     logEvent('info', 'cloud-phone', `Created cloud phone "${record.name}" via ${provider.label}`, null)
     return requireDatabase().getCloudPhoneById(record.id)!
   })
@@ -5562,7 +5834,7 @@ async function registerIpcHandlers(): Promise<void> {
     const record = requireDatabase().updateCloudPhone(payload)
     const provider = resolveCloudPhoneProvider(record)
     await provider.updateEnvironment(record, getSettings())
-    await syncConfigToControlPlaneOrThrow()
+    scheduleGlobalConfigMutation('云手机环境已更新，等待上传到云端')
     logEvent('info', 'cloud-phone', `Updated cloud phone "${record.name}" via ${provider.label}`, null)
     return record
   })
@@ -5574,18 +5846,18 @@ async function registerIpcHandlers(): Promise<void> {
       await provider.deleteEnvironment(record, getSettings())
     }
     requireDatabase().deleteCloudPhone(cloudPhoneId)
-    await syncConfigToControlPlaneOrThrow()
+    scheduleGlobalConfigMutation('云手机环境已删除，等待上传到云端')
     logEvent('warn', 'cloud-phone', `Deleted cloud phone ${cloudPhoneId}`, null)
   })
   ipcMain.handle('cloudPhones.start', async (_event, cloudPhoneId: string) => {
     ensureWritable('cloudPhones.start')
     await startCloudPhone(cloudPhoneId)
-    await syncConfigToControlPlaneOrThrow()
+    scheduleGlobalConfigMutation('云手机环境状态已在本地更新，等待上传到云端')
   })
   ipcMain.handle('cloudPhones.stop', async (_event, cloudPhoneId: string) => {
     ensureWritable('cloudPhones.stop')
     await stopCloudPhone(cloudPhoneId)
-    await syncConfigToControlPlaneOrThrow()
+    scheduleGlobalConfigMutation('云手机环境状态已在本地更新，等待上传到云端')
   })
   ipcMain.handle('cloudPhones.getStatus', async (_event, cloudPhoneId: string) => {
     const record = requireDatabase().getCloudPhoneById(cloudPhoneId)
@@ -5661,14 +5933,14 @@ async function registerIpcHandlers(): Promise<void> {
     for (const cloudPhoneId of payload.cloudPhoneIds) {
       await startCloudPhone(cloudPhoneId)
     }
-    await syncConfigToControlPlaneOrThrow()
+    scheduleGlobalConfigMutation('批量云手机状态已在本地更新，等待上传到云端')
   })
   ipcMain.handle('cloudPhones.bulkStop', async (_event, payload: CloudPhoneBulkActionPayload) => {
     ensureWritable('cloudPhones.bulkStop')
     for (const cloudPhoneId of payload.cloudPhoneIds) {
       await stopCloudPhone(cloudPhoneId)
     }
-    await syncConfigToControlPlaneOrThrow()
+    scheduleGlobalConfigMutation('批量云手机状态已在本地更新，等待上传到云端')
   })
   ipcMain.handle('cloudPhones.bulkDelete', async (_event, payload: CloudPhoneBulkActionPayload) => {
     ensureWritable('cloudPhones.bulkDelete')
@@ -5680,13 +5952,13 @@ async function registerIpcHandlers(): Promise<void> {
       }
     }
     requireDatabase().bulkDeleteCloudPhones(payload.cloudPhoneIds)
-    await syncConfigToControlPlaneOrThrow()
+    scheduleGlobalConfigMutation('批量云手机环境已删除，等待上传到云端')
     logEvent('warn', 'cloud-phone', `Deleted ${payload.cloudPhoneIds.length} cloud phones`, null)
   })
   ipcMain.handle('cloudPhones.bulkAssignGroup', async (_event, payload: CloudPhoneBulkActionPayload) => {
     ensureWritable('cloudPhones.bulkAssignGroup')
     requireDatabase().bulkAssignCloudPhoneGroup(payload.cloudPhoneIds, payload.groupName ?? '')
-    await syncConfigToControlPlaneOrThrow()
+    scheduleGlobalConfigMutation('云手机分组已在本地更新，等待上传到云端')
     logEvent('info', 'cloud-phone', `Updated group for ${payload.cloudPhoneIds.length} cloud phones`, null)
   })
 
@@ -5700,7 +5972,6 @@ async function registerIpcHandlers(): Promise<void> {
     assertProfileNameUniqueOrThrow(payload.name)
     const profile = requireDatabase().createProfile(payload)
     scheduleProfileConfigAfterLocalMutation('create', profile)
-    syncLegacyProfileMutationInBackground('create', profile)
     logEvent('info', 'profile', `Created profile "${profile.name}"`, profile.id)
     return profile
   })
@@ -5720,16 +5991,14 @@ async function registerIpcHandlers(): Promise<void> {
       requireDatabase().setProfileStatus(profile.id, 'stopped')
     }
     scheduleProfileConfigAfterLocalMutation('update', profile)
-    syncLegacyProfileMutationInBackground('update', profile)
     logEvent('info', 'profile', `Updated profile "${profile.name}"`, profile.id)
     return profile
   })
   ipcMain.handle('profiles.delete', async (_event, profileId: string) => {
     ensureWritable('profiles.delete')
     await stopRuntime(profileId)
-    await deleteRemoteProfileBestEffort(profileId)
+    await deleteProfileConfigFromControlPlane(profileId)
     requireDatabase().deleteProfile(profileId)
-    await syncConfigToControlPlaneBestEffort('profiles.delete', { profileId })
     logEvent('warn', 'profile', `Deleted profile ${profileId}`, profileId)
   })
   ipcMain.handle('profiles.clone', async (_event, profileId: string) => {
@@ -5738,6 +6007,14 @@ async function registerIpcHandlers(): Promise<void> {
     scheduleProfileConfigAfterLocalMutation('clone', profile)
     logEvent('info', 'profile', `Cloned profile "${profile.name}"`, profile.id)
     return profile
+  })
+  ipcMain.handle('profiles.syncConfig', async (_event, profileId: string) => {
+    ensureWritable('profiles.syncConfig')
+    return pushProfileConfigToControlPlane(profileId, 'profiles.manual-upload')
+  })
+  ipcMain.handle('profiles.pullConfig', async (_event, profileId: string) => {
+    ensureWritable('profiles.pullConfig')
+    return pullProfileConfigFromControlPlane(profileId)
   })
   ipcMain.handle('profiles.revealDirectory', async (_event, profileId: string) => {
     ensureWorkspaceLayoutForProfileId(profileId)
@@ -5757,19 +6034,18 @@ async function registerIpcHandlers(): Promise<void> {
     ensureWritable('profiles.bulkDelete')
     await stopMany(payload.profileIds)
     for (const profileId of payload.profileIds) {
-      await deleteRemoteProfileBestEffort(profileId)
+      await deleteProfileConfigFromControlPlane(profileId)
     }
     requireDatabase().bulkDeleteProfiles(payload.profileIds)
-    await syncConfigToControlPlaneBestEffort('profiles.bulkDelete', {
-      profileIds: payload.profileIds,
-      count: payload.profileIds.length,
-    })
     logEvent('warn', 'profile', `Deleted ${payload.profileIds.length} profiles`, null)
   })
   ipcMain.handle('profiles.bulkAssignGroup', async (_event, payload: ProfileBulkActionPayload) => {
     ensureWritable('profiles.bulkAssignGroup')
     requireDatabase().bulkAssignGroup(payload.profileIds, payload.groupName ?? '')
-    await syncConfigToControlPlaneOrThrow()
+    updateEnvironmentSyncMetadataForProfiles(payload.profileIds, {
+      status: 'pending',
+      message: '环境分组已在本地更新，等待上传到云端',
+    })
     logEvent('info', 'profile', `Updated group for ${payload.profileIds.length} profiles`, null)
   })
 
@@ -5779,7 +6055,7 @@ async function registerIpcHandlers(): Promise<void> {
     const template = requireDatabase().createTemplate(
       createTemplatePayload(input, createDefaultFingerprint),
     )
-    await syncConfigToControlPlaneOrThrow()
+    scheduleGlobalConfigMutation('模板已在本地创建，等待上传到云端')
     logEvent('info', 'profile', `Created template "${template.name}"`, null)
     return template
   })
@@ -5788,20 +6064,20 @@ async function registerIpcHandlers(): Promise<void> {
     const template = requireDatabase().updateTemplate(
       createTemplatePayload(input, createDefaultFingerprint),
     )
-    await syncConfigToControlPlaneOrThrow()
+    scheduleGlobalConfigMutation('模板已在本地更新，等待上传到云端')
     logEvent('info', 'profile', `Updated template "${template.name}"`, null)
     return template
   })
   ipcMain.handle('templates.delete', async (_event, templateId: string) => {
     ensureWritable('templates.delete')
     requireDatabase().deleteTemplate(templateId)
-    await syncConfigToControlPlaneOrThrow()
+    scheduleGlobalConfigMutation('模板已在本地删除，等待上传到云端')
     logEvent('warn', 'profile', `Deleted template ${templateId}`, null)
   })
   ipcMain.handle('templates.createFromProfile', async (_event, profileId: string) => {
     ensureWritable('templates.createFromProfile')
     const template = requireDatabase().createTemplateFromProfile(profileId)
-    await syncConfigToControlPlaneOrThrow()
+    scheduleGlobalConfigMutation('模板已从环境生成，等待上传到云端')
     logEvent('info', 'profile', `Created template from profile "${template.name}"`, null)
     return template
   })
@@ -5811,7 +6087,7 @@ async function registerIpcHandlers(): Promise<void> {
     ensureWritable('proxies.create')
     const payload = createProxyPayload(input)
     const proxy = requireDatabase().createProxy(payload)
-    await syncConfigToControlPlaneOrThrow()
+    scheduleGlobalConfigMutation('代理已在本地创建，等待上传到云端')
     logEvent('info', 'proxy', `Created proxy "${proxy.name}"`, null)
     return proxy
   })
@@ -5819,14 +6095,14 @@ async function registerIpcHandlers(): Promise<void> {
     ensureWritable('proxies.update')
     const payload = createProxyPayload(input)
     const proxy = requireDatabase().updateProxy(payload)
-    await syncConfigToControlPlaneOrThrow()
+    scheduleGlobalConfigMutation('代理已在本地更新，等待上传到云端')
     logEvent('info', 'proxy', `Updated proxy "${proxy.name}"`, null)
     return proxy
   })
   ipcMain.handle('proxies.delete', async (_event, proxyId: string) => {
     ensureWritable('proxies.delete')
     requireDatabase().deleteProxy(proxyId)
-    await syncConfigToControlPlaneOrThrow()
+    scheduleGlobalConfigMutation('代理已在本地删除，等待上传到云端')
     logEvent('warn', 'proxy', `Deleted proxy ${proxyId}`, null)
   })
   ipcMain.handle('proxies.test', async (_event, proxyId: string) => {
@@ -5866,7 +6142,7 @@ async function registerIpcHandlers(): Promise<void> {
     ensureWritable('settings.set')
     const data = requireDatabase().setSettings(payload)
     syncTheme()
-    await syncConfigToControlPlaneOrThrow()
+    scheduleGlobalConfigMutation('应用设置已在本地更新，等待上传到云端')
     logEvent('info', 'system', 'Updated application settings', null)
     return data
   })
@@ -6078,26 +6354,7 @@ async function bootstrap(): Promise<void> {
   traceStartup('create_main_window_begin')
   await createMainWindow()
   traceStartup('create_main_window_succeeded')
-  if (hasLocalConfigData()) {
-    traceStartup('control_plane_sync_skipped_local_first')
-    markLocalConfigDirty('检测到本地环境数据，已启用本地优先同步')
-    void flushPendingLocalConfigSync('startup.local-first')
-  } else {
-    void syncConfigFromControlPlane()
-      .then(() => {
-        traceStartup('control_plane_sync_succeeded')
-      })
-      .catch((error) => {
-        traceStartup('control_plane_sync_failed', {
-          message: error instanceof Error ? error.message : String(error),
-        })
-        logEvent(
-          'warn',
-          'system',
-          `Initial config sync failed: ${error instanceof Error ? error.message : String(error)}`,
-        )
-      })
-  }
+  traceStartup('control_plane_sync_deferred_manual')
   if (supportsAutoUpdate()) {
     setTimeout(() => {
       void checkForDesktopUpdates({ silent: true })

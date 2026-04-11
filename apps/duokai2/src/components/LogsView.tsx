@@ -9,6 +9,19 @@ import i18nClient from '../lib/i18n-client'
 import type { LogEntry } from '../shared/types'
 import { EmptyState } from './feedback/EmptyState'
 
+function getLogLevelBadgeClass(level: LogEntry['level']) {
+  switch (level) {
+    case 'error':
+      return 'bg-rose-50 text-rose-700 ring-1 ring-inset ring-rose-200 dark:bg-rose-950/55 dark:text-rose-200 dark:ring-rose-900/80'
+    case 'warn':
+      return 'bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-200 dark:bg-amber-950/55 dark:text-amber-200 dark:ring-amber-900/80'
+    case 'info':
+      return 'bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-200 dark:bg-sky-950/55 dark:text-sky-200 dark:ring-sky-900/80'
+    default:
+      return 'bg-slate-100 text-slate-600 ring-1 ring-inset ring-slate-200 dark:bg-slate-800/90 dark:text-slate-200 dark:ring-slate-700/80'
+  }
+}
+
 export function LogsView({
   locale,
   t,
@@ -58,8 +71,9 @@ export function LogsView({
                         ? 'warning'
                         : entry.level === 'info'
                           ? 'primary'
-                          : 'neutral'
+                        : 'neutral'
                   }
+                  className={getLogLevelBadgeClass(entry.level)}
                 >
                   {translateLogLevel(locale, entry.level)}
                 </Badge>

@@ -79,6 +79,8 @@ export function ProfilesView({
   groupedEnvironmentItems,
   toggleProfileSelection,
   onOpenCreateProfile,
+  onUploadEnvironmentConfig,
+  onPullEnvironmentConfig,
   onEditProfile,
   onCloneProfile,
   onLaunchProfile,
@@ -117,7 +119,6 @@ export function ProfilesView({
   startupPlatformOptions,
   environmentPurposeOptions,
   applyPlatformPresetToForm,
-  applyEnvironmentPurposePresetToForm,
   getEnvironmentPurposeLabel,
   getEnvironmentPurposeSummary,
   summarizeIdentitySignature,
@@ -142,6 +143,8 @@ export function ProfilesView({
   groupedEnvironmentItems: Array<{ name: string; items: EnvironmentListItem[] }>
   toggleProfileSelection: (profileId: string) => void
   onOpenCreateProfile: () => void
+  onUploadEnvironmentConfig: (profileId: string) => void | Promise<void>
+  onPullEnvironmentConfig: (profileId: string) => void | Promise<void>
   onEditProfile: (profileId: string) => void
   onCloneProfile: (profileId: string) => void
   onLaunchProfile: (profileId: string) => void
@@ -183,10 +186,6 @@ export function ProfilesView({
     fingerprintConfig: FingerprintConfig,
     environmentPurpose: EnvironmentPurpose,
     platform: string,
-  ) => { fingerprintConfig: FingerprintConfig; environmentPurpose: EnvironmentPurpose }
-  applyEnvironmentPurposePresetToForm: (
-    fingerprintConfig: FingerprintConfig,
-    environmentPurpose: EnvironmentPurpose,
   ) => { fingerprintConfig: FingerprintConfig; environmentPurpose: EnvironmentPurpose }
   getEnvironmentPurposeLabel: (purpose: EnvironmentPurpose, locale: LocaleCode) => string
   getEnvironmentPurposeSummary: (purpose: EnvironmentPurpose, locale: LocaleCode) => string
@@ -348,14 +347,16 @@ export function ProfilesView({
           </Card>
 
           {!showProfileWorkspaceEditor ? (
-            <EnvironmentList
-              groups={groupedEnvironmentItems}
-              selectedIds={selectedProfileIds}
-              onToggleSelect={toggleProfileSelection}
-              onCreate={onOpenCreateProfile}
-              onEdit={onEditProfile}
-              onClone={onCloneProfile}
-              onLaunch={onLaunchProfile}
+              <EnvironmentList
+                groups={groupedEnvironmentItems}
+                selectedIds={selectedProfileIds}
+                onToggleSelect={toggleProfileSelection}
+                onCreate={onOpenCreateProfile}
+                onUploadConfig={onUploadEnvironmentConfig}
+                onPullConfig={onPullEnvironmentConfig}
+                onEdit={onEditProfile}
+                onClone={onCloneProfile}
+                onLaunch={onLaunchProfile}
               onStop={onStopProfile}
               onMoveToNurture={onMoveProfileToNurture}
               onMoveToOperation={onMoveProfileToOperation}
@@ -558,18 +559,10 @@ export function ProfilesView({
                   <Select
                     value={templateForm.environmentPurpose}
                     onChange={(event) =>
-                      setTemplateForm((current) => {
-                        const next = applyEnvironmentPurposePresetToForm(
-                          current.fingerprintConfig,
-                          event.target.value as EnvironmentPurpose,
-                        )
-                        return {
-                          ...current,
-                          environmentPurpose: next.environmentPurpose,
-                          fingerprintConfig: next.fingerprintConfig,
-                          deviceProfile: null,
-                        }
-                      })
+                      setTemplateForm((current) => ({
+                        ...current,
+                        environmentPurpose: event.target.value as EnvironmentPurpose,
+                      }))
                     }
                   >
                     {environmentPurposeOptions.map((item) => (

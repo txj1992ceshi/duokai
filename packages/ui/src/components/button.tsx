@@ -10,9 +10,9 @@ const variantClasses: Record<ButtonVariant, string> = {
   primary:
     'bg-[var(--duokai-primary)] text-white shadow-sm hover:bg-[var(--duokai-primary-strong)]',
   secondary:
-    'border border-[var(--duokai-border)] bg-[var(--duokai-surface)] text-[var(--duokai-text)] hover:bg-[var(--duokai-surface-muted)]',
+    'border border-[var(--duokai-border)] bg-[var(--duokai-button-secondary)] text-[var(--duokai-text)] hover:bg-[var(--duokai-button-secondary-hover)]',
   ghost:
-    'bg-transparent text-[var(--duokai-text-muted)] hover:bg-[var(--duokai-surface-muted)] hover:text-[var(--duokai-text)]',
+    'border border-transparent bg-[var(--duokai-button-ghost)] text-[var(--duokai-text-muted)] hover:bg-[var(--duokai-button-ghost-hover)] hover:text-[var(--duokai-text)]',
   danger: 'bg-rose-600 text-white shadow-sm hover:bg-rose-700',
 }
 

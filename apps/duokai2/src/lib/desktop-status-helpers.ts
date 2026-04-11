@@ -3,11 +3,18 @@ import type { DesktopUpdateState, ProfileRecord } from '../shared/types'
 
 type PendingLaunchState = Record<string, number>
 
-export type StorageSyncSummary = {
+export type EnvironmentSyncSummary = {
   label: string
   detail: string
   className: string
 } | null
+
+export type RuntimeArtifactSyncSummary = {
+  key: 'storageState' | 'workspaceSummary' | 'workspaceSnapshot'
+  label: string
+  detail: string
+  className: string
+}
 
 const PROFILE_LAUNCH_PHASE_LABELS: Record<
   LocaleCode,
@@ -27,41 +34,69 @@ const PROFILE_LAUNCH_PHASE_LABELS: Record<
   },
 }
 
-const STORAGE_SYNC_COPY: Record<
+const ENVIRONMENT_SYNC_COPY: Record<
   LocaleCode,
   {
-    version: string
+    syncedAt: string
+    recovery: string
+    recoveryDetail: string
     conflict: string
     conflictDetail: string
     error: string
     pending: string
     pendingDetail: string
+    syncing: string
+    syncingDetail: string
     synced: string
     idle: string
     idleDetail: string
   }
 > = {
   'zh-CN': {
-    version: '版本',
-    conflict: '登录态冲突',
-    conflictDetail: '云端登录态已更新，请重新启动环境同步最新状态',
-    error: '登录态同步失败',
-    pending: '登录态同步中',
-    pendingDetail: '正在上传云端登录态',
-    synced: '登录态已同步',
-    idle: '登录态未同步',
-    idleDetail: '当前环境还没有云端登录态版本',
+    syncedAt: '最近同步',
+    recovery: '环境待恢复',
+    recoveryDetail: '检测到上次未完成同步，请选择上传当前环境或从云端拉取',
+    conflict: '环境同步冲突',
+    conflictDetail: '云端共享环境配置已更新，请选择上传本地改动或从云端拉取',
+    error: '环境同步失败',
+    pending: '环境待同步',
+    pendingDetail: '本地共享环境配置有改动尚未上传到云端',
+    syncing: '环境同步中',
+    syncingDetail: '正在同步共享环境配置到云端',
+    synced: '环境已同步',
+    idle: '环境未同步',
+    idleDetail: '当前环境尚未执行过共享环境配置同步',
   },
   'en-US': {
-    version: 'Version',
-    conflict: 'Storage conflict',
-    conflictDetail: 'Cloud storage state changed. Restart the profile to sync the latest state.',
-    error: 'Storage sync failed',
-    pending: 'Storage syncing',
-    pendingDetail: 'Uploading storage state',
-    synced: 'Storage synced',
-    idle: 'Storage not synced',
-    idleDetail: 'No cloud storage state version yet',
+    syncedAt: 'Last sync',
+    recovery: 'Environment recovery',
+    recoveryDetail: 'The previous sync was interrupted. Upload this environment or pull from cloud.',
+    conflict: 'Environment conflict',
+    conflictDetail: 'Shared cloud environment data changed. Upload local changes or pull from cloud.',
+    error: 'Environment sync failed',
+    pending: 'Environment pending',
+    pendingDetail: 'Local shared environment changes are waiting to be uploaded',
+    syncing: 'Environment syncing',
+    syncingDetail: 'Syncing shared environment config',
+    synced: 'Environment synced',
+    idle: 'Environment not synced',
+    idleDetail: 'No shared environment config sync has been completed for this environment yet',
+  },
+}
+
+const RUNTIME_SYNC_COPY: Record<
+  LocaleCode,
+  Record<'storageState' | 'workspaceSummary' | 'workspaceSnapshot', string>
+> = {
+  'zh-CN': {
+    storageState: '登录态',
+    workspaceSummary: '环境摘要',
+    workspaceSnapshot: '环境快照',
+  },
+  'en-US': {
+    storageState: 'Storage state',
+    workspaceSummary: 'Workspace summary',
+    workspaceSnapshot: 'Workspace snapshot',
   },
 }
 
@@ -177,55 +212,122 @@ export function formatLocalizedDate(
   return new Date(value).toLocaleString(locale)
 }
 
-export function getDesktopStorageSyncSummary(
+export function getDesktopEnvironmentSyncSummary(
   profile: ProfileRecord,
   locale: LocaleCode,
   emptyDateLabel: string,
-): StorageSyncSummary {
-  const copy = STORAGE_SYNC_COPY[locale]
+): EnvironmentSyncSummary {
+  const copy = ENVIRONMENT_SYNC_COPY[locale]
   const metadata = profile.fingerprintConfig.runtimeMetadata
-  const version = metadata.lastStorageStateVersion
-  const syncedAt = metadata.lastStorageStateSyncedAt
-  const baseDetail = [
-    version > 0 ? `${copy.version} ${version}` : '',
-    syncedAt ? formatLocalizedDate(syncedAt, locale, emptyDateLabel) : '',
-  ]
-    .filter(Boolean)
-    .join(' · ')
+  const syncedAt = metadata.lastEnvironmentSyncAt
+  const baseDetail = syncedAt
+    ? `${copy.syncedAt} ${formatLocalizedDate(syncedAt, locale, emptyDateLabel)}`
+    : ''
 
-  if (metadata.lastStorageStateSyncStatus === 'conflict') {
+  if (metadata.lastEnvironmentSyncStatus === 'conflict') {
     return {
       label: copy.conflict,
-      detail: metadata.lastStorageStateSyncMessage || copy.conflictDetail,
+      detail: metadata.lastEnvironmentSyncMessage || copy.conflictDetail,
       className: 'conflict',
     }
   }
-  if (metadata.lastStorageStateSyncStatus === 'error') {
+  if (metadata.lastEnvironmentSyncStatus === 'recovery') {
     return {
-      label: copy.error,
-      detail: metadata.lastStorageStateSyncMessage || baseDetail,
-      className: 'error',
-    }
-  }
-  if (metadata.lastStorageStateSyncStatus === 'pending') {
-    return {
-      label: copy.pending,
-      detail: metadata.lastStorageStateSyncMessage || baseDetail || copy.pendingDetail,
+      label: copy.recovery,
+      detail: metadata.lastEnvironmentSyncMessage || copy.recoveryDetail,
       className: 'pending',
     }
   }
-  if (metadata.lastStorageStateSyncStatus === 'synced' || version > 0) {
+  if (metadata.lastEnvironmentSyncStatus === 'error') {
+    return {
+      label: copy.error,
+      detail: metadata.lastEnvironmentSyncMessage || baseDetail,
+      className: 'error',
+    }
+  }
+  if (metadata.lastEnvironmentSyncStatus === 'syncing') {
+    return {
+      label: copy.syncing,
+      detail: metadata.lastEnvironmentSyncMessage || baseDetail || copy.syncingDetail,
+      className: 'syncing',
+    }
+  }
+  if (metadata.lastEnvironmentSyncStatus === 'pending') {
+    return {
+      label: copy.pending,
+      detail: metadata.lastEnvironmentSyncMessage || baseDetail || copy.pendingDetail,
+      className: 'pending',
+    }
+  }
+  if (metadata.lastEnvironmentSyncStatus === 'synced' || syncedAt) {
     return {
       label: copy.synced,
-      detail: baseDetail || metadata.lastStorageStateSyncMessage,
+      detail: baseDetail || metadata.lastEnvironmentSyncMessage,
       className: 'synced',
     }
   }
   return {
     label: copy.idle,
-    detail: metadata.lastStorageStateSyncMessage || copy.idleDetail,
+    detail: metadata.lastEnvironmentSyncMessage || copy.idleDetail,
     className: 'idle',
   }
+}
+
+export function getDesktopRuntimeArtifactSyncSummaries(
+  profile: ProfileRecord,
+  locale: LocaleCode,
+  emptyDateLabel: string,
+): RuntimeArtifactSyncSummary[] {
+  const metadata = profile.fingerprintConfig.runtimeMetadata
+  const labels = RUNTIME_SYNC_COPY[locale]
+  const entries: RuntimeArtifactSyncSummary[] = []
+  const pushSummary = (
+    key: RuntimeArtifactSyncSummary['key'],
+    status: 'idle' | 'synced' | 'syncing' | 'error' | 'pending' | 'conflict',
+    message: string,
+    at: string,
+  ) => {
+    if (status === 'idle' && !message && !at) {
+      return
+    }
+    entries.push({
+      key,
+      label: labels[key],
+      detail: message || (at ? formatLocalizedDate(at, locale, emptyDateLabel) : emptyDateLabel),
+      className:
+        status === 'error'
+          ? 'error'
+          : status === 'syncing'
+            ? 'syncing'
+            : status === 'pending'
+              ? 'pending'
+              : status === 'conflict'
+                ? 'conflict'
+                : status === 'synced'
+                  ? 'synced'
+                  : 'idle',
+    })
+  }
+
+  pushSummary(
+    'storageState',
+    metadata.lastStorageStateSyncStatus,
+    metadata.lastStorageStateSyncMessage,
+    metadata.lastStorageStateSyncedAt,
+  )
+  pushSummary(
+    'workspaceSummary',
+    metadata.lastWorkspaceSummarySyncStatus,
+    metadata.lastWorkspaceSummarySyncMessage,
+    metadata.lastWorkspaceSummarySyncAt,
+  )
+  pushSummary(
+    'workspaceSnapshot',
+    metadata.lastWorkspaceSnapshotSyncStatus,
+    metadata.lastWorkspaceSnapshotSyncMessage,
+    metadata.lastWorkspaceSnapshotSyncAt,
+  )
+  return entries
 }
 
 export function describeDesktopUpdateStatus(

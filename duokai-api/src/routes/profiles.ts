@@ -110,8 +110,11 @@ router.post(
       startupNavigation: body.startupNavigation || {
         ok: false,
         requestedUrl: '',
+        attemptedUrl: '',
         finalUrl: '',
+        reasonCode: '',
         error: '',
+        checkedAt: '',
       },
       proxyVerification: body.proxyVerification || null,
       configFingerprintHash: body.configFingerprintHash || '',

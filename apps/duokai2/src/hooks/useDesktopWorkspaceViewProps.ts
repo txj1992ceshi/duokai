@@ -80,6 +80,8 @@ export function useDesktopWorkspaceViewProps({
   cloneProfile,
   launchProfile,
   stopProfile,
+  syncProfileConfig,
+  pullProfileConfig,
   moveProfileToNurture,
   moveProfileToOperation,
   bulkStartProfiles,
@@ -109,7 +111,6 @@ export function useDesktopWorkspaceViewProps({
   deleteSelectedProfile,
   saveTemplate,
   deleteSelectedTemplate,
-  applyEnvironmentPurposePresetToForm,
   getEnvironmentPurposeLabel,
   getEnvironmentPurposeSummary,
   summarizeIdentitySignature,
@@ -187,7 +188,8 @@ export function useDesktopWorkspaceViewProps({
   saveAccountProfile,
   uploadAccountAvatar,
   saveAccountPassword,
-  syncEnvironmentConfig,
+  syncGlobalConfig,
+  pullGlobalConfig,
   revokeAccountDevice,
   deleteAccountDevice,
 }: {
@@ -238,6 +240,8 @@ export function useDesktopWorkspaceViewProps({
   cloneProfile: (profileId: string) => void | Promise<void>
   launchProfile: (profileId: string) => void | Promise<void>
   stopProfile: (profileId: string) => void | Promise<void>
+  syncProfileConfig: (profileId: string) => void | Promise<void>
+  pullProfileConfig: (profileId: string) => void | Promise<void>
   moveProfileToNurture: (profileId: string) => void | Promise<void>
   moveProfileToOperation: (profileId: string) => void | Promise<void>
   bulkStartProfiles: () => void | Promise<void>
@@ -267,7 +271,6 @@ export function useDesktopWorkspaceViewProps({
   deleteSelectedProfile: () => void | Promise<void>
   saveTemplate: () => void | Promise<void>
   deleteSelectedTemplate: () => void | Promise<void>
-  applyEnvironmentPurposePresetToForm: ProfilesProps['applyEnvironmentPurposePresetToForm']
   getEnvironmentPurposeLabel: ProfilesProps['getEnvironmentPurposeLabel']
   getEnvironmentPurposeSummary: ProfilesProps['getEnvironmentPurposeSummary']
   summarizeIdentitySignature: ProfilesProps['summarizeIdentitySignature']
@@ -345,7 +348,8 @@ export function useDesktopWorkspaceViewProps({
   saveAccountProfile: () => void | Promise<void>
   uploadAccountAvatar: () => void | Promise<void>
   saveAccountPassword: () => void | Promise<void>
-  syncEnvironmentConfig: () => void | Promise<void>
+  syncGlobalConfig: () => void | Promise<void>
+  pullGlobalConfig: () => void | Promise<void>
   revokeAccountDevice: (deviceId: string) => void | Promise<void>
   deleteAccountDevice: (deviceId: string) => void | Promise<void>
 }) {
@@ -415,6 +419,8 @@ export function useDesktopWorkspaceViewProps({
     onCloneProfile: (profileId) => void cloneProfile(profileId),
     onLaunchProfile: (profileId) => void launchProfile(profileId),
     onStopProfile: (profileId) => void stopProfile(profileId),
+    onUploadEnvironmentConfig: (profileId) => void syncProfileConfig(profileId),
+    onPullEnvironmentConfig: (profileId) => void pullProfileConfig(profileId),
     onMoveProfileToNurture: (profileId) => void moveProfileToNurture(profileId),
     onMoveProfileToOperation: (profileId) => void moveProfileToOperation(profileId),
     onBatchStart: () => void bulkStartProfiles(),
@@ -455,7 +461,6 @@ export function useDesktopWorkspaceViewProps({
     startupPlatformOptions: STARTUP_PLATFORM_OPTIONS,
     environmentPurposeOptions: ENVIRONMENT_PURPOSE_OPTIONS,
     applyPlatformPresetToForm,
-    applyEnvironmentPurposePresetToForm,
     getEnvironmentPurposeLabel,
     getEnvironmentPurposeSummary,
     summarizeIdentitySignature,
@@ -600,7 +605,8 @@ export function useDesktopWorkspaceViewProps({
     onSaveProfile: () => void saveAccountProfile(),
     onUploadAvatar: () => void uploadAccountAvatar(),
     onSavePassword: () => void saveAccountPassword(),
-    onSyncEnvironmentConfig: () => void syncEnvironmentConfig(),
+    onSyncGlobalConfig: () => void syncGlobalConfig(),
+    onPullGlobalConfig: () => void pullGlobalConfig(),
     onRevokeDevice: (deviceId) => void revokeAccountDevice(deviceId),
     onDeleteDevice: (deviceId) => void deleteAccountDevice(deviceId),
   }

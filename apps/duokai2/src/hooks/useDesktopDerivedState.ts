@@ -2,9 +2,10 @@ import { useCallback, useMemo } from 'react'
 import type { Dictionary, LocaleCode } from '../i18n'
 import {
   describeDesktopUpdateStatus,
+  getDesktopEnvironmentSyncSummary,
+  getDesktopRuntimeArtifactSyncSummaries,
   formatLocalizedDate,
   getDesktopProfileLaunchPhaseLabel,
-  getDesktopStorageSyncSummary,
   getDesktopUpdateActionLabel,
   resolveProfileVisualState,
 } from '../lib/desktop-status-helpers'
@@ -162,8 +163,13 @@ export function useDesktopDerivedState({
     [locale, runtimeLaunchStages],
   )
 
-  const getStorageSyncSummary = useCallback(
-    (profile: ProfileRecord) => getDesktopStorageSyncSummary(profile, locale, t.common.never),
+  const getEnvironmentSyncSummary = useCallback(
+    (profile: ProfileRecord) => getDesktopEnvironmentSyncSummary(profile, locale, t.common.never),
+    [locale, t.common.never],
+  )
+
+  const getRuntimeArtifactSyncSummaries = useCallback(
+    (profile: ProfileRecord) => getDesktopRuntimeArtifactSyncSummaries(profile, locale, t.common.never),
     [locale, t.common.never],
   )
 
@@ -219,7 +225,8 @@ export function useDesktopDerivedState({
     runtimeLaunchStages,
     getProfileVisualState,
     getLaunchPhaseLabel,
-    getStorageSyncSummary,
+    getEnvironmentSyncSummary,
+    getRuntimeArtifactSyncSummaries,
     formatDate,
     describeUpdateStatus,
     getUpdateActionLabel,

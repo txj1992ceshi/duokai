@@ -19,6 +19,7 @@ import type {
   EnvironmentPurpose,
   ExportBundle,
   FingerprintConfig,
+  GlobalConfigSnapshot,
   ImportResult,
   IpUsageKind,
   IpUsageRecord,
@@ -1218,6 +1219,16 @@ export class DatabaseService {
     }
   }
 
+  exportGlobalConfigSnapshot(syncVersion = 0): GlobalConfigSnapshot {
+    return {
+      syncVersion,
+      proxies: this.listProxies(),
+      templates: this.listTemplates(),
+      cloudPhones: this.listCloudPhones(),
+      settings: this.getRemoteSyncedSettings(),
+    }
+  }
+
   applyRemoteConfigSnapshot(snapshot: RemoteConfigSnapshot): void {
     const existingSettings = this.getSettings()
     const sharedSettingKeys = Object.keys(this.getRemoteSyncedSettings(existingSettings))
@@ -1270,6 +1281,108 @@ export class DatabaseService {
           },
           profile.status || 'stopped',
         )
+      }
+
+      for (const template of snapshot.templates || []) {
+        this.insertTemplate({
+          id: template.id,
+          name: template.name,
+          proxyId: template.proxyId,
+          groupName: template.groupName,
+          environmentPurpose: template.environmentPurpose,
+          tags: template.tags,
+          notes: template.notes,
+          fingerprintConfig: template.fingerprintConfig,
+          workspaceTemplate: template.workspaceTemplate ?? null,
+        })
+      }
+
+      for (const cloudPhone of snapshot.cloudPhones || []) {
+        this.insertCloudPhone(
+          {
+            id: cloudPhone.id,
+            name: cloudPhone.name,
+            groupName: cloudPhone.groupName,
+            tags: cloudPhone.tags,
+            notes: cloudPhone.notes,
+            platform: cloudPhone.platform,
+            providerKey: cloudPhone.providerKey,
+            providerKind: cloudPhone.providerKind,
+            providerConfig: cloudPhone.providerConfig,
+            providerInstanceId: cloudPhone.providerInstanceId,
+            computeType: cloudPhone.computeType,
+            ipLookupChannel: cloudPhone.ipLookupChannel,
+            proxyRefMode: cloudPhone.proxyRefMode ?? 'custom',
+            proxyId: cloudPhone.proxyId ?? null,
+            proxyType: cloudPhone.proxyType,
+            ipProtocol: cloudPhone.ipProtocol,
+            proxyHost: cloudPhone.proxyHost,
+            proxyPort: cloudPhone.proxyPort,
+            proxyUsername: cloudPhone.proxyUsername,
+            proxyPassword: cloudPhone.proxyPassword,
+            udpEnabled: cloudPhone.udpEnabled,
+            fingerprintSettings: cloudPhone.fingerprintSettings,
+          },
+          cloudPhone.status || 'stopped',
+        )
+        this.db
+          .prepare(
+            `UPDATE cloud_phones
+             SET last_synced_at = ?, created_at = ?, updated_at = ?
+             WHERE id = ?`,
+          )
+          .run(
+            cloudPhone.lastSyncedAt,
+            cloudPhone.createdAt || new Date().toISOString(),
+            cloudPhone.updatedAt || new Date().toISOString(),
+            cloudPhone.id,
+          )
+      }
+
+      const settingsStmt = this.db.prepare(
+        `INSERT INTO settings (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      )
+      for (const [key, value] of Object.entries(snapshot.settings || {})) {
+        if (REMOTE_SYNC_EXCLUDED_SETTINGS.has(key)) {
+          continue
+        }
+        settingsStmt.run(key, String(value))
+      }
+    })
+
+    tx()
+  }
+
+  applyGlobalConfigSnapshot(snapshot: GlobalConfigSnapshot): void {
+    const existingSettings = this.getSettings()
+    const sharedSettingKeys = Object.keys(this.getRemoteSyncedSettings(existingSettings))
+    const tx = this.db.transaction(() => {
+      this.db.prepare(`DELETE FROM templates`).run()
+      this.db.prepare(`DELETE FROM proxies`).run()
+      this.db.prepare(`DELETE FROM cloud_phones`).run()
+      const deleteSettingStmt = this.db.prepare(`DELETE FROM settings WHERE key = ?`)
+      for (const key of sharedSettingKeys) {
+        deleteSettingStmt.run(key)
+      }
+
+      for (const proxy of snapshot.proxies || []) {
+        this.insertProxy({
+          id: proxy.id,
+          name: proxy.name,
+          type: proxy.type,
+          host: proxy.host,
+          port: proxy.port,
+          username: proxy.username,
+          password: proxy.password,
+        })
+        if (proxy.status === 'online' || proxy.status === 'offline' || proxy.status === 'unknown') {
+          this.db
+            .prepare(
+              `UPDATE proxies SET status = ?, last_checked_at = ?, updated_at = ? WHERE id = ?`,
+            )
+            .run(proxy.status, proxy.lastCheckedAt, new Date().toISOString(), proxy.id)
+        }
       }
 
       for (const template of snapshot.templates || []) {

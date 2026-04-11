@@ -3,6 +3,12 @@ import { connectMongo } from '../lib/mongodb.js';
 import { asyncHandler } from '../lib/http.js';
 import { getForwardAuthHeaders, getRuntimeApiKey, getRuntimeUrl } from '../lib/runtime.js';
 import { resolveStorageStateJson } from '../lib/storageArtifacts.js';
+import {
+  classifyRuntimeProxyFailure,
+  classifyStorageArtifactFailure,
+  parseRuntimeResponsePayload,
+} from '../lib/runtimeProxy.js';
+import { resolveRuntimeProfileForUser } from '../lib/runtimeProfiles.js';
 import { requireUser } from '../middlewares/auth.js';
 import { ProfileModel } from '../models/Profile.js';
 import { ProfileStorageStateModel } from '../models/ProfileStorageState.js';
@@ -10,6 +16,11 @@ import { ProfileStorageStateModel } from '../models/ProfileStorageState.js';
 const router = Router();
 
 router.use(requireUser);
+
+function logRuntimeRouteEvent(level: 'warn' | 'error', event: string, payload: Record<string, unknown>) {
+  const logger = level === 'error' ? console.error : console.warn;
+  logger(`[runtime-route] ${event}`, payload);
+}
 
 router.get(
   '/status',
@@ -88,7 +99,14 @@ router.post(
       return;
     }
 
-    let ownedProfile: { _id: unknown; name?: string } | null = null;
+    let resolvedProfile:
+      | {
+          profile: Record<string, unknown>;
+          profileId: string;
+          source: 'mongo' | 'config';
+        }
+      | null = null;
+    let runtimeSessionId = '';
 
     if (action === 'start') {
       const profileId = String(
@@ -100,45 +118,89 @@ router.post(
         return;
       }
 
-      ownedProfile = await ProfileModel.findOne({
-        _id: profileId,
-        userId: authUser.userId,
-      }).lean();
+      resolvedProfile = await resolveRuntimeProfileForUser(authUser.userId, profileId);
     } else {
-      const sessionId = String(payload.sessionId || '');
-      if (!sessionId) {
+      runtimeSessionId = String(payload.sessionId || '');
+      if (!runtimeSessionId) {
         res.status(400).json({ success: false, error: 'sessionId is required' });
         return;
       }
 
-      ownedProfile = await ProfileModel.findOne({
+      const ownedProfile = await ProfileModel.findOne({
         userId: authUser.userId,
-        runtimeSessionId: sessionId,
+        runtimeSessionId,
       }).lean();
+      resolvedProfile = ownedProfile
+        ? {
+            profile: ownedProfile as Record<string, unknown>,
+            profileId: String(ownedProfile._id),
+            source: 'mongo' as const,
+          }
+        : null;
     }
 
-    if (!ownedProfile) {
+    if (!resolvedProfile) {
       res.status(404).json({ success: false, error: 'Profile not found' });
       return;
     }
 
     if (action === 'start') {
-      payload.profileId = String(ownedProfile._id);
+      payload.profileId = resolvedProfile.profileId;
       payload.profile = {
         ...(payload.profile as Record<string, unknown> | undefined),
-        id: String(ownedProfile._id),
+        id: resolvedProfile.profileId,
       };
 
       const syncedStorageState = await ProfileStorageStateModel.findOne({
         userId: authUser.userId,
-        profileId: ownedProfile._id,
+        profileId: resolvedProfile.profileId,
       }).lean();
 
-      payload.storageState = await resolveStorageStateJson({
-        inlineStateJson: syncedStorageState?.inlineStateJson,
-        stateJson: syncedStorageState?.stateJson,
-        fileRef: syncedStorageState?.fileRef || '',
-      });
+      if (syncedStorageState) {
+        try {
+          payload.storageState = await resolveStorageStateJson({
+            inlineStateJson: syncedStorageState.inlineStateJson,
+            stateJson: syncedStorageState.stateJson,
+            fileRef: syncedStorageState.fileRef || '',
+          });
+          if (
+            payload.storageState === null &&
+            (syncedStorageState.inlineStateJson !== null ||
+              syncedStorageState.stateJson !== null ||
+              String(syncedStorageState.fileRef || '').trim())
+          ) {
+            res.status(424).json({
+              success: false,
+              code: 'STORAGE_STATE_ARTIFACT_INVALID',
+              error: 'Synced storage-state artifact is invalid',
+            });
+            return;
+          }
+        } catch (error) {
+          const classification = classifyStorageArtifactFailure(error);
+          logRuntimeRouteEvent('warn', 'storage_state_resolve_failed', {
+            action,
+            requestedProfileId: String(
+              payload.profileId || (payload.profile as Record<string, unknown> | undefined)?.id || ''
+            ),
+            resolvedProfileId: resolvedProfile.profileId,
+            profileSource: resolvedProfile.source,
+            sessionId: runtimeSessionId,
+            runtimeUrl: getRuntimeUrl(),
+            storageStateFileRef: syncedStorageState.fileRef || '',
+            code: classification.code,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          res.status(classification.status).json({
+            success: false,
+            code: classification.code,
+            error: classification.error,
+          });
+          return;
+        }
+      } else {
+        payload.storageState = null;
+      }
       payload.storageStateMetadata = syncedStorageState
         ? {
             version: syncedStorageState.version || 0,
@@ -151,23 +213,47 @@ router.post(
         : null;
     }
 
-    const runtimeResponse = await fetch(`${getRuntimeUrl()}${endpoint}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-runtime-key': getRuntimeApiKey(),
-        ...getForwardAuthHeaders(req),
-      },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(action === 'start' ? 60000 : 10000),
-    });
-
-    let json: unknown = {};
     try {
-      json = await runtimeResponse.json();
-    } catch {}
+      const runtimeResponse = await fetch(`${getRuntimeUrl()}${endpoint}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-runtime-key': getRuntimeApiKey(),
+          ...getForwardAuthHeaders(req),
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(action === 'start' ? 60000 : 10000),
+      });
 
-    res.status(runtimeResponse.status).json(json);
+      const responsePayload = await parseRuntimeResponsePayload(runtimeResponse);
+      if (!runtimeResponse.ok) {
+        logRuntimeRouteEvent('warn', 'runtime_proxy_non_ok', {
+          action,
+          resolvedProfileId: resolvedProfile.profileId,
+          profileSource: resolvedProfile.source,
+          sessionId: runtimeSessionId,
+          runtimeUrl: `${getRuntimeUrl()}${endpoint}`,
+          runtimeStatus: runtimeResponse.status,
+        });
+      }
+      res.status(runtimeResponse.status).json(responsePayload);
+    } catch (error) {
+      const classification = classifyRuntimeProxyFailure(error);
+      logRuntimeRouteEvent('error', 'runtime_proxy_failed', {
+        action,
+        resolvedProfileId: resolvedProfile.profileId,
+        profileSource: resolvedProfile.source,
+        sessionId: runtimeSessionId,
+        runtimeUrl: `${getRuntimeUrl()}${endpoint}`,
+        code: classification.code,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      res.status(classification.status).json({
+        success: false,
+        code: classification.code,
+        error: classification.error,
+      });
+    }
   })
 );
 

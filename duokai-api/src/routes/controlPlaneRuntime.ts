@@ -17,12 +17,12 @@ import { normalizeRuntimeMode } from '../lib/runtimeModes.js';
 import { asyncHandler } from '../lib/http.js';
 import { connectMongo } from '../lib/mongodb.js';
 import { getDefaultPlatformPolicy } from '../lib/platformPolicies.js';
+import { resolveRuntimeProfileForUser, updateRuntimeProfileFieldsForUser } from '../lib/runtimeProfiles.js';
 import { requireUser } from '../middlewares/auth.js';
 import { AgentModel } from '../models/Agent.js';
 import { ControlTaskModel } from '../models/ControlTask.js';
 import { IpLeaseModel } from '../models/IpLease.js';
 import { PlatformPolicyModel } from '../models/PlatformPolicy.js';
-import { ProfileModel } from '../models/Profile.js';
 import { ProxyAssetModel } from '../models/ProxyAsset.js';
 import { TaskEventModel } from '../models/TaskEvent.js';
 
@@ -33,30 +33,20 @@ async function persistLastLaunchBlock(
   profileId: string,
   payload: { code: string; message: string; detail?: unknown }
 ) {
-  await ProfileModel.updateOne(
-    { _id: profileId, userId },
-    {
-      $set: {
-        lastLaunchBlock: {
-          code: payload.code,
-          message: payload.message,
-          detail: payload.detail || null,
-          blockedAt: new Date().toISOString(),
-        },
-      },
-    }
-  );
+  await updateRuntimeProfileFieldsForUser(userId, profileId, {
+    lastLaunchBlock: {
+      code: payload.code,
+      message: payload.message,
+      detail: payload.detail || null,
+      blockedAt: new Date().toISOString(),
+    },
+  });
 }
 
 async function clearLastLaunchBlock(userId: string, profileId: string) {
-  await ProfileModel.updateOne(
-    { _id: profileId, userId },
-    {
-      $set: {
-        lastLaunchBlock: null,
-      },
-    }
-  );
+  await updateRuntimeProfileFieldsForUser(userId, profileId, {
+    lastLaunchBlock: null,
+  });
 }
 
 router.post(
@@ -85,10 +75,9 @@ router.post(
       return;
     }
 
-    const profile = await ProfileModel.findOne({
-      _id: profileId,
-      userId: req.authUser?.userId || '',
-    }).lean();
+    const resolvedProfile = await resolveRuntimeProfileForUser(req.authUser?.userId || '', profileId);
+    const profile = resolvedProfile?.profile || null;
+    const resolvedProfileId = resolvedProfile?.profileId || profileId;
 
     if (!profile) {
       res.status(404).json({ success: false, error: 'Profile not found' });
@@ -97,7 +86,7 @@ router.post(
 
     const preLaunchDecision = action === 'start' ? evaluateProfilePreLaunch(profile) : null;
     if (preLaunchDecision && !preLaunchDecision.ok) {
-      await persistLastLaunchBlock(req.authUser?.userId || '', profileId, {
+      await persistLastLaunchBlock(req.authUser?.userId || '', resolvedProfileId, {
         code: preLaunchDecision.code,
         message: preLaunchDecision.message,
         detail: preLaunchDecision.detail || null,
@@ -116,7 +105,7 @@ router.post(
       createdByUserId: req.authUser?.userId || '',
       type: taskType,
       status: { $in: [...ACTIVE_CONTROL_TASK_STATUSES] },
-      'payload.profileId': profileId,
+      'payload.profileId': resolvedProfileId,
     })
       .sort({ createdAt: -1 })
       .lean();
@@ -125,13 +114,13 @@ router.post(
       action === 'start' || action === 'stop'
         ? resolveDuplicateTaskBlock({
             action,
-            profileId,
+            profileId: resolvedProfileId,
             duplicateTask: duplicateTask as Record<string, unknown> | null,
           })
         : null;
     if (duplicateTaskBlock) {
       if (action === 'start') {
-        await persistLastLaunchBlock(req.authUser?.userId || '', profileId, {
+        await persistLastLaunchBlock(req.authUser?.userId || '', resolvedProfileId, {
           code: duplicateTaskBlock.code,
           message: duplicateTaskBlock.message,
           detail: duplicateTaskBlock.detail || null,
@@ -155,13 +144,13 @@ router.post(
     const requiredCapability = actionDefinition.requiredCapability;
     const { selectedAgent, onlineAgents, capableAgents, selectedState } = selectAgentForAction({
       agents,
-      profileId,
+      profileId: resolvedProfileId,
       requiredCapability,
     });
 
     if (!selectedAgent) {
       if (action === 'start') {
-        await persistLastLaunchBlock(req.authUser?.userId || '', profileId, {
+        await persistLastLaunchBlock(req.authUser?.userId || '', resolvedProfileId, {
           code: action === 'start' ? 'NO_ONLINE_AGENT' : 'NO_STOP_AGENT',
           message: '当前没有在线的桌面 Agent 可用于启动环境',
           detail: {
@@ -198,7 +187,7 @@ router.post(
           })
         : null;
     if (agentRuntimeModeDecision && !agentRuntimeModeDecision.ok) {
-      await persistLastLaunchBlock(req.authUser?.userId || '', profileId, {
+      await persistLastLaunchBlock(req.authUser?.userId || '', resolvedProfileId, {
         code: agentRuntimeModeDecision.code,
         message: agentRuntimeModeDecision.message,
         detail: agentRuntimeModeDecision.detail || null,
@@ -213,8 +202,8 @@ router.post(
     }
 
     const runningProfileIds = selectedState?.runningProfileIds || [];
-    if (action === 'start' && runningProfileIds.includes(profileId)) {
-      await clearLastLaunchBlock(req.authUser?.userId || '', profileId);
+    if (action === 'start' && runningProfileIds.includes(resolvedProfileId)) {
+      await clearLastLaunchBlock(req.authUser?.userId || '', resolvedProfileId);
       res.json({
         success: true,
         duplicate: true,
@@ -231,8 +220,8 @@ router.post(
       return;
     }
 
-    if (action === 'start' && (selectedState?.lockedProfileIds || []).includes(profileId)) {
-      await persistLastLaunchBlock(req.authUser?.userId || '', profileId, {
+    if (action === 'start' && (selectedState?.lockedProfileIds || []).includes(resolvedProfileId)) {
+      await persistLastLaunchBlock(req.authUser?.userId || '', resolvedProfileId, {
         code: 'RUNTIME_LOCK_EXISTS',
         message: '目标 Profile 当前存在本机运行锁，暂时不能重复启动',
         detail: {
@@ -262,7 +251,7 @@ router.post(
     if (action === 'start') {
       activeLease = await IpLeaseModel.findOne({
         userId: req.authUser?.userId || '',
-        profileId,
+        profileId: resolvedProfileId,
         state: 'active',
       }).lean();
 
@@ -314,7 +303,7 @@ router.post(
         runningProfileIds,
       });
       if (!leaseValidation.ok) {
-        await persistLastLaunchBlock(req.authUser?.userId || '', profileId, {
+        await persistLastLaunchBlock(req.authUser?.userId || '', resolvedProfileId, {
           code: leaseValidation.code,
           message: leaseValidation.message,
           detail: leaseValidation.detail || null,
@@ -330,7 +319,7 @@ router.post(
     }
 
     const taskId = randomUUID();
-    const idempotencyKey = buildTaskIdempotencyKey(action, profileId, snapshotId);
+    const idempotencyKey = buildTaskIdempotencyKey(action, resolvedProfileId, snapshotId);
 
     await ControlTaskModel.create({
       taskId,
@@ -338,7 +327,7 @@ router.post(
       type: taskType,
       status: 'PENDING',
       payload: {
-        profileId,
+        profileId: resolvedProfileId,
         snapshotId,
         targetUrl,
         activeLeaseId:
@@ -390,7 +379,7 @@ router.post(
       status: 'PENDING',
       idempotencyKey,
       detail: {
-        profileId,
+        profileId: resolvedProfileId,
         snapshotId,
         targetUrl,
         action,
@@ -405,7 +394,7 @@ router.post(
     });
 
     if (action === 'start') {
-      await clearLastLaunchBlock(req.authUser?.userId || '', profileId);
+      await clearLastLaunchBlock(req.authUser?.userId || '', resolvedProfileId);
     }
 
     res.json({
@@ -413,7 +402,7 @@ router.post(
       queued: true,
       taskId,
       agentId: selectedAgent.agentId,
-      profileId,
+      profileId: resolvedProfileId,
       snapshotId,
       action,
       detail: {

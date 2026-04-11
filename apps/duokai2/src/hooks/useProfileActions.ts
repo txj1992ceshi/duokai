@@ -36,7 +36,6 @@ export function useProfileActions({
   emptyTemplate,
   normalizeTags,
   normalizeFingerprintForSave,
-  applyEnvironmentPurposePresetToForm,
   getEnvironmentPurposeLabel,
   requireDesktopApi,
   localizeError,
@@ -68,10 +67,6 @@ export function useProfileActions({
   emptyTemplate: (proxyId?: string | null) => ProfileFormState
   normalizeTags: (value: string) => string[]
   normalizeFingerprintForSave: (config: FingerprintConfig) => FingerprintConfig
-  applyEnvironmentPurposePresetToForm: (
-    fingerprintConfig: FingerprintConfig,
-    environmentPurpose: EnvironmentPurpose,
-  ) => { fingerprintConfig: FingerprintConfig; environmentPurpose: EnvironmentPurpose }
   getEnvironmentPurposeLabel: (purpose: EnvironmentPurpose, locale: LocaleCode) => string
   requireDesktopApi: (requiredPaths?: string[]) => DesktopApi
   localizeError: (error: unknown) => string
@@ -96,8 +91,12 @@ export function useProfileActions({
           profileDeleted: '环境已删除。',
           profileQueued: '环境已加入启动队列。',
           profileStopped: '环境已停止。',
-          migratingTo: (label: string) => `正在迁移到${label}...`,
-          migratedTo: (label: string) => `环境已迁移到${label}。`,
+          syncingProfileConfig: '正在上传当前环境配置...',
+          pullingProfileConfig: '正在从云端拉取当前环境配置...',
+          profileConfigSynced: '当前环境已同步到云端。',
+          profileConfigPulled: '已从云端拉取当前环境配置。',
+          relabelingTo: (label: string) => `正在更新用途为${label}...`,
+          relabeledTo: (label: string) => `环境用途已更新为${label}。`,
           templateDeleted: '模板已删除。',
           bulkDeleted: (count: number) => `已删除 ${count} 个环境。`,
           bulkQueued: (count: number) => `已将 ${count} 个环境加入启动队列。`,
@@ -118,8 +117,12 @@ export function useProfileActions({
           profileDeleted: 'Profile deleted.',
           profileQueued: 'Profile queued for launch.',
           profileStopped: 'Profile stopped.',
-          migratingTo: (label: string) => `Migrating to ${label}...`,
-          migratedTo: (label: string) => `Profile migrated to ${label}.`,
+          syncingProfileConfig: 'Uploading the current environment...',
+          pullingProfileConfig: 'Pulling the current environment from cloud...',
+          profileConfigSynced: 'Current environment synced to cloud.',
+          profileConfigPulled: 'Current environment pulled from cloud.',
+          relabelingTo: (label: string) => `Updating purpose to ${label}...`,
+          relabeledTo: (label: string) => `Profile purpose updated to ${label}.`,
           templateDeleted: 'Template deleted.',
           bulkDeleted: (count: number) => `Deleted ${count} profiles.`,
           bulkQueued: (count: number) => `Queued ${count} profiles for launch.`,
@@ -284,8 +287,8 @@ export function useProfileActions({
     setErrorMessage('')
     try {
       const api = requireDesktopApi(['runtime.launch'])
-      await api.runtime.launch(profileId)
-      setNoticeMessage(copy.profileQueued)
+      const result = await api.runtime.launch(profileId)
+      setNoticeMessage(result.warningMessage || copy.profileQueued)
       await refreshAll()
     } catch (error) {
       setPendingProfileLaunches((current) => {
@@ -314,13 +317,28 @@ export function useProfileActions({
     }
   }
 
+  async function syncProfileConfig(profileId: string) {
+    await withBusy(copy.syncingProfileConfig, async () => {
+      const api = requireDesktopApi(['profiles.syncConfig'])
+      const result = await api.profiles.syncConfig(profileId)
+      setNoticeMessage(result.message || copy.profileConfigSynced)
+    })
+  }
+
+  async function pullProfileConfig(profileId: string) {
+    await withBusy(copy.pullingProfileConfig, async () => {
+      const api = requireDesktopApi(['profiles.pullConfig'])
+      const result = await api.profiles.pullConfig(profileId)
+      setNoticeMessage(result.message || copy.profileConfigPulled)
+    })
+  }
+
   async function transitionProfilePurpose(profile: ProfileRecord, targetPurpose: EnvironmentPurpose) {
     if (profile.environmentPurpose === targetPurpose) {
       return
     }
-    const next = applyEnvironmentPurposePresetToForm(profile.fingerprintConfig, targetPurpose)
     await withBusy(
-      copy.migratingTo(getEnvironmentPurposeLabel(targetPurpose, locale)),
+      copy.relabelingTo(getEnvironmentPurposeLabel(targetPurpose, locale)),
       async () => {
         const api = requireDesktopApi(['profiles.update'])
         await api.profiles.update({
@@ -330,14 +348,14 @@ export function useProfileActions({
           groupName: profile.groupName,
           tags: profile.tags,
           notes: profile.notes,
-          environmentPurpose: next.environmentPurpose,
+          environmentPurpose: targetPurpose,
           deviceProfile: profile.deviceProfile,
           fingerprintConfig: normalizeFingerprintForSave({
-            ...next.fingerprintConfig,
-            resolution: `${next.fingerprintConfig.advanced.windowWidth}x${next.fingerprintConfig.advanced.windowHeight}`,
+            ...profile.fingerprintConfig,
+            resolution: `${profile.fingerprintConfig.advanced.windowWidth}x${profile.fingerprintConfig.advanced.windowHeight}`,
           }),
         })
-        setNoticeMessage(copy.migratedTo(getEnvironmentPurposeLabel(targetPurpose, locale)))
+        setNoticeMessage(copy.relabeledTo(getEnvironmentPurposeLabel(targetPurpose, locale)))
       },
     )
   }
@@ -441,6 +459,8 @@ export function useProfileActions({
     deleteSelectedProfile,
     launchProfile,
     stopProfile,
+    syncProfileConfig,
+    pullProfileConfig,
     transitionProfilePurpose,
     moveProfileToNurture: (profileId: string) => moveProfileToPurpose(profileId, 'nurture'),
     moveProfileToOperation: (profileId: string) => moveProfileToPurpose(profileId, 'operation'),

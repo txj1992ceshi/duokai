@@ -18,7 +18,8 @@ export function AccountView({
   onSaveProfile,
   onUploadAvatar,
   onSavePassword,
-  onSyncEnvironmentConfig,
+  onSyncGlobalConfig,
+  onPullGlobalConfig,
   onRevokeDevice,
   onDeleteDevice,
 }: {
@@ -32,11 +33,27 @@ export function AccountView({
   onSaveProfile: () => void
   onUploadAvatar: () => void
   onSavePassword: () => void
-  onSyncEnvironmentConfig: () => void
+  onSyncGlobalConfig: () => void
+  onPullGlobalConfig: () => void
   onRevokeDevice: (deviceId: string) => void
   onDeleteDevice: (deviceId: string) => void
 }) {
   const desktopT = i18nClient.getFixedT(locale, 'desktop')
+  const syncCopy =
+    locale === 'zh-CN'
+      ? {
+          title: '全局配置同步',
+          description: '模板、代理、云手机和应用设置会在这里单独同步，不再跟随单个环境一起上传。',
+          upload: '上传全局配置',
+          pull: '从云端拉取全局配置',
+        }
+      : {
+          title: 'Global configuration sync',
+          description:
+            'Templates, proxies, cloud phones, and app settings sync here independently instead of piggybacking on a single environment.',
+          upload: 'Upload global config',
+          pull: 'Pull global config',
+        }
 
   return (
     <section className="space-y-6">
@@ -44,19 +61,30 @@ export function AccountView({
         <Card className="rounded-[28px] border border-slate-200 shadow-none">
           <div className="space-y-5 p-5">
             <div className="flex flex-wrap items-center gap-4">
-              {currentAuthUser?.avatarUrl ? (
-                <img
-                  className="h-20 w-20 rounded-[24px] object-cover"
-                  src={currentAuthUser.avatarUrl}
-                  alt="avatar"
-                />
-              ) : (
-                <div className="flex h-20 w-20 items-center justify-center rounded-[24px] bg-slate-100 text-2xl font-semibold text-slate-500">
-                  {(currentAuthUser?.name || currentAuthUser?.username || currentAuthUser?.email || 'U')
-                    .slice(0, 1)
-                    .toUpperCase()}
-                </div>
-              )}
+              <button
+                type="button"
+                onClick={onUploadAvatar}
+                className="group relative h-20 w-20 overflow-hidden rounded-[24px] border border-slate-200 bg-slate-100 text-left transition-all hover:border-blue-300 hover:shadow-[0_12px_28px_rgba(37,99,235,0.14)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:border-slate-700/80 dark:bg-slate-800/90 dark:hover:border-blue-700/70 dark:hover:shadow-[0_14px_34px_rgba(15,23,42,0.45)] dark:focus-visible:ring-offset-[var(--duokai-surface)]"
+                aria-label={desktopT('account.profile.uploadImage')}
+                title={desktopT('account.profile.uploadImage')}
+              >
+                {currentAuthUser?.avatarUrl ? (
+                  <img
+                    className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.03]"
+                    src={currentAuthUser.avatarUrl}
+                    alt="avatar"
+                  />
+                ) : (
+                  <div className="flex h-full w-full items-center justify-center text-2xl font-semibold text-slate-500 dark:text-slate-300">
+                    {(currentAuthUser?.name || currentAuthUser?.username || currentAuthUser?.email || 'U')
+                      .slice(0, 1)
+                      .toUpperCase()}
+                  </div>
+                )}
+                <span className="pointer-events-none absolute inset-x-2 bottom-2 rounded-full bg-slate-950/72 px-2 py-1 text-center text-[10px] font-medium tracking-[0.08em] text-white opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-visible:opacity-100 dark:bg-slate-900/82">
+                  {desktopT('account.profile.uploadImage')}
+                </span>
+              </button>
               <div className="min-w-0">
                 <div className="text-2xl font-semibold tracking-tight text-slate-950">
                   {currentAuthUser?.name || currentAuthUser?.username || currentAuthUser?.email}
@@ -97,9 +125,14 @@ export function AccountView({
                 {desktopT('account.subscription.description')}
               </div>
             </div>
-            <Button type="button" variant="secondary" onClick={onSyncEnvironmentConfig}>
-              {desktopT('account.syncConfig.action')}
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="secondary" onClick={onSyncGlobalConfig}>
+                {syncCopy.upload}
+              </Button>
+              <Button type="button" variant="secondary" onClick={onPullGlobalConfig}>
+                {syncCopy.pull}
+              </Button>
+            </div>
             <div className="grid gap-3">
               <div className="rounded-2xl border border-slate-200 px-4 py-3">
                 <div className="text-xs uppercase tracking-[0.12em] text-slate-400">
@@ -111,10 +144,10 @@ export function AccountView({
               </div>
               <div className="rounded-2xl border border-slate-200 px-4 py-3">
                 <div className="text-xs uppercase tracking-[0.12em] text-slate-400">
-                  {desktopT('account.syncConfig.title')}
+                  {syncCopy.title}
                 </div>
                 <div className="mt-1 text-sm text-slate-700">
-                  {desktopT('account.syncConfig.description')}
+                  {syncCopy.description}
                 </div>
               </div>
               <div className="rounded-2xl border border-slate-200 px-4 py-3">
@@ -165,23 +198,6 @@ export function AccountView({
                 }
                 placeholder={desktopT('account.profile.username')}
               />
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="min-w-[260px] flex-1">
-                <Input
-                  value={accountProfileForm.avatarUrl}
-                  onChange={(event) =>
-                    setAccountProfileForm((current) => ({
-                      ...current,
-                      avatarUrl: event.target.value,
-                    }))
-                  }
-                  placeholder="https://example.com/avatar.png"
-                />
-              </div>
-              <Button type="button" variant="secondary" onClick={onUploadAvatar}>
-                {desktopT('account.profile.uploadImage')}
-              </Button>
             </div>
             <Input
               value={accountProfileForm.email}

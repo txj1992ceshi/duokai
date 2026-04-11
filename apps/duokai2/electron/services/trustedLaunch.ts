@@ -34,6 +34,9 @@ export function evaluateTrustedSnapshotReuse(
   if (snapshot.status !== 'trusted') {
     return { usable: false, status: snapshot.status, reason: `Trusted launch snapshot is ${snapshot.status}.` }
   }
+  if (!snapshot.startupNavigationPassed) {
+    return { usable: false, status: 'stale', reason: 'Trusted launch snapshot requires a successful startup navigation check.' }
+  }
   if (snapshot.snapshotVersion <= 0) {
     return { usable: false, status: 'stale', reason: 'Trusted launch snapshot version is invalid.' }
   }

@@ -29,7 +29,7 @@ function makeDefaultPolicy(
   platform: PlatformPolicyPlatform,
   purpose: PlatformPolicyPurpose
 ): DefaultPlatformPolicy {
-  const dedicatedProxyRequired = purpose === 'register';
+  const dedicatedProxyRequired = false;
   const sharedAllowed = purpose !== 'register';
   const riskTolerance =
     purpose === 'register' ? 'strict' : purpose === 'nurture' ? 'balanced' : 'stable';
@@ -48,7 +48,7 @@ function makeDefaultPolicy(
     cooldownPolicy: {
       dedicatedProxyRequired,
       blockOnCooldown: true,
-      duplicateIpAction: purpose === 'operation' ? 'warn' : 'block',
+      duplicateIpAction: 'warn',
     },
     validationPolicy: {
       riskTolerance,
@@ -57,12 +57,12 @@ function makeDefaultPolicy(
       requireWorkspaceIsolation: true,
     },
     proxyPolicy: {
-      bindingMode: dedicatedProxyRequired ? 'dedicated' : 'reusable',
+      bindingMode: 'reusable',
       requireLease: true,
-      allowedIpUsageModes: sharedAllowed ? ['dedicated', 'shared'] : ['dedicated'],
+      allowedIpUsageModes: ['dedicated', 'shared'],
       defaultIpUsageMode: sharedAllowed ? 'shared' : 'dedicated',
-      sharedIpMaxProfilesPerIp: sharedAllowed ? 3 : 1,
-      sharedIpMaxConcurrentRunsPerIp: sharedAllowed ? 2 : 1,
+      sharedIpMaxProfilesPerIp: 3,
+      sharedIpMaxConcurrentRunsPerIp: 2,
     },
     fingerprintPolicy: {
       presetRef: `${platform}-${purpose}-baseline`,
@@ -123,9 +123,7 @@ export function normalizeProxyPolicy(
     ? proxyPolicy.allowedIpUsageModes
         .map((item) => String(item || '').trim())
         .filter((item): item is IpUsageMode => item === 'dedicated' || item === 'shared')
-    : defaultIpUsageMode === 'dedicated'
-      ? ['dedicated']
-      : ['dedicated', 'shared'];
+    : ['dedicated', 'shared'];
 
   return {
     ...(proxyPolicy || {}),
@@ -133,11 +131,11 @@ export function normalizeProxyPolicy(
     defaultIpUsageMode,
     sharedIpMaxProfilesPerIp: Math.max(
       1,
-      Number(proxyPolicy?.sharedIpMaxProfilesPerIp || (defaultIpUsageMode === 'shared' ? 3 : 1)) || 1
+      Number(proxyPolicy?.sharedIpMaxProfilesPerIp || 3) || 1
     ),
     sharedIpMaxConcurrentRunsPerIp: Math.max(
       1,
-      Number(proxyPolicy?.sharedIpMaxConcurrentRunsPerIp || (defaultIpUsageMode === 'shared' ? 2 : 1)) || 1
+      Number(proxyPolicy?.sharedIpMaxConcurrentRunsPerIp || 2) || 1
     ),
   };
 }

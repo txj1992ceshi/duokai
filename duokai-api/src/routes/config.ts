@@ -1,6 +1,12 @@
 import { Router } from 'express';
+import {
+  deleteConfigProfileForUser,
+  findConfigProfileForUser,
+  normalizeConfigProfilePayload,
+  resolveUserConfigStateId,
+  upsertConfigProfileForUser,
+} from '../lib/configProfiles.js';
 import { asyncHandler } from '../lib/http.js';
-import { resolveUserConfigStateId } from '../lib/configProfiles.js';
 import { connectMongo } from '../lib/mongodb.js';
 import { normalizeWorkspacePayload } from '../lib/serializers.js';
 import { requireUser } from '../middlewares/auth.js';
@@ -8,10 +14,9 @@ import { AgentConfigStateModel } from '../models/AgentConfigState.js';
 
 const router = Router();
 
-function buildEmptySnapshot() {
+function buildEmptyGlobalSnapshot() {
   return {
     syncVersion: 0,
-    profiles: [],
     proxies: [],
     templates: [],
     cloudPhones: [],
@@ -19,23 +24,26 @@ function buildEmptySnapshot() {
   };
 }
 
-function normalizeSnapshotProfiles(profiles: unknown[]) {
-  return profiles
-    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
-    .map((profile) => {
-      const profileId = String(profile.id || '').trim();
-      if (!profileId) {
-        return profile;
-      }
-      return {
-        ...profile,
-        workspace: normalizeWorkspacePayload(profileId, profile.workspace),
-      };
-    });
+function normalizeGlobalSettings(input: unknown) {
+  return input && typeof input === 'object' ? (input as Record<string, unknown>) : {};
+}
+
+function normalizeProfilePayload(profileId: string, profile: unknown) {
+  if (!profile || typeof profile !== 'object') {
+    return null;
+  }
+  const nextProfile = normalizeConfigProfilePayload(
+    profileId,
+    profile as Record<string, unknown>
+  ) as Record<string, unknown>;
+  return {
+    ...nextProfile,
+    workspace: normalizeWorkspacePayload(profileId, nextProfile.workspace),
+  };
 }
 
 router.get(
-  '/snapshot',
+  '/global',
   requireUser,
   asyncHandler(async (req, res) => {
     await connectMongo();
@@ -43,55 +51,49 @@ router.get(
     const state = await AgentConfigStateModel.findOne({ agentId: stateId }).lean();
 
     if (!state) {
-      res.json({ success: true, snapshot: buildEmptySnapshot() });
+      res.json({ success: true, snapshot: buildEmptyGlobalSnapshot() });
       return;
     }
 
     res.json({
       success: true,
       snapshot: {
-        syncVersion: Number(state.syncVersion || 0),
-        profiles: Array.isArray(state.profiles) ? state.profiles : [],
+        syncVersion: Number(state.globalConfigSyncVersion ?? state.syncVersion ?? 0),
         proxies: Array.isArray(state.proxies) ? state.proxies : [],
         templates: Array.isArray(state.templates) ? state.templates : [],
         cloudPhones: Array.isArray(state.cloudPhones) ? state.cloudPhones : [],
-        settings: state.settings && typeof state.settings === 'object' ? state.settings : {},
+        settings: normalizeGlobalSettings(state.settings),
       },
     });
   })
 );
 
 router.post(
-  '/push',
+  '/global',
   requireUser,
   asyncHandler(async (req, res) => {
     await connectMongo();
 
     const stateId = resolveUserConfigStateId(req.authUser!.userId);
     const clientSyncVersion = Number(req.body?.syncVersion || 0);
-    const profiles = normalizeSnapshotProfiles(Array.isArray(req.body?.profiles) ? req.body.profiles : []);
     const proxies = Array.isArray(req.body?.proxies) ? req.body.proxies : [];
     const templates = Array.isArray(req.body?.templates) ? req.body.templates : [];
     const cloudPhones = Array.isArray(req.body?.cloudPhones) ? req.body.cloudPhones : [];
-    const settings =
-      req.body?.settings && typeof req.body.settings === 'object'
-        ? (req.body.settings as Record<string, unknown>)
-        : {};
+    const settings = normalizeGlobalSettings(req.body?.settings);
 
     const current = await AgentConfigStateModel.findOne({ agentId: stateId });
-    const currentVersion = Number(current?.syncVersion || 0);
+    const currentVersion = Number(current?.globalConfigSyncVersion ?? current?.syncVersion ?? 0);
 
     if (current && clientSyncVersion !== currentVersion) {
       res.status(409).json({
         success: false,
-        error: 'sync version mismatch',
+        error: 'global config sync version mismatch',
         snapshot: {
           syncVersion: currentVersion,
-          profiles: Array.isArray(current.profiles) ? current.profiles : [],
           proxies: Array.isArray(current.proxies) ? current.proxies : [],
           templates: Array.isArray(current.templates) ? current.templates : [],
           cloudPhones: Array.isArray(current.cloudPhones) ? current.cloudPhones : [],
-          settings: current.settings && typeof current.settings === 'object' ? current.settings : {},
+          settings: normalizeGlobalSettings(current.settings),
         },
       });
       return;
@@ -102,21 +104,122 @@ router.post(
       { agentId: stateId },
       {
         $set: {
-          syncVersion: nextVersion,
-          profiles,
+          globalConfigSyncVersion: nextVersion,
           proxies,
           templates,
           cloudPhones,
           settings,
         },
+        ...(current ? {} : { $setOnInsert: { syncVersion: 0, profiles: [] } }),
       },
       { upsert: true, new: true }
     ).lean();
 
     res.json({
       success: true,
-      syncVersion: Number(saved?.syncVersion || nextVersion),
+      syncVersion: Number(saved?.globalConfigSyncVersion ?? nextVersion),
       updatedAt: saved?.updatedAt || new Date(),
+    });
+  })
+);
+
+router.get(
+  '/profiles/:id',
+  requireUser,
+  asyncHandler(async (req, res) => {
+    await connectMongo();
+    const profileId = String(req.params.id || '').trim();
+    if (!profileId) {
+      res.status(400).json({ success: false, error: 'Profile id is required' });
+      return;
+    }
+
+    const { profile } = await findConfigProfileForUser(req.authUser!.userId, profileId);
+    if (!profile) {
+      res.status(404).json({ success: false, error: 'Profile not found' });
+      return;
+    }
+
+    res.json({
+      success: true,
+      profile: normalizeProfilePayload(profileId, profile),
+      syncVersion: Number((profile as Record<string, unknown>).configSyncVersion || 0),
+    });
+  })
+);
+
+router.put(
+  '/profiles/:id',
+  requireUser,
+  asyncHandler(async (req, res) => {
+    await connectMongo();
+    const profileId = String(req.params.id || '').trim();
+    if (!profileId) {
+      res.status(400).json({ success: false, error: 'Profile id is required' });
+      return;
+    }
+
+    const incoming = normalizeProfilePayload(profileId, req.body?.profile ?? req.body);
+    if (!incoming) {
+      res.status(400).json({ success: false, error: 'profile payload is required' });
+      return;
+    }
+
+    const incomingRecord = incoming as Record<string, unknown>;
+    const baseVersion = Number(req.body?.baseVersion ?? incomingRecord.configSyncVersion ?? 0);
+    if (!Number.isFinite(baseVersion) || baseVersion < 0) {
+      res.status(400).json({ success: false, error: 'baseVersion must be a non-negative number' });
+      return;
+    }
+
+    const { profile } = await findConfigProfileForUser(req.authUser!.userId, profileId);
+    const currentVersion = Number((profile as Record<string, unknown> | null)?.configSyncVersion || 0);
+    if (profile && currentVersion !== baseVersion) {
+      res.status(409).json({
+        success: false,
+        error: 'profile config sync version mismatch',
+        profile: normalizeProfilePayload(profileId, profile),
+        syncVersion: currentVersion,
+      });
+      return;
+    }
+
+    const nextVersion = profile ? currentVersion + 1 : 1;
+    const savedState = await upsertConfigProfileForUser(req.authUser!.userId, profileId, {
+      ...incoming,
+      configSyncVersion: nextVersion,
+    });
+    const { profile: savedProfile } = await findConfigProfileForUser(req.authUser!.userId, profileId);
+
+    res.json({
+      success: true,
+      profile: normalizeProfilePayload(profileId, savedProfile),
+      syncVersion: nextVersion,
+      updatedAt: savedState?.updatedAt || new Date(),
+    });
+  })
+);
+
+router.delete(
+  '/profiles/:id',
+  requireUser,
+  asyncHandler(async (req, res) => {
+    await connectMongo();
+    const profileId = String(req.params.id || '').trim();
+    if (!profileId) {
+      res.status(400).json({ success: false, error: 'Profile id is required' });
+      return;
+    }
+
+    const deleted = await deleteConfigProfileForUser(req.authUser!.userId, profileId);
+    if (!deleted) {
+      res.status(404).json({ success: false, error: 'Profile not found' });
+      return;
+    }
+
+    res.json({
+      success: true,
+      message: 'Profile config deleted successfully',
     });
   })
 );

@@ -94,7 +94,7 @@ export default function EditProfileModal({
   if (!profile) return null;
   const purpose = profile.purpose || 'operation';
   const ipUsageMode = profile.ipUsageMode || (purpose === 'register' ? 'dedicated' : 'shared');
-  const sharedModeBlockedByPurpose = purpose === 'register' && ipUsageMode === 'shared';
+  const sharedModeNeedsExtraReview = purpose === 'register' && ipUsageMode === 'shared';
   const runtimeMode = profile.runtimeMode || 'local';
 
   return (
@@ -235,9 +235,9 @@ export default function EditProfileModal({
                 <p className="text-slate-500">
                   当前环境用途: <span className="text-slate-300">{purpose}</span>
                 </p>
-                <p className={sharedModeBlockedByPurpose ? 'text-amber-300' : 'text-slate-500'}>
-                  {sharedModeBlockedByPurpose
-                    ? '当前用途为 register。按默认策略，Shared IP 会在启动前被控制面明确拒绝。'
+                <p className={sharedModeNeedsExtraReview ? 'text-amber-300' : 'text-slate-500'}>
+                  {sharedModeNeedsExtraReview
+                    ? '当前用途为 register。Shared IP 不再因用途标签被直接拒绝，但更容易触发额外风控、共享能力和租约校验。'
                     : ipUsageMode === 'shared'
                       ? 'Shared IP 仅在代理资产支持共享，且未超过 profile/run 上限时才允许启动。'
                       : 'Dedicated IP 会阻止同一 IP 被其他受保护环境复用。'}

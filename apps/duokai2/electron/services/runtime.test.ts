@@ -8,6 +8,7 @@ import { createDefaultFingerprint, createProfilePayload, normalizeWorkspaceDescr
 import {
   computeWorkspaceConsistencySummary,
   computeWorkspaceHealthSummary,
+  validateProfileReadiness,
   validateWorkspaceGate,
 } from './profileValidator.ts'
 import { runLocalIsolationPreflight } from './localIsolation.ts'
@@ -327,4 +328,24 @@ test('validateWorkspaceGate passes for valid workspace subtree', () => {
   assert.equal(result.status, 'pass')
   assert.equal(result.workspace.healthSummary.status, 'healthy')
   assert.equal(result.workspace.consistencySummary.status, 'pass')
+})
+
+test('environment purpose remains advisory for linkedin operation profiles', () => {
+  const profile = buildProfile('profile-purpose-advisory')
+  profile.environmentPurpose = 'operation'
+  profile.fingerprintConfig.basicSettings.platform = 'linkedin'
+
+  const result = validateProfileReadiness(
+    profile,
+    null,
+    undefined,
+    undefined,
+    {
+      nurtureMinimumHoursAfterRegister: 24,
+      operationMinimumHoursAfterNurture: 48,
+    },
+  )
+
+  assert.equal(result.level, 'warn')
+  assert.match(result.messages.join(' '), /不建议直接进入日常运营/)
 })

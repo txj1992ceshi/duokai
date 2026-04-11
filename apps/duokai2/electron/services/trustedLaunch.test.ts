@@ -84,3 +84,10 @@ test('evaluateTrustedSnapshotReuse marks trusted snapshot stale when config fing
   assert.equal(decision.status, 'stale')
   assert.match(decision.reason, /config fingerprint/i)
 })
+
+test('evaluateTrustedSnapshotReuse blocks trusted snapshot reuse when startup navigation previously failed', () => {
+  const decision = evaluateTrustedSnapshotReuse(buildSnapshot({ startupNavigationPassed: false }), buildContext())
+  assert.equal(decision.usable, false)
+  assert.equal(decision.status, 'stale')
+  assert.match(decision.reason, /startup navigation/i)
+})

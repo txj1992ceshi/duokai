@@ -124,8 +124,11 @@ const ProfileSchema = new Schema(
     startupNavigation: {
       ok: { type: Boolean, default: false },
       requestedUrl: { type: String, default: '' },
+      attemptedUrl: { type: String, default: '' },
       finalUrl: { type: String, default: '' },
+      reasonCode: { type: String, default: '' },
       error: { type: String, default: '' },
+      checkedAt: { type: String, default: '' },
     },
 
     proxyVerification: {

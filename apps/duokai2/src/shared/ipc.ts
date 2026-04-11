@@ -59,7 +59,8 @@ export interface DesktopApi {
     revokeDevice: (deviceId: string) => Promise<DesktopAuthState>
     deleteDevice: (deviceId: string) => Promise<DesktopAuthState>
     logout: () => Promise<DesktopAuthState>
-    syncConfig: () => Promise<ConfigSyncResult>
+    syncGlobalConfig: () => Promise<ConfigSyncResult>
+    pullGlobalConfig: () => Promise<ConfigSyncResult>
   }
   meta: {
     getInfo: () => Promise<DesktopRuntimeInfo>
@@ -115,6 +116,8 @@ export interface DesktopApi {
     update: (input: UpdateProfileInput) => Promise<ProfileRecord>
     delete: (id: string) => Promise<void>
     clone: (id: string) => Promise<ProfileRecord>
+    syncConfig: (id: string) => Promise<ConfigSyncResult>
+    pullConfig: (id: string) => Promise<ConfigSyncResult>
     revealDirectory: (id: string) => Promise<void>
     getDirectoryInfo: () => Promise<ProfileDirectoryInfo>
     bulkStart: (payload: ProfileBulkActionPayload) => Promise<void>
@@ -137,7 +140,7 @@ export interface DesktopApi {
     test: (id: string) => Promise<ProxyTestResult>
   }
   runtime: {
-    launch: (profileId: string) => Promise<void>
+    launch: (profileId: string) => Promise<{ warningMessage?: string }>
     stop: (profileId: string) => Promise<void>
     getStatus: () => Promise<RuntimeStatus>
     getHostInfo: () => Promise<RuntimeHostInfo>

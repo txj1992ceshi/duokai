@@ -58,19 +58,19 @@ const ENVIRONMENT_PURPOSE_PRESETS: Record<
   }
 > = {
   register: {
-    summaryZh: '注册环境优先保持稳定身份，不随机化，不清缓存，并强依赖 IP 联动的语言、时区和地理位置。',
+    summaryZh: '用于标记注册类场景，便于筛选和提醒；不会自动改变当前环境配置。',
     summaryEn:
-      'Register profiles keep a stable identity, avoid randomization/cache resets, and rely on IP-derived language, timezone, and geolocation.',
+      'Use this label for registration-oriented workflows. It is used for filtering and reminders only and does not change runtime settings automatically.',
   },
   nurture: {
-    summaryZh: '养号环境强调登录态连续性与长期稳定，尽量避免会引起身份漂移的设置。',
+    summaryZh: '用于标记养号维护场景，便于筛选和提醒；不会自动改变当前环境配置。',
     summaryEn:
-      'Nurture profiles prioritize session continuity and long-term stability, avoiding settings that cause identity drift.',
+      'Use this label for nurture or maintenance workflows. It is used for filtering and reminders only and does not change runtime settings automatically.',
   },
   operation: {
-    summaryZh: '日常运营环境面向持续使用，保留会话与标签页同步，兼顾稳定性和日常效率。',
+    summaryZh: '用于标记日常运营场景，便于筛选和提醒；不会自动改变当前环境配置。',
     summaryEn:
-      'Operation profiles are tuned for ongoing use, keeping sessions and tabs stable for daily workflows.',
+      'Use this label for daily operation workflows. It is used for filtering and reminders only and does not change runtime settings automatically.',
   },
 }
 
@@ -244,8 +244,8 @@ export function getLifecycleStageSummary(
     parts.push(
       resolveLocalizedText(
         locale,
-        `最近注册启动 ${new Date(metadata.lastRegisterLaunchAt).toLocaleString()}`,
-        `Last register launch ${new Date(metadata.lastRegisterLaunchAt).toLocaleString()}`,
+        `最近以注册标签启动 ${new Date(metadata.lastRegisterLaunchAt).toLocaleString()}`,
+        `Last launch while tagged register ${new Date(metadata.lastRegisterLaunchAt).toLocaleString()}`,
       ),
     )
   }
@@ -253,8 +253,8 @@ export function getLifecycleStageSummary(
     parts.push(
       resolveLocalizedText(
         locale,
-        `进入养号 ${new Date(metadata.lastNurtureTransitionAt).toLocaleString()}`,
-        `Entered nurture ${new Date(metadata.lastNurtureTransitionAt).toLocaleString()}`,
+        `标记为养号 ${new Date(metadata.lastNurtureTransitionAt).toLocaleString()}`,
+        `Marked as nurture ${new Date(metadata.lastNurtureTransitionAt).toLocaleString()}`,
       ),
     )
   }
@@ -262,16 +262,16 @@ export function getLifecycleStageSummary(
     parts.push(
       resolveLocalizedText(
         locale,
-        `进入运营 ${new Date(metadata.lastOperationTransitionAt).toLocaleString()}`,
-        `Entered operation ${new Date(metadata.lastOperationTransitionAt).toLocaleString()}`,
+        `标记为运营 ${new Date(metadata.lastOperationTransitionAt).toLocaleString()}`,
+        `Marked as operation ${new Date(metadata.lastOperationTransitionAt).toLocaleString()}`,
       ),
     )
   }
   if (parts.length === 0) {
     return resolveLocalizedText(
       locale,
-      '当前环境尚未记录注册/养号/运营迁移。',
-      'No register/nurture/operation transition is recorded yet.',
+      '当前环境尚未记录用途标签变更。',
+      'No purpose label changes have been recorded yet.',
     )
   }
   return parts.join(' · ')
@@ -399,6 +399,16 @@ export const defaultFingerprint: FingerprintConfig = {
     lastStorageStateDeviceId: '',
     lastStorageStateSyncStatus: 'idle',
     lastStorageStateSyncMessage: '',
+    lastWorkspaceSummarySyncAt: '',
+    lastWorkspaceSummarySyncStatus: 'idle',
+    lastWorkspaceSummarySyncMessage: '',
+    lastWorkspaceSnapshotSyncAt: '',
+    lastWorkspaceSnapshotSyncStatus: 'idle',
+    lastWorkspaceSnapshotSyncMessage: '',
+    lastEnvironmentSyncAt: '',
+    lastEnvironmentSyncStatus: 'idle',
+    lastEnvironmentSyncMessage: '',
+    lastEnvironmentSyncVersion: 0,
     hardwareProfileId: '',
     hardwareProfileVersion: '',
     hardwareSeed: '',
@@ -513,10 +523,10 @@ export function applyPlatformPresetToForm(
           resolution: '1440x900',
         },
       }
-    return applyEnvironmentPurposePresetToForm(
-      preset.fingerprintConfig,
-      preset.environmentPurpose,
-    )
+    return {
+      environmentPurpose,
+      fingerprintConfig: preset.fingerprintConfig,
+    }
   }
 
   if (platform === 'tiktok') {
@@ -569,10 +579,10 @@ export function applyPlatformPresetToForm(
           resolution: '1600x900',
         },
       }
-    return applyEnvironmentPurposePresetToForm(
-      preset.fingerprintConfig,
-      preset.environmentPurpose,
-    )
+    return {
+      environmentPurpose,
+      fingerprintConfig: preset.fingerprintConfig,
+    }
   }
 
   return {
@@ -585,67 +595,9 @@ export function applyEnvironmentPurposePresetToForm(
   fingerprintConfig: FingerprintConfig,
   environmentPurpose: EnvironmentPurpose,
 ): { fingerprintConfig: FingerprintConfig; environmentPurpose: EnvironmentPurpose } {
-  const baseFingerprint = cloneFingerprintConfig(fingerprintConfig)
-
-  if (environmentPurpose === 'register') {
-    return {
-      environmentPurpose,
-      fingerprintConfig: {
-        ...baseFingerprint,
-        commonSettings: {
-          ...baseFingerprint.commonSettings,
-          clearCacheOnLaunch: false,
-          randomizeFingerprintOnLaunch: false,
-          syncCookies: true,
-          syncTabs: false,
-          allowChromeLogin: false,
-        },
-        advanced: {
-          ...baseFingerprint.advanced,
-          autoLanguageFromIp: true,
-          autoTimezoneFromIp: true,
-          autoGeolocationFromIp: true,
-          geolocationPermission: 'ask',
-        },
-      },
-    }
-  }
-
-  if (environmentPurpose === 'nurture') {
-    return {
-      environmentPurpose,
-      fingerprintConfig: {
-        ...baseFingerprint,
-        commonSettings: {
-          ...baseFingerprint.commonSettings,
-          clearCacheOnLaunch: false,
-          randomizeFingerprintOnLaunch: false,
-          syncCookies: true,
-          syncTabs: true,
-          memorySaver: true,
-        },
-        advanced: {
-          ...baseFingerprint.advanced,
-          autoLanguageFromIp: true,
-          autoTimezoneFromIp: true,
-          autoGeolocationFromIp: true,
-        },
-      },
-    }
-  }
-
   return {
     environmentPurpose,
-    fingerprintConfig: {
-      ...baseFingerprint,
-      commonSettings: {
-        ...baseFingerprint.commonSettings,
-        clearCacheOnLaunch: false,
-        randomizeFingerprintOnLaunch: false,
-        syncCookies: true,
-        syncTabs: true,
-      },
-    },
+    fingerprintConfig: cloneFingerprintConfig(fingerprintConfig),
   }
 }
 

@@ -505,42 +505,42 @@ function validatePurposeSpecificPolicies(profile: ProfileRecord): ValidationResu
 
   if (profile.environmentPurpose === 'register') {
     if (commonSettings.randomizeFingerprintOnLaunch) {
-      level = escalateLevel(level, 'block')
-      messages.push('注册环境不应在启动时随机化指纹。')
+      level = escalateLevel(level, 'warn')
+      messages.push('当前标签为注册环境，通常不建议在启动时随机化指纹。')
     }
     if (commonSettings.clearCacheOnLaunch) {
       level = escalateLevel(level, 'warn')
-      messages.push('注册环境通常不建议在启动前清缓存，以免增加身份波动。')
+      messages.push('当前标签为注册环境，通常不建议在启动前清缓存，以免增加身份波动。')
     }
     if (!advanced.autoLanguageFromIp || !advanced.autoTimezoneFromIp || !advanced.autoGeolocationFromIp) {
       level = escalateLevel(level, 'warn')
-      messages.push('注册环境建议开启语言、时区与地理位置的 IP 自动联动。')
+      messages.push('当前标签为注册环境，建议开启语言、时区与地理位置的 IP 自动联动。')
     }
   }
 
   if (profile.environmentPurpose === 'nurture') {
     if (commonSettings.randomizeFingerprintOnLaunch) {
-      level = escalateLevel(level, 'block')
-      messages.push('养号环境不应在启动时随机化指纹。')
+      level = escalateLevel(level, 'warn')
+      messages.push('当前标签为养号环境，通常不建议在启动时随机化指纹。')
     }
     if (commonSettings.clearCacheOnLaunch) {
       level = escalateLevel(level, 'warn')
-      messages.push('养号环境不建议在启动前清缓存，否则可能影响长期登录态。')
+      messages.push('当前标签为养号环境，不建议在启动前清缓存，否则可能影响长期登录态。')
     }
     if (!commonSettings.syncCookies) {
       level = escalateLevel(level, 'warn')
-      messages.push('养号环境建议保持 Cookie 同步开启，便于维持长期登录态。')
+      messages.push('当前标签为养号环境，建议保持 Cookie 同步开启，便于维持长期登录态。')
     }
   }
 
   if (profile.environmentPurpose === 'operation') {
     if (commonSettings.randomizeFingerprintOnLaunch) {
       level = escalateLevel(level, 'warn')
-      messages.push('日常运营环境不建议在启动时随机化指纹，否则会影响身份稳定。')
+      messages.push('当前标签为日常运营，通常不建议在启动时随机化指纹，否则会影响身份稳定。')
     }
     if (commonSettings.clearCacheOnLaunch) {
       level = escalateLevel(level, 'warn')
-      messages.push('日常运营环境不建议频繁清缓存，否则可能影响会话连续性。')
+      messages.push('当前标签为日常运营，不建议频繁清缓存，否则可能影响会话连续性。')
     }
   }
 
@@ -654,7 +654,7 @@ function validateLifecyclePolicies(
 
   if (profile.environmentPurpose === 'operation') {
     if (!metadata.lastNurtureTransitionAt) {
-      level = escalateLevel(level, platform === 'linkedin' ? 'block' : 'warn')
+      level = escalateLevel(level, 'warn')
       messages.push('当前环境尚未经过养号阶段，不建议直接进入日常运营。')
     } else {
       const hoursSinceNurture = getHoursSince(metadata.lastNurtureTransitionAt)
@@ -662,7 +662,7 @@ function validateLifecyclePolicies(
         hoursSinceNurture !== null &&
         hoursSinceNurture < lifecyclePolicy.operationMinimumHoursAfterNurture
       ) {
-        level = escalateLevel(level, platform === 'linkedin' ? 'block' : 'warn')
+        level = escalateLevel(level, 'warn')
         messages.push(
           `当前环境距离进入养号阶段不足 ${lifecyclePolicy.operationMinimumHoursAfterNurture} 小时，建议继续养号后再进入日常运营。`,
         )
@@ -775,37 +775,49 @@ export function validateProfileConsistency(
 
   if (environmentPurpose === 'register') {
     if (!fingerprintConfig.language || !fingerprintConfig.timezone || !fingerprintConfig.advanced.geolocation) {
-      level = escalateLevel(level, 'block')
-      messages.push('注册环境必须具备完整的语言、时区和地理位置。')
+      level = escalateLevel(level, 'warn')
+      messages.push('当前标签为注册环境，建议补齐语言、时区和地理位置。')
     }
   }
 
   if (!check.ok) {
     if (environmentPurpose === 'register') {
-      level = escalateLevel(level, 'block')
-      messages.push('注册环境未能完成网络画像校验。')
+      level = escalateLevel(level, 'warn')
+      messages.push('当前标签为注册环境，但网络画像校验未完成。')
     } else {
       level = escalateLevel(level, 'warn')
       messages.push('当前网络画像校验失败，环境一致性无法完全确认。')
     }
   } else {
     if (check.timezone && fingerprintConfig.timezone && check.timezone !== fingerprintConfig.timezone) {
-      level = escalateLevel(level, environmentPurpose === 'register' ? 'block' : 'warn')
-      messages.push('当前代理出口时区与环境设置不一致。')
+      level = escalateLevel(level, 'warn')
+      messages.push(
+        environmentPurpose === 'register'
+          ? '当前标签为注册环境，代理出口时区与环境设置不一致。'
+          : '当前代理出口时区与环境设置不一致。',
+      )
     }
     const expectedLanguage = getLanguageRoot(fingerprintConfig.language)
     const actualLanguage = getLanguageRoot(check.languageHint)
     if (expectedLanguage && actualLanguage && expectedLanguage !== actualLanguage) {
-      level = escalateLevel(level, environmentPurpose === 'register' ? 'block' : 'warn')
-      messages.push('当前代理出口语言与环境设置不一致。')
+      level = escalateLevel(level, 'warn')
+      messages.push(
+        environmentPurpose === 'register'
+          ? '当前标签为注册环境，代理出口语言与环境设置不一致。'
+          : '当前代理出口语言与环境设置不一致。',
+      )
     }
     if (
       check.geolocation &&
       fingerprintConfig.advanced.geolocation &&
       check.geolocation !== fingerprintConfig.advanced.geolocation
     ) {
-      level = escalateLevel(level, environmentPurpose === 'register' ? 'block' : 'warn')
-      messages.push('当前代理出口地理位置与环境设置不一致。')
+      level = escalateLevel(level, 'warn')
+      messages.push(
+        environmentPurpose === 'register'
+          ? '当前标签为注册环境，代理出口地理位置与环境设置不一致。'
+          : '当前代理出口地理位置与环境设置不一致。',
+      )
     }
   }
 
@@ -854,18 +866,18 @@ export function validateProfileReadiness(
 
   if (distinctProfiles.size >= registrationCooldown.maxProfiles) {
     result = combineResults(result, {
-      level: 'block',
+      level: 'warn',
       messages: [
-        `当前出口 IP 在最近 ${registrationCooldown.withinHours} 小时内已被其他注册环境使用，不建议继续注册。`,
+        `当前标签为注册环境；当前出口 IP 在最近 ${registrationCooldown.withinHours} 小时内已被其他注册环境使用，不建议继续注册。`,
       ],
     })
   }
 
   if (registrationCooldown.platform && platformProfiles.size >= registrationCooldown.platformMaxProfiles) {
     result = combineResults(result, {
-      level: 'block',
+      level: 'warn',
       messages: [
-        `${registrationCooldown.platform} 注册环境在最近 ${registrationCooldown.platformWithinHours} 小时内已复用当前出口 IP，不建议继续同平台注册。`,
+        `${registrationCooldown.platform} 注册环境在最近 ${registrationCooldown.platformWithinHours} 小时内已复用当前出口 IP，当前仅作为风险提醒。`,
       ],
     })
   }

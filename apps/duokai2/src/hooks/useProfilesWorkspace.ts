@@ -14,7 +14,7 @@ export type ResourceMode = 'profiles' | 'templates'
 export type ProfileStatusFilter = 'all' | ProfileRecord['status']
 export type ProfileDrawerTab = 'hardware' | 'network' | 'fingerprint'
 
-type StorageSummary = {
+type SyncSummary = {
   label: string
   detail: string
   className: string
@@ -35,13 +35,12 @@ export function useProfilesWorkspace({
   isBlankProfileForm,
   getProfileVisualState,
   getEnvironmentPurposeLabel,
-  getEnvironmentPurposeSummary,
   summarizeIdentitySignature,
   summarizeLocaleSignature,
   summarizeHardwareSignature,
-  getLifecycleStageSummary,
   getLaunchPhaseLabel,
-  getStorageSyncSummary,
+  getEnvironmentSyncSummary,
+  getRuntimeArtifactSyncSummaries,
 }: {
   profiles: ProfileRecord[]
   templates: TemplateRecord[]
@@ -57,7 +56,6 @@ export function useProfilesWorkspace({
   isBlankProfileForm: (form: ProfileFormState) => boolean
   getProfileVisualState: (profile: ProfileRecord) => ProfileRecord['status']
   getEnvironmentPurposeLabel: (purpose: EnvironmentPurpose, locale: LocaleCode) => string
-  getEnvironmentPurposeSummary: (purpose: EnvironmentPurpose, locale: LocaleCode) => string
   summarizeIdentitySignature: (
     profile: ProfileRecord['deviceProfile'] | null,
     fallback: FingerprintConfig,
@@ -70,9 +68,9 @@ export function useProfilesWorkspace({
     profile: ProfileRecord['deviceProfile'] | null,
     fallback: FingerprintConfig,
   ) => string
-  getLifecycleStageSummary: (profile: ProfileRecord, locale: LocaleCode) => string
   getLaunchPhaseLabel: (profile: ProfileRecord) => string
-  getStorageSyncSummary: (profile: ProfileRecord) => StorageSummary
+  getEnvironmentSyncSummary: (profile: ProfileRecord) => SyncSummary
+  getRuntimeArtifactSyncSummaries: (profile: ProfileRecord) => NonNullable<EnvironmentListItem['runtimeSync']>
 }) {
   const [resourceMode, setResourceMode] = useState<ResourceMode>('profiles')
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null)
@@ -133,36 +131,41 @@ export function useProfilesWorkspace({
         items: items.map((profile) => {
           const visualStatus = getProfileVisualState(profile)
           const selectedProxy = resolveSelectedProxy(proxies, profile.proxyId)
-          const storageSyncSummary = getStorageSyncSummary(profile)
+          const environmentSyncSummary = getEnvironmentSyncSummary(profile)
+          const runtimeSyncSummaries = getRuntimeArtifactSyncSummaries(profile)
           return {
             id: profile.id,
             name: profile.name,
-            idLabel: `ID:${profile.id.slice(0, 6)}`,
-            purposeLabel: getEnvironmentPurposeLabel(profile.environmentPurpose, locale),
-            proxyLabel: selectedProxy ? `${selectedProxy.name}:${selectedProxy.port}` : t.common.noProxy,
-            groupLabel: profile.groupName || t.profiles.groupFallback,
-            tagLabel: profile.tags.join(', ') || t.common.noTags,
-            summary: getEnvironmentPurposeSummary(profile.environmentPurpose, locale),
+            metaBadges: [
+              { key: 'id', label: `ID:${profile.id.slice(0, 6)}` },
+              {
+                key: 'proxy',
+                label: selectedProxy ? `${selectedProxy.name}:${selectedProxy.port}` : t.common.noProxy,
+              },
+              {
+                key: 'purpose',
+                label: getEnvironmentPurposeLabel(profile.environmentPurpose, locale),
+              },
+            ],
             identity: summarizeIdentitySignature(profile.deviceProfile, profile.fingerprintConfig),
             locale: summarizeLocaleSignature(profile.deviceProfile, profile.fingerprintConfig),
             hardware: summarizeHardwareSignature(profile.deviceProfile, profile.fingerprintConfig),
-            lifecycle: getLifecycleStageSummary(profile, locale),
             status: visualStatus,
             launchPhaseLabel: getLaunchPhaseLabel(profile),
             isLaunching: visualStatus === 'starting' || visualStatus === 'queued',
             canMoveToNurture: profile.environmentPurpose === 'register',
             canMoveToOperation: profile.environmentPurpose === 'nurture',
-            storage: storageSyncSummary,
+            sync: environmentSyncSummary,
+            runtimeSync: runtimeSyncSummaries,
           }
         }),
       })),
     [
       getEnvironmentPurposeLabel,
-      getEnvironmentPurposeSummary,
       getLaunchPhaseLabel,
-      getLifecycleStageSummary,
       getProfileVisualState,
-      getStorageSyncSummary,
+      getEnvironmentSyncSummary,
+      getRuntimeArtifactSyncSummaries,
       groupedProfiles,
       locale,
       proxies,
@@ -170,8 +173,6 @@ export function useProfilesWorkspace({
       summarizeIdentitySignature,
       summarizeLocaleSignature,
       t.common.noProxy,
-      t.common.noTags,
-      t.profiles.groupFallback,
     ],
   )
 

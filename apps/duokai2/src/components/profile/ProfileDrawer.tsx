@@ -84,7 +84,8 @@ export function ProfileDrawer({
           network: '网络',
           fingerprint: '指纹',
         },
-        environmentPurpose: '环境用途',
+        environmentPurpose: '用途标签',
+        environmentPurposeHint: '仅用于分类与提醒，不会自动改变当前环境的启动参数、指纹或网络设置。',
         operatingSystem: '操作系统',
         chromeVersion: 'Chrome 版本',
         windowSize: '窗口尺寸',
@@ -127,7 +128,9 @@ export function ProfileDrawer({
           network: 'Network',
           fingerprint: 'Fingerprint',
         },
-        environmentPurpose: 'Environment purpose',
+        environmentPurpose: 'Purpose label',
+        environmentPurposeHint:
+          'Used for classification and reminders only. It does not automatically change launch settings, fingerprints, or network behavior.',
         operatingSystem: 'Operating system',
         chromeVersion: 'Chrome version',
         windowSize: 'Window size',
@@ -263,6 +266,7 @@ export function ProfileDrawer({
                     </option>
                   ))}
                 </Select>
+                <div className="text-xs text-slate-500">{copy.environmentPurposeHint}</div>
               </label>
               <label className="block space-y-2">
                 <span className="text-sm font-medium text-slate-700">{t.profiles.name}</span>

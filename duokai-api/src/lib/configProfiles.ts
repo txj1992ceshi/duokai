@@ -30,6 +30,18 @@ export async function findConfigProfileForUser(userId: string, profileId: string
   };
 }
 
+export function normalizeConfigProfilePayload(profileId: string, profile: Record<string, unknown>) {
+  const nextProfile: Record<string, unknown> = {
+    ...profile,
+    id: profileId,
+  };
+  const currentVersion = Number(nextProfile.configSyncVersion || 0);
+  return {
+    ...nextProfile,
+    configSyncVersion: Number.isFinite(currentVersion) && currentVersion >= 0 ? currentVersion : 0,
+  };
+}
+
 export async function updateConfigProfileForUser(
   userId: string,
   profileId: string,
@@ -48,6 +60,59 @@ export async function updateConfigProfileForUser(
       return item;
     }
     return updater(item as Record<string, unknown>);
+  });
+
+  return await AgentConfigStateModel.findOneAndUpdate(
+    { agentId: resolveUserConfigStateId(userId) },
+    {
+      $set: { profiles: nextProfiles },
+      $inc: { syncVersion: 1 },
+    },
+    { new: true }
+  ).lean();
+}
+
+export async function upsertConfigProfileForUser(
+  userId: string,
+  profileId: string,
+  nextProfile: Record<string, unknown>,
+) {
+  const { state, profiles, profile } = await findConfigProfileForUser(userId, profileId);
+  const normalized = normalizeConfigProfilePayload(profileId, nextProfile);
+  const currentProfiles = Array.isArray(profiles) ? profiles : [];
+  const hasExisting = Boolean(profile);
+  const nextProfiles = hasExisting
+    ? currentProfiles.map((item: unknown) => {
+        if (!item || typeof item !== 'object') {
+          return item;
+        }
+        if (String((item as Record<string, unknown>).id || '').trim() !== profileId) {
+          return item;
+        }
+        return normalized;
+      })
+    : [...currentProfiles, normalized];
+
+  return await AgentConfigStateModel.findOneAndUpdate(
+    { agentId: resolveUserConfigStateId(userId) },
+    {
+      $set: { profiles: nextProfiles },
+      ...(state ? { $inc: { syncVersion: 1 } } : { $setOnInsert: { syncVersion: 1, globalConfigSyncVersion: 0 } }),
+    },
+    { upsert: true, new: true }
+  ).lean();
+}
+
+export async function deleteConfigProfileForUser(userId: string, profileId: string) {
+  const { state, profiles, profile } = await findConfigProfileForUser(userId, profileId);
+  if (!state || !profile) {
+    return null;
+  }
+  const nextProfiles = profiles.filter((item: unknown) => {
+    if (!item || typeof item !== 'object') {
+      return true;
+    }
+    return String((item as Record<string, unknown>).id || '').trim() !== profileId;
   });
 
   return await AgentConfigStateModel.findOneAndUpdate(

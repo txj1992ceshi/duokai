@@ -3,6 +3,10 @@
   --duokai-surface: #ffffff;
   --duokai-surface-muted: #f1f5f9;
   --duokai-surface-elevated: #ffffff;
+  --duokai-button-secondary: #e9eef5;
+  --duokai-button-secondary-hover: #dde5ef;
+  --duokai-button-ghost: #eef3f8;
+  --duokai-button-ghost-hover: #e2e8f0;
   --duokai-surface-glass: rgba(255, 255, 255, 0.78);
   --duokai-surface-glass-strong: rgba(255, 255, 255, 0.9);
   --duokai-sidebar: #020617;
@@ -30,6 +34,10 @@
   --duokai-surface: #101a2b;
   --duokai-surface-muted: #172235;
   --duokai-surface-elevated: #132033;
+  --duokai-button-secondary: #192435;
+  --duokai-button-secondary-hover: #223046;
+  --duokai-button-ghost: #141f2f;
+  --duokai-button-ghost-hover: #1c293c;
   --duokai-surface-glass: rgba(16, 26, 43, 0.78);
   --duokai-surface-glass-strong: rgba(16, 26, 43, 0.9);
   --duokai-sidebar: #050c18;

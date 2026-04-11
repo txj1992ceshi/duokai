@@ -345,6 +345,16 @@ export interface ProfileRuntimeMetadata {
   lastStorageStateDeviceId: string
   lastStorageStateSyncStatus: 'idle' | 'synced' | 'pending' | 'conflict' | 'error'
   lastStorageStateSyncMessage: string
+  lastWorkspaceSummarySyncAt: string
+  lastWorkspaceSummarySyncStatus: 'idle' | 'synced' | 'syncing' | 'error'
+  lastWorkspaceSummarySyncMessage: string
+  lastWorkspaceSnapshotSyncAt: string
+  lastWorkspaceSnapshotSyncStatus: 'idle' | 'synced' | 'syncing' | 'error'
+  lastWorkspaceSnapshotSyncMessage: string
+  lastEnvironmentSyncAt: string
+  lastEnvironmentSyncStatus: 'idle' | 'synced' | 'pending' | 'syncing' | 'conflict' | 'error' | 'recovery'
+  lastEnvironmentSyncMessage: string
+  lastEnvironmentSyncVersion: number
   hardwareProfileId: string
   hardwareProfileVersion: string
   hardwareSeed: string
@@ -444,6 +454,28 @@ export interface TrustedLaunchSnapshot {
   status: 'trusted' | 'stale' | 'invalid'
 }
 
+export type StartupNavigationReasonCode =
+  | 'ok'
+  | 'timeout'
+  | 'net_error'
+  | 'proxy_error'
+  | 'dns_error'
+  | 'tls_error'
+  | 'redirect_unstable'
+  | 'page_blocked'
+  | 'challenge_or_gate'
+  | 'unknown'
+
+export interface StartupNavigationResult {
+  requestedUrl: string
+  attemptedUrl: string
+  finalUrl: string
+  success: boolean
+  reasonCode: StartupNavigationReasonCode
+  message: string
+  checkedAt: string
+}
+
 export interface FingerprintConfig {
   userAgent: string
   language: string
@@ -484,6 +516,7 @@ export interface ProfileRecord {
   // Runtime behavior must resolve from workspace.resolvedEnvironment.
   // fingerprintConfig and other legacy fields remain compatibility mirrors only.
   workspace?: WorkspaceDescriptor | null
+  startupNavigation?: StartupNavigationResult | null
   status: ProfileStatus
   lastStartedAt: string | null
   lastLaunchAt?: string
@@ -858,7 +891,7 @@ export interface DesktopAuthState {
   rememberCredentials: boolean
   rememberedIdentifier: string
   rememberedPassword: string
-  lastConfigSyncResult: ConfigSyncResult | null
+  lastGlobalConfigSyncResult: ConfigSyncResult | null
 }
 
 export interface ConfigSyncResult {
@@ -903,6 +936,14 @@ export interface ExportBundle {
 export interface RemoteConfigSnapshot {
   syncVersion: number
   profiles: ProfileRecord[]
+  proxies: ProxyRecord[]
+  templates: TemplateRecord[]
+  cloudPhones: CloudPhoneRecord[]
+  settings: SettingsPayload
+}
+
+export interface GlobalConfigSnapshot {
+  syncVersion: number
   proxies: ProxyRecord[]
   templates: TemplateRecord[]
   cloudPhones: CloudPhoneRecord[]

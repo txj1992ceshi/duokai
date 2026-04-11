@@ -25,7 +25,8 @@ const api: DesktopApi = {
     revokeDevice: (deviceId) => ipcRenderer.invoke('auth.revokeDevice', deviceId),
     deleteDevice: (deviceId) => ipcRenderer.invoke('auth.deleteDevice', deviceId),
     logout: () => ipcRenderer.invoke('auth.logout'),
-    syncConfig: () => ipcRenderer.invoke('auth.syncConfig'),
+    syncGlobalConfig: () => ipcRenderer.invoke('auth.syncGlobalConfig'),
+    pullGlobalConfig: () => ipcRenderer.invoke('auth.pullGlobalConfig'),
   },
   meta: {
     getInfo: () => ipcRenderer.invoke('meta.getInfo'),
@@ -97,6 +98,8 @@ const api: DesktopApi = {
     update: (input: UpdateProfileInput) => ipcRenderer.invoke('profiles.update', input),
     delete: (id: string) => ipcRenderer.invoke('profiles.delete', id),
     clone: (id: string) => ipcRenderer.invoke('profiles.clone', id),
+    syncConfig: (id: string) => ipcRenderer.invoke('profiles.syncConfig', id),
+    pullConfig: (id: string) => ipcRenderer.invoke('profiles.pullConfig', id),
     revealDirectory: (id: string) => ipcRenderer.invoke('profiles.revealDirectory', id),
     getDirectoryInfo: () => ipcRenderer.invoke('profiles.getDirectoryInfo'),
     bulkStart: (payload: ProfileBulkActionPayload) =>
