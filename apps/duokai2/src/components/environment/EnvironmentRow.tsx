@@ -67,6 +67,41 @@ function StatusBadge({
   )
 }
 
+function getStorageBadgeTone(statusClassName: NonNullable<EnvironmentListItem['storage']>['className']) {
+  switch (statusClassName) {
+    case 'synced':
+      return {
+        container: 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200',
+        label: 'text-emerald-700',
+        detail: 'text-emerald-600',
+      }
+    case 'error':
+      return {
+        container: 'bg-rose-50 text-rose-700 ring-1 ring-inset ring-rose-200',
+        label: 'text-rose-700',
+        detail: 'text-rose-600',
+      }
+    case 'conflict':
+      return {
+        container: 'bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-200',
+        label: 'text-amber-700',
+        detail: 'text-amber-600',
+      }
+    case 'pending':
+      return {
+        container: 'bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-200',
+        label: 'text-blue-700',
+        detail: 'text-blue-600',
+      }
+    default:
+      return {
+        container: 'bg-slate-100 text-slate-500',
+        label: 'text-slate-700',
+        detail: 'text-slate-500',
+      }
+  }
+}
+
 export function EnvironmentRow({
   item,
   expanded,
@@ -113,6 +148,8 @@ export function EnvironmentRow({
           collapse: 'Collapse',
         }
 
+  const storageTone = item.storage ? getStorageBadgeTone(item.storage.className) : null
+
   useEffect(() => {
     if (!menuOpen) {
       return
@@ -147,9 +184,9 @@ export function EnvironmentRow({
               <span>{item.lifecycle}</span>
               <span>{item.tagLabel}</span>
               {item.storage ? (
-                <span className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-[11px] text-slate-500">
-                  <span className="font-medium text-slate-700">{item.storage.label}</span>
-                  <span>{item.storage.detail}</span>
+                <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-[11px] ${storageTone?.container || ''}`}>
+                  <span className={`font-medium ${storageTone?.label || ''}`}>{item.storage.label}</span>
+                  <span className={storageTone?.detail || ''}>{item.storage.detail}</span>
                 </span>
               ) : null}
             </div>

@@ -18,6 +18,7 @@ PUBLIC_BASE="${PUBLIC_SCHEME}://${PUBLIC_HOST}"
 API_BASE="$PUBLIC_BASE"
 ADMIN_BASE="${PUBLIC_SCHEME}://${PUBLIC_HOST}:3000"
 APP_BASE="${PUBLIC_SCHEME}://${PUBLIC_HOST}:3001"
+FILE_REPOSITORY_ROOT="${DUOKAI_FILE_REPOSITORY_ROOT:-/srv/duokai/files}"
 
 log() {
   printf '\n[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1"
@@ -70,11 +71,17 @@ ensure_api_env() {
   local file="$API_DIR/.env.local"
   log "Ensuring API env"
   ensure_line "$file" "RUNTIME_URL" "http://127.0.0.1:3101"
+  ensure_line "$file" "DUOKAI_FILE_REPOSITORY_ROOT" "$FILE_REPOSITORY_ROOT"
   local cors_origins="${PUBLIC_BASE},${ADMIN_BASE},${APP_BASE},http://127.0.0.1:3000,http://127.0.0.1:3001"
   if [[ -n "$EXTRA_CORS_ORIGINS" ]]; then
     cors_origins="${cors_origins},${EXTRA_CORS_ORIGINS}"
   fi
   ensure_line "$file" "CORS_ORIGINS" "$cors_origins"
+}
+
+ensure_file_repository_root() {
+  log "Ensuring file repository root"
+  mkdir -p "$FILE_REPOSITORY_ROOT"
 }
 
 install_dependencies() {
@@ -139,6 +146,7 @@ main() {
   ensure_admin_env
   ensure_frontend_env
   ensure_api_env
+  ensure_file_repository_root
   install_dependencies
   build_apps
   restart_pm2

@@ -36,6 +36,7 @@ import {
   DEFAULT_ENVIRONMENT_PURPOSE,
 } from './services/deviceProfile'
 import {
+  createPortableWorkspaceDescriptor,
   createCloudPhonePayload,
   createDefaultFingerprint,
   createProfilePayload,
@@ -1108,7 +1109,11 @@ async function syncWorkspaceSummaryToControlPlane(profile: ProfileRecord): Promi
   await requestControlPlane(`/api/profiles/${encodeURIComponent(profile.id)}`, {
     method: 'PATCH',
     body: JSON.stringify({
-      workspace: profile.workspace,
+      workspace: createPortableWorkspaceDescriptor(
+        profile.workspace,
+        profile.id,
+        profile.fingerprintConfig,
+      ),
     }),
   })
 }

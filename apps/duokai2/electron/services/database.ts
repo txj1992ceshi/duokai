@@ -6,6 +6,7 @@ import type { App } from 'electron'
 import { createDeviceProfileFromFingerprint, DEFAULT_ENVIRONMENT_PURPOSE } from './deviceProfile'
 import {
   cloneProfileRecordForNewId,
+  createPortableWorkspaceDescriptor,
   createDefaultFingerprint,
   normalizeFingerprintConfig,
   normalizeWorkspaceDescriptor,
@@ -1202,7 +1203,14 @@ export class DatabaseService {
   exportRemoteConfigSnapshot(syncVersion = 0): RemoteConfigSnapshot {
     return {
       syncVersion,
-      profiles: this.listProfiles(),
+      profiles: this.listProfiles().map((profile) => ({
+        ...profile,
+        workspace: createPortableWorkspaceDescriptor(
+          profile.workspace,
+          profile.id,
+          profile.fingerprintConfig,
+        ),
+      })),
       proxies: this.listProxies(),
       templates: this.listTemplates(),
       cloudPhones: this.listCloudPhones(),
@@ -1254,7 +1262,11 @@ export class DatabaseService {
             environmentPurpose: profile.environmentPurpose,
             deviceProfile: profile.deviceProfile,
             fingerprintConfig: profile.fingerprintConfig,
-            workspace: profile.workspace ?? null,
+            workspace: createPortableWorkspaceDescriptor(
+              profile.workspace ?? null,
+              profile.id,
+              profile.fingerprintConfig,
+            ),
           },
           profile.status || 'stopped',
         )

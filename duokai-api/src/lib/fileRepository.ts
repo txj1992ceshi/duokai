@@ -40,6 +40,20 @@ export function getFileRepositoryRoot(): string {
   return process.env.DUOKAI_FILE_REPOSITORY_ROOT || '/srv/duokai/files';
 }
 
+export async function ensureFileRepositoryRoot(): Promise<string> {
+  const root = getFileRepositoryRoot();
+  try {
+    await mkdir(root, { recursive: true });
+  } catch (error) {
+    const details = error as NodeJS.ErrnoException;
+    const reason = details.code ? `${details.code}: ${details.message}` : String(error);
+    throw new Error(`Failed to prepare file repository root "${root}". ${reason}`, {
+      cause: error,
+    });
+  }
+  return root;
+}
+
 export function buildArtifactPath(kind: FileArtifactKind, ownerId: string, objectId: string): string {
   return path.join(getFileRepositoryRoot(), kind, ownerId, objectId);
 }
@@ -53,9 +67,19 @@ export async function writeJsonArtifact(
   const raw = Buffer.from(JSON.stringify(options.payload, null, 2), 'utf8');
   const body = options.compress === false ? raw : gzipSync(raw);
   const suffix = options.compress === false ? '.json' : '.json.gz';
-  const filePath = `${buildArtifactPath(options.kind, options.ownerId, options.objectId)}${suffix}`;
-  await mkdir(path.dirname(filePath), { recursive: true });
-  await writeFile(filePath, body);
+  const root = await ensureFileRepositoryRoot();
+  const filePath = `${path.join(root, options.kind, options.ownerId, options.objectId)}${suffix}`;
+  try {
+    await mkdir(path.dirname(filePath), { recursive: true });
+    await writeFile(filePath, body);
+  } catch (error) {
+    const details = error as NodeJS.ErrnoException;
+    const reason = details.code ? `${details.code}: ${details.message}` : String(error);
+    throw new Error(
+      `Failed to write file artifact under repository root "${root}" at "${filePath}". ${reason}`,
+      { cause: error }
+    );
+  }
   return {
     fileRef: filePath,
     checksum: computeSha256(body),

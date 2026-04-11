@@ -248,15 +248,14 @@ test('computeWorkspaceConsistencySummary warns for allowed declared override dri
 })
 
 test('computeWorkspaceConsistencySummary blocks on blocked runtime drift', () => {
-  const profile = buildProfile('profile-blocked', {
-    workspace: {
-      templateBinding: {
-        templateId: 'template-1',
-        templateRevision: 'rev-1',
-        templateFingerprintHash: 'mismatch',
-      },
+  const profile = buildProfile('profile-blocked')
+  profile.workspace = {
+    ...profile.workspace!,
+    resolvedEnvironment: {
+      ...profile.workspace!.resolvedEnvironment,
+      browserFamily: 'system-default',
     },
-  })
+  }
   const result = computeWorkspaceConsistencySummary(profile, [profile])
   assert.equal(result.status, 'block')
   assert.match(result.messages.join(' '), /fingerprint/i)
@@ -309,14 +308,14 @@ test('validateWorkspaceGate blocks incomplete migration', () => {
 })
 
 test('validateWorkspaceGate blocks missing resolvedEnvironment launch fields', () => {
-  const profile = buildProfile('profile-missing-runtime', {
-    workspace: {
-      resolvedEnvironment: {
-        ...buildProfile('profile-missing-runtime-baseline').workspace!.resolvedEnvironment,
-        browserLanguage: '',
-      },
+  const profile = buildProfile('profile-missing-runtime')
+  profile.workspace = {
+    ...profile.workspace!,
+    resolvedEnvironment: {
+      ...profile.workspace!.resolvedEnvironment,
+      browserLanguage: '',
     },
-  })
+  }
   const result = validateWorkspaceGate(profile, [profile])
   assert.equal(result.status, 'block')
   assert.match(result.messages.join(' '), /runtime field|browserLanguage/i)

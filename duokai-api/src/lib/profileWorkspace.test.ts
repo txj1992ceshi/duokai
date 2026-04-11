@@ -24,6 +24,31 @@ test('normalizeWorkspacePayload pins workspace identity to profile id', () => {
   assert.equal('browserFamily' in workspace.declaredOverrides, false);
 });
 
+test('normalizeWorkspacePayload strips device-local workspace paths and rewrites downloads dir to canonical layout', () => {
+  const workspace = normalizeWorkspacePayload('profile-portable', {
+    paths: {
+      profileDir: 'C:\\Users\\jj\\AppData\\Roaming\\Duokai\\workspaces\\profile-portable\\profile',
+      cacheDir: '/Users/jj/Library/Application Support/Duokai/workspaces/profile-portable/cache',
+      downloadsDir: '/tmp/custom-downloads',
+      extensionsDir: '/tmp/extensions',
+      metaDir: '/tmp/meta',
+    },
+    resolvedEnvironment: {
+      browserLanguage: 'en-US',
+      downloadsDir: 'D:\\Downloads\\duokai',
+    },
+  });
+
+  assert.deepEqual(workspace.paths, {
+    profileDir: 'workspaces/profile-portable/profile',
+    cacheDir: 'workspaces/profile-portable/cache',
+    downloadsDir: 'workspaces/profile-portable/downloads',
+    extensionsDir: 'workspaces/profile-portable/extensions',
+    metaDir: 'workspaces/profile-portable/meta',
+  });
+  assert.equal(workspace.resolvedEnvironment?.downloadsDir, 'workspaces/profile-portable/downloads');
+});
+
 test('serializeProfile includes normalized workspace', () => {
   const serialized = serializeProfile({
     _id: 'profile-1',

@@ -4,7 +4,11 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 
-import { createDefaultFingerprint, normalizeWorkspaceDescriptor } from './factories.ts'
+import {
+  createDefaultFingerprint,
+  createPortableWorkspaceDescriptor,
+  normalizeWorkspaceDescriptor,
+} from './factories.ts'
 import {
   ensureWorkspaceLayoutForProfile,
   normalizeWorkspacePathsForProfile,
@@ -50,6 +54,45 @@ test('normalizeWorkspacePathsForProfile anchors legacy relative paths under user
   assert.equal(paths.downloadsDir, path.join(userDataDir, 'workspaces', 'profile-1', 'downloads'))
   assert.equal(paths.extensionsDir, path.join(userDataDir, 'workspaces', 'profile-1', 'extensions'))
   assert.equal(paths.metaDir, path.join(userDataDir, 'workspaces', 'profile-1', 'meta'))
+})
+
+test('createPortableWorkspaceDescriptor strips foreign absolute paths before cross-device sync', () => {
+  const fingerprint = createDefaultFingerprint()
+  const portable = createPortableWorkspaceDescriptor(
+    {
+      paths: {
+        profileDir: 'C:\\Users\\jj\\AppData\\Roaming\\Duokai\\workspaces\\profile-1\\profile',
+        cacheDir: 'C:\\Users\\jj\\AppData\\Roaming\\Duokai\\workspaces\\profile-1\\cache',
+        downloadsDir: '/Users/jj/Library/Application Support/Duokai/workspaces/profile-1/downloads',
+        extensionsDir: '/Users/jj/Library/Application Support/Duokai/workspaces/profile-1/extensions',
+        metaDir: '/Users/jj/Library/Application Support/Duokai/workspaces/profile-1/meta',
+      },
+      resolvedEnvironment: {
+        browserFamily: 'chrome',
+        browserMajorVersionRange: '136',
+        systemLanguage: 'en-US',
+        browserLanguage: 'en-US',
+        timezone: 'Asia/Shanghai',
+        resolution: '1280x720',
+        fontStrategy: 'system',
+        webrtcPolicy: 'default',
+        ipv6Policy: 'ipv4',
+        downloadsDir: 'D:\\Downloads\\duokai',
+        launchArgs: [],
+      },
+    },
+    'profile-1',
+    fingerprint,
+  )
+
+  assert.deepEqual(portable.paths, {
+    profileDir: 'workspaces/profile-1/profile',
+    cacheDir: 'workspaces/profile-1/cache',
+    downloadsDir: 'workspaces/profile-1/downloads',
+    extensionsDir: 'workspaces/profile-1/extensions',
+    metaDir: 'workspaces/profile-1/meta',
+  })
+  assert.equal(portable.resolvedEnvironment.downloadsDir, 'workspaces/profile-1/downloads')
 })
 
 test('ensureWorkspaceLayoutForProfile migrates legacy profile dir once and resumes idempotently', () => {

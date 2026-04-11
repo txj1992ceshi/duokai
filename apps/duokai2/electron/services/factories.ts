@@ -334,6 +334,24 @@ export function normalizeWorkspaceDescriptor(
   return createDefaultWorkspaceDescriptor(profileId, fingerprintConfig, input)
 }
 
+export function createPortableWorkspaceDescriptor(
+  input: Partial<WorkspaceDescriptor> | null | undefined,
+  profileId: string,
+  fingerprintConfig: FingerprintConfig,
+): WorkspaceDescriptor {
+  const workspace = normalizeWorkspaceDescriptor(input, profileId, fingerprintConfig)
+  const portablePaths = createDefaultWorkspacePaths(profileId)
+  return {
+    ...workspace,
+    // Local filesystem paths are always device-specific and must be regenerated per host.
+    paths: portablePaths,
+    resolvedEnvironment: {
+      ...workspace.resolvedEnvironment,
+      downloadsDir: portablePaths.downloadsDir,
+    },
+  }
+}
+
 export function syncFingerprintConfigWithWorkspaceEnvironment(
   fingerprintConfig: FingerprintConfig,
   workspace: WorkspaceDescriptor | null | undefined,

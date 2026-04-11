@@ -52,6 +52,13 @@ export function normalizeWorkspacePayload(
   const templateFingerprintHash =
     String(templateBinding.templateFingerprintHash || legacyTemplateFingerprintHash || '').trim();
   const templateId = String(templateBinding.templateId || source.templateId || '').trim();
+  const defaultPaths = {
+    profileDir: `workspaces/${profileId}/profile`,
+    cacheDir: `workspaces/${profileId}/cache`,
+    downloadsDir: `workspaces/${profileId}/downloads`,
+    extensionsDir: `workspaces/${profileId}/extensions`,
+    metaDir: `workspaces/${profileId}/meta`,
+  };
   return {
     identityProfileId: profileId,
     version: Number(source.version || 1) || 1,
@@ -70,12 +77,13 @@ export function normalizeWorkspacePayload(
     declaredOverrides: normalizeDeclaredOverrides(source.declaredOverrides),
     resolvedEnvironment:
       source.resolvedEnvironment && typeof source.resolvedEnvironment === 'object'
-        ? source.resolvedEnvironment
+        ? {
+            ...(source.resolvedEnvironment as Record<string, unknown>),
+            downloadsDir: defaultPaths.downloadsDir,
+          }
         : null,
-    paths:
-      source.paths && typeof source.paths === 'object'
-        ? source.paths
-        : null,
+    // Cloud payloads must never preserve device-local absolute workspace paths.
+    paths: defaultPaths,
     healthSummary:
       source.healthSummary && typeof source.healthSummary === 'object'
         ? source.healthSummary

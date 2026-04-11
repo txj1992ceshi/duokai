@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { asyncHandler } from '../lib/http.js';
 import { connectMongo } from '../lib/mongodb.js';
+import { normalizeWorkspacePayload } from '../lib/serializers.js';
 import { requireUser } from '../middlewares/auth.js';
 import { AgentConfigStateModel } from '../models/AgentConfigState.js';
 
@@ -19,6 +20,21 @@ function buildEmptySnapshot() {
     cloudPhones: [],
     settings: {},
   };
+}
+
+function normalizeSnapshotProfiles(profiles: unknown[]) {
+  return profiles
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+    .map((profile) => {
+      const profileId = String(profile.id || '').trim();
+      if (!profileId) {
+        return profile;
+      }
+      return {
+        ...profile,
+        workspace: normalizeWorkspacePayload(profileId, profile.workspace),
+      };
+    });
 }
 
 router.get(
@@ -56,7 +72,7 @@ router.post(
 
     const stateId = resolveUserConfigStateId(req.authUser!.userId);
     const clientSyncVersion = Number(req.body?.syncVersion || 0);
-    const profiles = Array.isArray(req.body?.profiles) ? req.body.profiles : [];
+    const profiles = normalizeSnapshotProfiles(Array.isArray(req.body?.profiles) ? req.body.profiles : []);
     const proxies = Array.isArray(req.body?.proxies) ? req.body.proxies : [];
     const templates = Array.isArray(req.body?.templates) ? req.body.templates : [];
     const cloudPhones = Array.isArray(req.body?.cloudPhones) ? req.body.cloudPhones : [];
