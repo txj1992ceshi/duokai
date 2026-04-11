@@ -180,3 +180,98 @@ test('ensureWorkspaceLayoutForProfile migrates legacy profile dir once and resum
     'completed',
   )
 })
+
+test('ensureWorkspaceLayoutForProfile repairs missing runtime fields for legacy windows workspace data', () => {
+  const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'duokai-workspace-windows-legacy-'))
+  const app = createFakeApp(userDataDir)
+  let persistedWorkspace = normalizeWorkspaceDescriptor(null, 'profile-win-legacy', {
+    ...createDefaultFingerprint(),
+    timezone: 'America/Toronto',
+    language: 'en-US',
+    resolution: '1366x768',
+  })
+
+  const profile = {
+    id: 'profile-win-legacy',
+    name: 'Windows Legacy',
+    proxyId: null,
+    groupName: '',
+    tags: [],
+    notes: '',
+    environmentPurpose: 'operation' as const,
+    deviceProfile: {
+      version: 1,
+      deviceClass: 'desktop' as const,
+      operatingSystem: 'Windows',
+      platform: '',
+      browserKernel: 'chrome' as const,
+      browserVersion: '136',
+      userAgent: '',
+      viewport: { width: 1366, height: 768 },
+      locale: { language: 'en-US', interfaceLanguage: 'en-US', timezone: 'America/Toronto', geolocation: '' },
+      hardware: { cpuCores: 8, memoryGb: 8, webglVendor: '', webglRenderer: '' },
+      mediaProfile: {
+        fontMode: 'system' as const,
+        mediaDevicesMode: 'off' as const,
+        speechVoicesMode: 'off' as const,
+        canvasMode: 'random' as const,
+        webglImageMode: 'random' as const,
+        webglMetadataMode: 'random' as const,
+        audioContextMode: 'random' as const,
+        clientRectsMode: 'random' as const,
+      },
+      support: {
+        fonts: 'active' as const,
+        mediaDevices: 'active' as const,
+        speechVoices: 'active' as const,
+        canvas: 'active' as const,
+        webgl: 'active' as const,
+        audio: 'active' as const,
+        clientRects: 'active' as const,
+        geolocation: 'active' as const,
+        deviceInfo: 'active' as const,
+        sslFingerprint: 'active' as const,
+        pluginFingerprint: 'active' as const,
+      },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+    fingerprintConfig: {
+      ...createDefaultFingerprint(),
+      timezone: 'America/Toronto',
+      language: 'en-US',
+      resolution: '1366x768',
+      advanced: {
+        ...createDefaultFingerprint().advanced,
+        operatingSystem: 'Windows',
+      },
+    },
+    workspace: {
+      ...persistedWorkspace,
+      migrationState: 'completed' as const,
+      migrationCheckpoints: [
+        { name: 'migration_completed' as const, completedAt: new Date().toISOString() },
+      ],
+      resolvedEnvironment: {
+        ...persistedWorkspace.resolvedEnvironment,
+        timezone: '',
+        browserLanguage: '',
+        resolution: '',
+      },
+    },
+    status: 'stopped' as const,
+    lastStartedAt: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  }
+
+  const repaired = ensureWorkspaceLayoutForProfile(app as never, profile, (workspace) => {
+    persistedWorkspace = workspace
+  })
+
+  assert.equal(repaired.resolvedEnvironment.timezone, 'America/Toronto')
+  assert.equal(repaired.resolvedEnvironment.browserLanguage, 'en-US')
+  assert.equal(repaired.resolvedEnvironment.resolution, '1366x768')
+  assert.equal(repaired.resolvedEnvironment.downloadsDir, repaired.paths.downloadsDir)
+  assert.equal(persistedWorkspace.resolvedEnvironment.timezone, 'America/Toronto')
+})

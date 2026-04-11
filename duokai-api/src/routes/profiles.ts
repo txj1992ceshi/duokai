@@ -1,5 +1,10 @@
 import { Router } from 'express';
 import { connectMongo } from '../lib/mongodb.js';
+import {
+  findConfigProfileForUser,
+  isMongoObjectId,
+  updateConfigProfileForUser,
+} from '../lib/configProfiles.js';
 import { asyncHandler } from '../lib/http.js';
 import { normalizeRuntimeMode } from '../lib/runtimeModes.js';
 import { normalizeWorkspacePayload, serializeProfile } from '../lib/serializers.js';
@@ -234,11 +239,25 @@ router.patch(
       updateData.workspace = normalizeWorkspacePayload(profileId, body.workspace);
     }
 
-    const profile = await ProfileModel.findOneAndUpdate(
-      { _id: profileId, userId: authUser.userId },
-      updateData,
-      { new: true }
-    ).lean();
+    let profile: Record<string, unknown> | null = null;
+
+    if (isMongoObjectId(profileId)) {
+      profile = await ProfileModel.findOneAndUpdate(
+        { _id: profileId, userId: authUser.userId },
+        updateData,
+        { new: true }
+      ).lean();
+    } else {
+      const savedState = await updateConfigProfileForUser(authUser.userId, profileId, (existing) => ({
+        ...existing,
+        ...updateData,
+        id: profileId,
+      }));
+      if (savedState) {
+        const { profile: configProfile } = await findConfigProfileForUser(authUser.userId, profileId);
+        profile = configProfile;
+      }
+    }
 
     if (!profile) {
       res.status(404).json({ success: false, error: 'Profile not found' });
@@ -254,7 +273,14 @@ router.patch(
 
     res.json({
       success: true,
-      profile: serializeProfile(profile, !!storageState),
+      profile:
+        '_id' in profile
+          ? serializeProfile(profile, !!storageState)
+          : {
+              ...profile,
+              id: profileId,
+              storageStateSynced: !!storageState,
+            },
     });
   })
 );

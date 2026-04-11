@@ -186,10 +186,17 @@ type ConfigSyncOptions = {
   useLocalCacheOnError?: boolean
 }
 
+type ConfigPushOptions = {
+  onConflict?: 'pull-and-throw' | 'preserve-local-and-throw'
+}
+
 let configSyncInFlight: Promise<ConfigSyncResult> | null = null
+let configPushInFlight: Promise<void> | null = null
 let lastConfigSyncAt = 0
 let lastConfigSyncResult: ConfigSyncResult | null = null
 let lastUserConfigSyncVersion = 0
+let localConfigMutationVersion = 0
+let lastSyncedLocalConfigMutationVersion = 0
 let sessionAuthApiBase = ''
 let sessionAuthToken = ''
 let sessionAuthUser: AuthUser | null = null
@@ -344,6 +351,7 @@ function ensureWritable(action: string): void {
 
 function setLastConfigSyncResult(result: ConfigSyncResult | null): ConfigSyncResult | null {
   lastConfigSyncResult = result
+  emitConfigChanged()
   return result
 }
 
@@ -368,6 +376,56 @@ function buildConfigSyncFallbackResult(message: string): ConfigSyncResult {
     message: '',
     warningMessage: `云端环境数据拉取失败，当前显示本地缓存：${message}`,
   }
+}
+
+function buildConfigSyncPendingResult(message = '本地修改已保存，等待同步到云端'): ConfigSyncResult {
+  return {
+    count: requireDatabase().listProfiles().length,
+    source: agentService?.getState().enabled ? 'agent' : 'account',
+    usedLocalCache: true,
+    message: '',
+    warningMessage: message,
+  }
+}
+
+function buildConfigSyncInFlightResult(message = '正在同步本地环境数据到云端'): ConfigSyncResult {
+  return {
+    count: requireDatabase().listProfiles().length,
+    source: agentService?.getState().enabled ? 'agent' : 'account',
+    usedLocalCache: true,
+    message: '',
+    warningMessage: message,
+  }
+}
+
+function buildConfigSyncPushSuccessResult(message = '本地环境数据已同步到云端'): ConfigSyncResult {
+  return {
+    count: requireDatabase().listProfiles().length,
+    source: agentService?.getState().enabled ? 'agent' : 'account',
+    usedLocalCache: false,
+    message,
+    warningMessage: '',
+  }
+}
+
+function buildConfigSyncPushFailedResult(message: string): ConfigSyncResult {
+  return {
+    count: requireDatabase().listProfiles().length,
+    source: agentService?.getState().enabled ? 'agent' : 'account',
+    usedLocalCache: true,
+    message: '',
+    warningMessage: message,
+  }
+}
+
+function hasPendingLocalConfigChanges(): boolean {
+  return localConfigMutationVersion > lastSyncedLocalConfigMutationVersion
+}
+
+function markLocalConfigDirty(message?: string): number {
+  localConfigMutationVersion += 1
+  setLastConfigSyncResult(buildConfigSyncPendingResult(message))
+  return localConfigMutationVersion
 }
 
 function hasConfigSnapshotData(snapshot: RemoteConfigSnapshot | null | undefined): boolean {
@@ -496,7 +554,10 @@ async function syncConfigFromControlPlane(options: ConfigSyncOptions = {}): Prom
   }
 }
 
-async function syncConfigToControlPlaneOrThrow(mode: 'replace' | 'merge' = 'replace'): Promise<void> {
+async function syncConfigToControlPlaneOrThrow(
+  mode: 'replace' | 'merge' = 'replace',
+  options: ConfigPushOptions = {},
+): Promise<void> {
   if (!agentService?.getState().enabled && !getDesktopAuthState().authenticated) {
     return
   }
@@ -533,8 +594,11 @@ async function syncConfigToControlPlaneOrThrow(mode: 'replace' | 'merge' = 'repl
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (/sync version mismatch/i.test(message)) {
-      await syncConfigFromControlPlane()
-      throw new Error('配置版本冲突，已拉取后台最新数据，请重试操作')
+      if ((options.onConflict ?? 'pull-and-throw') === 'pull-and-throw') {
+        await syncConfigFromControlPlane()
+        throw new Error('配置版本冲突，已拉取后台最新数据，请重试操作')
+      }
+      throw new Error('配置版本冲突，云端已存在更新，本地修改仍已保留，请稍后手动同步')
     }
     throw error
   }
@@ -625,6 +689,92 @@ async function syncConfigToControlPlaneBestEffort(action: string, details: Recor
     })
     logEvent('warn', 'system', `${action} config sync failed: ${message}`, null)
   }
+}
+
+async function flushPendingLocalConfigSync(
+  reason: string,
+  details: Record<string, unknown> = {},
+): Promise<void> {
+  if (!hasPendingLocalConfigChanges()) {
+    return
+  }
+  if (!agentService?.getState().enabled && !getDesktopAuthState().authenticated) {
+    setLastConfigSyncResult(buildConfigSyncPendingResult('本地修改已保存，登录后可同步到云端'))
+    return
+  }
+  if (configPushInFlight) {
+    return configPushInFlight
+  }
+
+  const targetVersion = localConfigMutationVersion
+  configPushInFlight = (async () => {
+    setLastConfigSyncResult(buildConfigSyncInFlightResult())
+    try {
+      await syncConfigToControlPlaneOrThrow('replace', {
+        onConflict: 'preserve-local-and-throw',
+      })
+      lastSyncedLocalConfigMutationVersion = Math.max(
+        lastSyncedLocalConfigMutationVersion,
+        targetVersion,
+      )
+      setLastConfigSyncResult(buildConfigSyncPushSuccessResult())
+      audit('config_push_local_first_succeeded', {
+        reason,
+        targetVersion,
+        ...details,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      audit('config_push_local_first_failed', {
+        reason,
+        targetVersion,
+        err: message,
+        ...details,
+      })
+      setLastConfigSyncResult(
+        buildConfigSyncPushFailedResult(`本地修改已保存，但云端同步失败：${message}`),
+      )
+    } finally {
+      configPushInFlight = null
+      if (
+        hasPendingLocalConfigChanges() &&
+        lastSyncedLocalConfigMutationVersion < localConfigMutationVersion &&
+        (agentService?.getState().enabled || getDesktopAuthState().authenticated)
+      ) {
+        void flushPendingLocalConfigSync('coalesced', { fromReason: reason })
+      }
+    }
+  })()
+
+  return configPushInFlight
+}
+
+function scheduleProfileConfigAfterLocalMutation(
+  action: 'create' | 'update' | 'clone',
+  profile: ProfileRecord,
+): void {
+  markLocalConfigDirty(
+    `${action === 'create' ? '环境已创建' : action === 'update' ? '环境已更新' : '环境已复制'}，等待同步到云端`,
+  )
+  void flushPendingLocalConfigSync(`profiles.${action}`, {
+    profileId: profile.id,
+    profileName: profile.name,
+  }).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error)
+    audit('profile_config_sync_failed_after_local_save', {
+      action,
+      profileId: profile.id,
+      profileName: profile.name,
+      err: message,
+      route: agentService?.getState().enabled ? '/api/agent/v1/config/push' : '/api/config/push',
+    })
+    logEvent(
+      'warn',
+      'profile',
+      `${action === 'create' ? 'Created' : action === 'update' ? 'Updated' : 'Cloned'} profile "${profile.name}" locally, but cloud sync failed: ${message}`,
+      profile.id,
+    )
+  })
 }
 
 async function deleteRemoteProfileBestEffort(profileId: string): Promise<void> {
@@ -1118,7 +1268,13 @@ async function syncWorkspaceSummaryToControlPlane(profile: ProfileRecord): Promi
   })
 }
 
-async function createWorkspaceSnapshotForProfile(profileId: string): Promise<WorkspaceSnapshotRecord> {
+async function createWorkspaceSnapshotForProfile(
+  profileId: string,
+  options: {
+    syncToControlPlane?: boolean
+  } = {},
+): Promise<WorkspaceSnapshotRecord> {
+  const syncToControlPlane = options.syncToControlPlane ?? true
   let profile = ensureWorkspaceLayoutForProfileId(profileId)
   const snapshot = await createWorkspaceSnapshot(profile, {
     storageStatePath: getProfileStorageStatePath(profileId),
@@ -1135,20 +1291,22 @@ async function createWorkspaceSnapshotForProfile(profileId: string): Promise<Wor
       },
     },
   })
-  void syncWorkspaceSummaryToControlPlane(profile).catch((error) => {
-    audit('workspace_summary_sync_failed', {
-      profileId,
-      snapshotId: snapshot.snapshotId,
-      err: error instanceof Error ? error.message : String(error),
+  if (syncToControlPlane) {
+    void syncWorkspaceSummaryToControlPlane(profile).catch((error) => {
+      audit('workspace_summary_sync_failed', {
+        profileId,
+        snapshotId: snapshot.snapshotId,
+        err: error instanceof Error ? error.message : String(error),
+      })
     })
-  })
-  void syncWorkspaceSnapshotToControlPlane(snapshot).catch((error) => {
-    audit('workspace_snapshot_sync_failed', {
-      profileId,
-      snapshotId: snapshot.snapshotId,
-      err: error instanceof Error ? error.message : String(error),
+    void syncWorkspaceSnapshotToControlPlane(snapshot).catch((error) => {
+      audit('workspace_snapshot_sync_failed', {
+        profileId,
+        snapshotId: snapshot.snapshotId,
+        err: error instanceof Error ? error.message : String(error),
+      })
     })
-  })
+  }
   return snapshot
 }
 
@@ -1455,6 +1613,46 @@ async function finalizeRuntimeShutdown(
           err: error instanceof Error ? error.message : String(error),
         })
       }
+    }
+
+    try {
+      await flushPendingLocalConfigSync(`runtime-shutdown:${reason}`, {
+        profileId,
+      })
+    } catch (error) {
+      audit('shutdown_config_sync_failed', {
+        profileId,
+        reason,
+        err: error instanceof Error ? error.message : String(error),
+      })
+    }
+
+    const latestProfile = requireDatabase().getProfileById(profileId)
+    if (latestProfile?.workspace) {
+      try {
+        await syncWorkspaceSummaryToControlPlane(latestProfile)
+      } catch (error) {
+        audit('shutdown_workspace_summary_sync_failed', {
+          profileId,
+          reason,
+          err: error instanceof Error ? error.message : String(error),
+        })
+      }
+      try {
+        const snapshot = await createWorkspaceSnapshotForProfile(profileId, {
+          syncToControlPlane: false,
+        })
+        await syncWorkspaceSnapshotToControlPlane(snapshot)
+      } catch (error) {
+        audit('shutdown_workspace_snapshot_sync_failed', {
+          profileId,
+          reason,
+          err: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+
+    if (context) {
       try {
         await uploadProfileStorageStateToControlPlane(profileId, {
           context,
@@ -2806,6 +3004,14 @@ async function syncConfigFromControlPlaneIfForced(options: ConfigSyncOptions = {
 
   if (!getDesktopAuthState().authenticated && !agentService?.getState().enabled) {
     return cachedResult
+  }
+  if (hasPendingLocalConfigChanges()) {
+    await flushPendingLocalConfigSync('auth.syncConfig', {
+      force: Boolean(options.force),
+    })
+    if (hasPendingLocalConfigChanges()) {
+      return lastConfigSyncResult ?? cachedResult
+    }
   }
   if (!options.force) {
     return cachedResult
@@ -4534,9 +4740,13 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     clearProfileStorageSyncTimer(profileId)
     runtimeContexts.delete(profileId)
     if (!gracefulShutdownInFlight && !runtimeShutdownFinalizing.has(profileId)) {
-      void uploadProfileStorageStateToControlPlane(profileId, {
-        reason: 'context-close',
-      })
+      void flushPendingLocalConfigSync('runtime-context-close', { profileId })
+      const persistedProfile = requireDatabase().getProfileById(profileId)
+      if (persistedProfile?.workspace) {
+        void syncWorkspaceSummaryToControlPlane(persistedProfile).catch(() => {})
+        void createWorkspaceSnapshotForProfile(profileId).catch(() => {})
+      }
+      void uploadProfileStorageStateToControlPlane(profileId, { reason: 'context-close' })
       void releaseProfileRuntimeLock(profileId)
       scheduler.markStopped(profileId)
       void syncProfileStatusToControlPlane(profileId, 'stopped')
@@ -4726,12 +4936,17 @@ async function performDesktopLogin(payload: {
         throw new Error('登录响应缺少用户或令牌')
       }
       saveDesktopAuth(apiBase, token, user)
-      const syncResult = await syncConfigFromControlPlaneIfForced({
-        force: true,
-        useLocalCacheOnError: true,
-      })
-      if (syncResult.usedLocalCache) {
-        audit('auth_login_config_sync_fallback', { apiBase, warning: syncResult.warningMessage })
+      if (hasLocalConfigData()) {
+        markLocalConfigDirty('本地环境数据已保留，正在准备同步到云端')
+        void flushPendingLocalConfigSync('auth.login', { apiBase })
+      } else {
+        const syncResult = await syncConfigFromControlPlaneIfForced({
+          force: true,
+          useLocalCacheOnError: true,
+        })
+        if (syncResult.usedLocalCache) {
+          audit('auth_login_config_sync_fallback', { apiBase, warning: syncResult.warningMessage })
+        }
       }
       return getDesktopAuthState()
     } catch (error) {
@@ -5484,7 +5699,7 @@ async function registerIpcHandlers(): Promise<void> {
     )
     assertProfileNameUniqueOrThrow(payload.name)
     const profile = requireDatabase().createProfile(payload)
-    await syncConfigToControlPlaneOrThrow()
+    scheduleProfileConfigAfterLocalMutation('create', profile)
     syncLegacyProfileMutationInBackground('create', profile)
     logEvent('info', 'profile', `Created profile "${profile.name}"`, profile.id)
     return profile
@@ -5504,7 +5719,7 @@ async function registerIpcHandlers(): Promise<void> {
     if (existingProfile?.status === 'error' && !runtimeContexts.has(profile.id)) {
       requireDatabase().setProfileStatus(profile.id, 'stopped')
     }
-    await syncConfigToControlPlaneOrThrow()
+    scheduleProfileConfigAfterLocalMutation('update', profile)
     syncLegacyProfileMutationInBackground('update', profile)
     logEvent('info', 'profile', `Updated profile "${profile.name}"`, profile.id)
     return profile
@@ -5520,7 +5735,7 @@ async function registerIpcHandlers(): Promise<void> {
   ipcMain.handle('profiles.clone', async (_event, profileId: string) => {
     ensureWritable('profiles.clone')
     const profile = requireDatabase().cloneProfile(profileId)
-    await syncConfigToControlPlaneOrThrow()
+    scheduleProfileConfigAfterLocalMutation('clone', profile)
     logEvent('info', 'profile', `Cloned profile "${profile.name}"`, profile.id)
     return profile
   })
@@ -5863,20 +6078,26 @@ async function bootstrap(): Promise<void> {
   traceStartup('create_main_window_begin')
   await createMainWindow()
   traceStartup('create_main_window_succeeded')
-  void syncConfigFromControlPlane()
-    .then(() => {
-      traceStartup('control_plane_sync_succeeded')
-    })
-    .catch((error) => {
-      traceStartup('control_plane_sync_failed', {
-        message: error instanceof Error ? error.message : String(error),
+  if (hasLocalConfigData()) {
+    traceStartup('control_plane_sync_skipped_local_first')
+    markLocalConfigDirty('检测到本地环境数据，已启用本地优先同步')
+    void flushPendingLocalConfigSync('startup.local-first')
+  } else {
+    void syncConfigFromControlPlane()
+      .then(() => {
+        traceStartup('control_plane_sync_succeeded')
       })
-      logEvent(
-        'warn',
-        'system',
-        `Initial config sync failed: ${error instanceof Error ? error.message : String(error)}`,
-      )
-    })
+      .catch((error) => {
+        traceStartup('control_plane_sync_failed', {
+          message: error instanceof Error ? error.message : String(error),
+        })
+        logEvent(
+          'warn',
+          'system',
+          `Initial config sync failed: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      })
+  }
   if (supportsAutoUpdate()) {
     setTimeout(() => {
       void checkForDesktopUpdates({ silent: true })

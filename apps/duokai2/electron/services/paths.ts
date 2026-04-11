@@ -158,12 +158,17 @@ export function ensureWorkspaceLayoutForProfile(
   ensureProfileDirectory(directoryInfo.profilesDir)
   mkdirSync(directoryInfo.workspacesDir, { recursive: true })
 
-  const normalizedPaths = normalizeWorkspacePathsForProfile(app, profile.id, profile.workspace?.paths)
+  const normalizedWorkspace = normalizeWorkspaceDescriptor(
+    profile.workspace,
+    profile.id,
+    profile.fingerprintConfig,
+  )
+  const normalizedPaths = normalizeWorkspacePathsForProfile(app, profile.id, normalizedWorkspace.paths)
   let workspace = {
-    ...profile.workspace!,
+    ...normalizedWorkspace,
     paths: normalizedPaths,
     resolvedEnvironment: {
-      ...profile.workspace!.resolvedEnvironment,
+      ...normalizedWorkspace.resolvedEnvironment,
       downloadsDir: normalizedPaths.downloadsDir,
     },
   }

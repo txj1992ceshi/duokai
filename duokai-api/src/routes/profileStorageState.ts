@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { findConfigProfileForUser, isMongoObjectId } from '../lib/configProfiles.js';
 import { connectMongo } from '../lib/mongodb.js';
 import { asyncHandler } from '../lib/http.js';
 import { requireUser } from '../middlewares/auth.js';
@@ -67,6 +68,22 @@ async function serializeStorageStateRecord(
   };
 }
 
+async function profileExistsForUser(userId: string, profileId: string): Promise<boolean> {
+  if (isMongoObjectId(profileId)) {
+    const profile = await ProfileModel.findOne({
+      _id: profileId,
+      userId,
+    })
+      .select('_id')
+      .lean();
+    if (profile) {
+      return true;
+    }
+  }
+  const { profile } = await findConfigProfileForUser(userId, profileId);
+  return Boolean(profile);
+}
+
 router.get(
   '/:profileId',
   asyncHandler(async (req, res) => {
@@ -74,12 +91,7 @@ router.get(
     const authUser = req.authUser!;
     const profileId = String(req.params.profileId || '').trim();
 
-    const profile = await ProfileModel.findOne({
-      _id: profileId,
-      userId: authUser.userId,
-    }).lean();
-
-    if (!profile) {
+    if (!(await profileExistsForUser(authUser.userId, profileId))) {
       res.status(404).json({ success: false, error: 'Profile not found' });
       return;
     }
@@ -108,12 +120,7 @@ router.put(
     const profileId = String(req.params.profileId || '').trim();
     const body = req.body || {};
 
-    const profile = await ProfileModel.findOne({
-      _id: profileId,
-      userId: authUser.userId,
-    }).lean();
-
-    if (!profile) {
+    if (!(await profileExistsForUser(authUser.userId, profileId))) {
       res.status(404).json({ success: false, error: 'Profile not found' });
       return;
     }

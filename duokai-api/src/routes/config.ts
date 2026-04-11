@@ -1,15 +1,12 @@
 import { Router } from 'express';
 import { asyncHandler } from '../lib/http.js';
+import { resolveUserConfigStateId } from '../lib/configProfiles.js';
 import { connectMongo } from '../lib/mongodb.js';
 import { normalizeWorkspacePayload } from '../lib/serializers.js';
 import { requireUser } from '../middlewares/auth.js';
 import { AgentConfigStateModel } from '../models/AgentConfigState.js';
 
 const router = Router();
-
-function resolveUserConfigStateId(userId: string) {
-  return `user:${userId}`;
-}
 
 function buildEmptySnapshot() {
   return {
