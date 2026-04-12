@@ -4,9 +4,11 @@ import { connectMongo } from '../lib/mongodb.js';
 import { HttpError, asyncHandler } from '../lib/http.js';
 import { normalizeConfigProfilePayload, resolveUserConfigStateId } from '../lib/configProfiles.js';
 import { normalizeWorkspacePayload } from '../lib/serializers.js';
+import { collectStorageDiagnosticsSummary } from '../lib/storageDiagnostics.js';
 import { requireAdmin } from '../middlewares/auth.js';
 import { AgentConfigStateModel } from '../models/AgentConfigState.js';
 import { ProfileStorageStateModel } from '../models/ProfileStorageState.js';
+import { WorkspaceSnapshotModel } from '../models/WorkspaceSnapshot.js';
 import { UserModel } from '../models/User.js';
 
 const router = Router();
@@ -103,17 +105,26 @@ function getSyncProfileStatus(profile: {
 }
 
 async function listCanonicalAdminProfiles() {
-  const [configStates, storageStates, users] = await Promise.all([
+  const [configStates, storageStates, workspaceSnapshots, users] = await Promise.all([
     AgentConfigStateModel.find({
       agentId: /^user:/,
     })
       .select('agentId profiles updatedAt')
       .lean(),
-    ProfileStorageStateModel.find({}).select('profileId').lean(),
+    ProfileStorageStateModel.find({}).select('profileId fileRef inlineStateJson stateJson').lean(),
+    WorkspaceSnapshotModel.find({}).select('profileId fileRef').lean(),
     UserModel.find({}).select('_id email name status').lean(),
   ]);
 
   const syncedProfileIds = new Set(storageStates.map((item) => String(item.profileId)));
+  const workspaceSnapshotProfileIds = new Set(workspaceSnapshots.map((item) => String(item.profileId)));
+  const storageStateBackedByFile = storageStates.filter((item) => String(item.fileRef || '').trim()).length;
+  const storageStateLegacyInlineCount = storageStates.filter(
+    (item) => item.inlineStateJson !== null || item.stateJson !== null
+  ).length;
+  const workspaceSnapshotBackedByFile = workspaceSnapshots.filter((item) =>
+    String(item.fileRef || '').trim()
+  ).length;
   const userMap = new Map(
     users.map((user) => [
       String(user._id),
@@ -145,6 +156,7 @@ async function listCanonicalAdminProfiles() {
         ownerEmail: owner.ownerEmail,
         ownerName: owner.ownerName,
         storageStateSynced: syncedProfileIds.has(String(normalized.id)),
+        workspaceSnapshotSynced: workspaceSnapshotProfileIds.has(String(normalized.id)),
       });
     }
   }
@@ -155,7 +167,16 @@ async function listCanonicalAdminProfiles() {
     return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0);
   });
 
-  return { profiles, users };
+  return {
+    profiles,
+    users,
+    storageSummary: {
+      storageStateBackedByFile,
+      workspaceSnapshotBackedByFile,
+      legacyInlinePayloadCount: storageStateLegacyInlineCount,
+      storageStateLegacyInlineCount,
+    },
+  };
 }
 
 router.get(
@@ -169,7 +190,10 @@ router.get(
     const page = Math.max(1, Number(req.query.page || 1));
     const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize || 10)));
 
-    const { profiles, users } = await listCanonicalAdminProfiles();
+    const [{ profiles, users, storageSummary }, diagnostics] = await Promise.all([
+      listCanonicalAdminProfiles(),
+      collectStorageDiagnosticsSummary(),
+    ]);
     const matchedUserIds =
       keyword.length > 0
         ? new Set(
@@ -225,7 +249,11 @@ router.get(
           .length,
         syncedStorageProfiles: filteredProfiles.filter((profile) => Boolean(profile.storageStateSynced))
           .length,
+        storageStateBackedByFile: storageSummary.storageStateBackedByFile,
+        workspaceSnapshotBackedByFile: storageSummary.workspaceSnapshotBackedByFile,
+        legacyInlinePayloadCount: diagnostics.legacyInlinePayloadCount,
       },
+      diagnostics,
     });
   })
 );

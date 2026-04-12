@@ -12,7 +12,10 @@ import {
   resolveWorkspaceSnapshotArtifact,
   writeWorkspaceSnapshotArtifact,
 } from '../lib/storageArtifacts.js';
-import { compactStorageStatePayload, shouldIncludeArtifactContent } from '../lib/storageView.js';
+import {
+  compactWorkspaceSnapshotDocument,
+  shouldIncludeArtifactContent,
+} from '../lib/storageView.js';
 import { WorkspaceSnapshotModel } from '../models/WorkspaceSnapshot.js';
 
 const router = Router();
@@ -52,13 +55,6 @@ export function normalizeWorkspaceSnapshotPayload(
     createdAt: String(body.createdAt || '').trim(),
     updatedAt: String(body.updatedAt || '').trim(),
   };
-}
-
-function normalizeSnapshotStorageState(value: unknown) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return {} as Record<string, unknown>;
-  }
-  return value as Record<string, unknown>;
 }
 
 async function serializeWorkspaceSnapshot(
@@ -261,14 +257,16 @@ router.put(
         snapshotId: payload.snapshotId,
         templateRevision: payload.templateRevision,
         templateFingerprintHash: payload.templateFingerprintHash,
-        manifest: payload.manifest,
+        ...compactWorkspaceSnapshotDocument({
+          manifest: payload.manifest,
+          workspaceMetadata: payload.workspaceMetadata,
+          storageState: payload.storageState,
+          directoryManifest: payload.directoryManifest,
+          healthSummary: payload.healthSummary,
+          consistencySummary: payload.consistencySummary,
+        }),
         workspaceManifestRef: payload.workspaceManifestRef,
         storageStateRef: payload.storageStateRef,
-        workspaceMetadata: payload.workspaceMetadata,
-        storageState: compactStorageStatePayload(normalizeSnapshotStorageState(payload.storageState)),
-        directoryManifest: [],
-        healthSummary: payload.healthSummary,
-        consistencySummary: payload.consistencySummary,
         validatedStartAt: payload.validatedStartAt,
         fileRef: artifact.fileRef || payload.fileRef,
         checksum: artifact.checksum || payload.checksum,

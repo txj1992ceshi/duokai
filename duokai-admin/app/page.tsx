@@ -26,6 +26,7 @@ type AdminProfile = {
   startupPlatform?: string;
   startupUrl?: string;
   storageStateSynced?: boolean;
+  workspaceSnapshotSynced?: boolean;
 };
 
 type ProfileStats = {
@@ -33,6 +34,16 @@ type ProfileStats = {
   readyProfiles: number;
   partialProfiles: number;
   syncedStorageProfiles: number;
+  storageStateBackedByFile: number;
+  workspaceSnapshotBackedByFile: number;
+  legacyInlinePayloadCount: number;
+};
+
+type StorageDiagnostics = {
+  fileRepositoryRoot?: string;
+  fileRepositoryReady?: boolean;
+  fileRepositoryWritable?: boolean;
+  unreadableFileRefCount?: number;
 };
 
 type RuntimeStatusPayload = {
@@ -68,7 +79,11 @@ export default function AdminHomePage() {
     readyProfiles: 0,
     partialProfiles: 0,
     syncedStorageProfiles: 0,
+    storageStateBackedByFile: 0,
+    workspaceSnapshotBackedByFile: 0,
+    legacyInlinePayloadCount: 0,
   });
+  const [storageDiagnostics, setStorageDiagnostics] = useState<StorageDiagnostics>({});
 
   const loadDashboard = useCallback(async () => {
     if (!authChecked) return;
@@ -100,6 +115,17 @@ export default function AdminHomePage() {
         readyProfiles: Number(profilesData?.stats?.readyProfiles || 0),
         partialProfiles: Number(profilesData?.stats?.partialProfiles || 0),
         syncedStorageProfiles: Number(profilesData?.stats?.syncedStorageProfiles || 0),
+        storageStateBackedByFile: Number(profilesData?.stats?.storageStateBackedByFile || 0),
+        workspaceSnapshotBackedByFile: Number(
+          profilesData?.stats?.workspaceSnapshotBackedByFile || 0
+        ),
+        legacyInlinePayloadCount: Number(profilesData?.stats?.legacyInlinePayloadCount || 0),
+      });
+      setStorageDiagnostics({
+        fileRepositoryRoot: String(profilesData?.diagnostics?.fileRepositoryRoot || ''),
+        fileRepositoryReady: Boolean(profilesData?.diagnostics?.fileRepositoryReady),
+        fileRepositoryWritable: Boolean(profilesData?.diagnostics?.fileRepositoryWritable),
+        unreadableFileRefCount: Number(profilesData?.diagnostics?.unreadableFileRefCount || 0),
       });
       setRuntimeStatus({
         online: Boolean(runtimeData?.online),
@@ -136,6 +162,9 @@ export default function AdminHomePage() {
   const totalProfiles = profileStats.totalProfiles;
   const readyProfiles = profileStats.readyProfiles;
   const syncedStorageProfiles = profileStats.syncedStorageProfiles;
+  const storageStateBackedByFile = profileStats.storageStateBackedByFile;
+  const workspaceSnapshotBackedByFile = profileStats.workspaceSnapshotBackedByFile;
+  const legacyInlinePayloadCount = profileStats.legacyInlinePayloadCount;
   const sessionCount = runtimeStatus.sessions?.length || 0;
   const runtimeOnline = Boolean(runtimeStatus.online);
 
@@ -167,8 +196,37 @@ export default function AdminHomePage() {
           value={syncedStorageProfiles}
           accentClassName="text-blue-400"
         />
+        <StatCard
+          label="文件化登录态数"
+          value={storageStateBackedByFile}
+          accentClassName="text-cyan-400"
+        />
+        <StatCard
+          label="文件化快照数"
+          value={workspaceSnapshotBackedByFile}
+          accentClassName="text-indigo-400"
+        />
+        <StatCard
+          label="历史内联残留数"
+          value={legacyInlinePayloadCount}
+          accentClassName="text-yellow-400"
+        />
         <StatCard label="运行中 Session 数" value={sessionCount} />
         <StatCard label="Runtime 在线状态" value={runtimeOnline ? '在线' : '离线'} />
+      </div>
+
+      <div className="rounded-2xl border border-neutral-800 bg-neutral-900 px-5 py-4 text-sm text-neutral-300">
+        <div className="font-medium text-white">文件仓库诊断</div>
+        <div className="mt-2">根目录：{storageDiagnostics.fileRepositoryRoot || '-'}</div>
+        <div className="mt-1">
+          状态：
+          {storageDiagnostics.fileRepositoryReady && storageDiagnostics.fileRepositoryWritable
+            ? ' 可用'
+            : ' 不可用'}
+        </div>
+        <div className="mt-1">
+          不可读文件引用数：{Number(storageDiagnostics.unreadableFileRefCount || 0)}
+        </div>
       </div>
     </main>
   );

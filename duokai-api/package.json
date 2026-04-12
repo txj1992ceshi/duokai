@@ -9,6 +9,7 @@
     "lint": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test src/**/*.test.ts",
     "cleanup:storage": "node --env-file=.env.local --import tsx scripts/cleanup-storage-artifacts.ts",
+    "backfill:storage": "node --env-file=.env.local --import tsx scripts/backfill-storage-artifacts.ts",
     "check:agent-env": "node --env-file=.env.local scripts/agent-env-check.mjs",
     "verify:agent-phase1": "node --env-file=.env.local scripts/agent-phase1-verify.mjs",
     "smoke:agent": "node --env-file=.env.local scripts/agent-smoke.mjs",
