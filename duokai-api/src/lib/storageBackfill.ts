@@ -4,7 +4,11 @@ import {
   writeStorageStateArtifact,
   writeWorkspaceSnapshotArtifact,
 } from './storageArtifacts.js';
-import { compactWorkspaceSnapshotDocument, hasLegacyWorkspaceSnapshotPayload } from './storageView.js';
+import {
+  compactWorkspaceSnapshotDocument,
+  hasLegacyInlineStorageStatePayload,
+  hasLegacyWorkspaceSnapshotPayload,
+} from './storageView.js';
 import { ProfileStorageStateModel } from '../models/ProfileStorageState.js';
 import { WorkspaceSnapshotModel } from '../models/WorkspaceSnapshot.js';
 
@@ -22,11 +26,6 @@ export interface StorageBackfillResult {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function hasInlineStorageStatePayload(value: Record<string, unknown>): boolean {
-  return value.inlineStateJson !== null && value.inlineStateJson !== undefined
-    || value.stateJson !== null && value.stateJson !== undefined;
 }
 
 function buildSnapshotArtifactPayload(snapshot: Record<string, unknown>) {
@@ -105,7 +104,7 @@ export async function backfillStorageArtifacts(
   for (const item of storageStates) {
     try {
       const record = item as Record<string, unknown>;
-      const hasInlinePayload = hasInlineStorageStatePayload(record);
+      const hasInlinePayload = hasLegacyInlineStorageStatePayload(record);
       const hasFileRef = String(record.fileRef || '').trim().length > 0;
       if (!hasInlinePayload) {
         continue;

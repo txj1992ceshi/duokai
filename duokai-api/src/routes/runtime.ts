@@ -3,6 +3,7 @@ import { connectMongo } from '../lib/mongodb.js';
 import { asyncHandler } from '../lib/http.js';
 import { getForwardAuthHeaders, getRuntimeApiKey, getRuntimeUrl } from '../lib/runtime.js';
 import { resolveStorageStateJson } from '../lib/storageArtifacts.js';
+import { hasLegacyInlineStorageStatePayload } from '../lib/storageView.js';
 import {
   classifyRuntimeProxyFailure,
   classifyStorageArtifactFailure,
@@ -165,8 +166,7 @@ router.post(
           });
           if (
             payload.storageState === null &&
-            (syncedStorageState.inlineStateJson !== null ||
-              syncedStorageState.stateJson !== null ||
+            (hasLegacyInlineStorageStatePayload(syncedStorageState as Record<string, unknown>) ||
               String(syncedStorageState.fileRef || '').trim())
           ) {
             res.status(424).json({

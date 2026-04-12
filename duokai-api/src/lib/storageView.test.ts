@@ -5,6 +5,7 @@ import {
   compactWorkspaceMetadata,
   compactWorkspaceSnapshotDocument,
   compactWorkspaceSnapshotManifest,
+  hasLegacyInlineStorageStatePayload,
   hasLegacyWorkspaceSnapshotPayload,
   shouldIncludeArtifactContent,
 } from './storageView.js';
@@ -37,6 +38,27 @@ test('compactStorageStatePayload strips embedded stateJson while preserving meta
     inlineStateJson: null,
     stateJson: null,
   });
+});
+
+test('hasLegacyInlineStorageStatePayload detects only inline storage payload residue', () => {
+  assert.equal(
+    hasLegacyInlineStorageStatePayload({
+      version: 2,
+      inlineStateJson: null,
+      stateJson: null,
+      fileRef: '/srv/duokai/files/storage-state-backup/u/p.json.gz',
+    }),
+    false
+  );
+
+  assert.equal(
+    hasLegacyInlineStorageStatePayload({
+      version: 2,
+      inlineStateJson: { cookies: [] },
+      stateJson: null,
+    }),
+    true
+  );
 });
 
 test('compactWorkspaceSnapshotManifest keeps only summary keys needed for indexing', () => {

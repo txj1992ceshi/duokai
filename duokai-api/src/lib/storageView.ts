@@ -21,6 +21,13 @@ export function compactStorageStatePayload(value: unknown): Record<string, unkno
   return next;
 }
 
+export function hasLegacyInlineStorageStatePayload(value: Record<string, unknown>): boolean {
+  return (
+    (value.inlineStateJson !== null && value.inlineStateJson !== undefined) ||
+    (value.stateJson !== null && value.stateJson !== undefined)
+  );
+}
+
 export function compactWorkspaceSnapshotManifest(value: unknown): Record<string, unknown> {
   if (!isRecord(value)) {
     return {};

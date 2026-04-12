@@ -2,7 +2,10 @@ import { access } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 
 import { ensureFileRepositoryRoot, getFileRepositoryRoot } from './fileRepository.js';
-import { hasLegacyWorkspaceSnapshotPayload } from './storageView.js';
+import {
+  hasLegacyInlineStorageStatePayload,
+  hasLegacyWorkspaceSnapshotPayload,
+} from './storageView.js';
 import { ProfileStorageStateModel } from '../models/ProfileStorageState.js';
 import { WorkspaceSnapshotModel } from '../models/WorkspaceSnapshot.js';
 
@@ -16,13 +19,6 @@ export interface StorageDiagnosticsSummary {
   storageStateLegacyInlineCount: number;
   workspaceSnapshotLegacyInlineCount: number;
   unreadableFileRefCount: number;
-}
-
-function hasInlineStorageStatePayload(value: Record<string, unknown>): boolean {
-  return (
-    (value.inlineStateJson !== null && value.inlineStateJson !== undefined) ||
-    (value.stateJson !== null && value.stateJson !== undefined)
-  );
 }
 
 export async function collectStorageDiagnosticsSummary(): Promise<StorageDiagnosticsSummary> {
@@ -52,7 +48,7 @@ export async function collectStorageDiagnosticsSummary(): Promise<StorageDiagnos
     (item) => String(item.fileRef || '').trim().length > 0
   ).length;
   const storageStateLegacyInlineCount = storageStates.filter((item) =>
-    hasInlineStorageStatePayload(item as Record<string, unknown>)
+    hasLegacyInlineStorageStatePayload(item as Record<string, unknown>)
   ).length;
 
   const workspaceSnapshotBackedByFile = workspaceSnapshots.filter(

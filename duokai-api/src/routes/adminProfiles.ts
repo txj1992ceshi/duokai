@@ -5,6 +5,7 @@ import { HttpError, asyncHandler } from '../lib/http.js';
 import { normalizeConfigProfilePayload, resolveUserConfigStateId } from '../lib/configProfiles.js';
 import { normalizeWorkspacePayload } from '../lib/serializers.js';
 import { collectStorageDiagnosticsSummary } from '../lib/storageDiagnostics.js';
+import { hasLegacyInlineStorageStatePayload } from '../lib/storageView.js';
 import { requireAdmin } from '../middlewares/auth.js';
 import { AgentConfigStateModel } from '../models/AgentConfigState.js';
 import { ProfileStorageStateModel } from '../models/ProfileStorageState.js';
@@ -120,7 +121,7 @@ async function listCanonicalAdminProfiles() {
   const workspaceSnapshotProfileIds = new Set(workspaceSnapshots.map((item) => String(item.profileId)));
   const storageStateBackedByFile = storageStates.filter((item) => String(item.fileRef || '').trim()).length;
   const storageStateLegacyInlineCount = storageStates.filter(
-    (item) => item.inlineStateJson !== null || item.stateJson !== null
+    (item) => hasLegacyInlineStorageStatePayload(item as Record<string, unknown>)
   ).length;
   const workspaceSnapshotBackedByFile = workspaceSnapshots.filter((item) =>
     String(item.fileRef || '').trim()
