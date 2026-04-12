@@ -904,6 +904,15 @@ export interface ConfigSyncResult {
   usedLocalCache: boolean
   message: string
   warningMessage: string
+  remoteProfileCount?: number
+  localProfileCount?: number
+  localProfileCountAfterPull?: number
+  orphanProfileCount?: number
+  removedLocalOrphanCount?: number
+  deletedRemoteCount?: number
+  upsertedProfileCount?: number
+  updatedProfileCount?: number
+  globalConfigChanged?: boolean
 }
 
 export interface ProfileDirectoryInfo {

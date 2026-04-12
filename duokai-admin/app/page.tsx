@@ -28,6 +28,13 @@ type AdminProfile = {
   storageStateSynced?: boolean;
 };
 
+type ProfileStats = {
+  totalProfiles: number;
+  readyProfiles: number;
+  partialProfiles: number;
+  syncedStorageProfiles: number;
+};
+
 type RuntimeStatusPayload = {
   online?: boolean;
   sessions?: Array<{ sessionId?: string }>;
@@ -56,6 +63,12 @@ export default function AdminHomePage() {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [profiles, setProfiles] = useState<AdminProfile[]>([]);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatusPayload>({});
+  const [profileStats, setProfileStats] = useState<ProfileStats>({
+    totalProfiles: 0,
+    readyProfiles: 0,
+    partialProfiles: 0,
+    syncedStorageProfiles: 0,
+  });
 
   const loadDashboard = useCallback(async () => {
     if (!authChecked) return;
@@ -82,6 +95,12 @@ export default function AdminHomePage() {
 
       setUsers(Array.isArray(usersData.users) ? usersData.users : []);
       setProfiles(Array.isArray(profilesData.profiles) ? profilesData.profiles : []);
+      setProfileStats({
+        totalProfiles: Number(profilesData?.stats?.totalProfiles || 0),
+        readyProfiles: Number(profilesData?.stats?.readyProfiles || 0),
+        partialProfiles: Number(profilesData?.stats?.partialProfiles || 0),
+        syncedStorageProfiles: Number(profilesData?.stats?.syncedStorageProfiles || 0),
+      });
       setRuntimeStatus({
         online: Boolean(runtimeData?.online),
         sessions: Array.isArray(runtimeData?.sessions) ? runtimeData.sessions : [],
@@ -114,9 +133,9 @@ export default function AdminHomePage() {
   const disabledUsers = users.filter((u) => u.status === 'disabled').length;
   const adminUsers = users.filter((u) => u.role === 'admin').length;
 
-  const totalProfiles = profiles.length;
-  const readyProfiles = profiles.filter((p) => getProfileSyncSummary(p) === 'Ready').length;
-  const syncedStorageProfiles = profiles.filter((p) => Boolean(p.storageStateSynced)).length;
+  const totalProfiles = profileStats.totalProfiles;
+  const readyProfiles = profileStats.readyProfiles;
+  const syncedStorageProfiles = profileStats.syncedStorageProfiles;
   const sessionCount = runtimeStatus.sessions?.length || 0;
   const runtimeOnline = Boolean(runtimeStatus.online);
 

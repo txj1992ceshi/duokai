@@ -2,9 +2,10 @@ import { Router } from 'express';
 import { logAdminAction } from '../lib/audit.js';
 import { connectMongo } from '../lib/mongodb.js';
 import { HttpError, asyncHandler } from '../lib/http.js';
-import { serializeProfile } from '../lib/serializers.js';
+import { normalizeConfigProfilePayload, resolveUserConfigStateId } from '../lib/configProfiles.js';
+import { normalizeWorkspacePayload } from '../lib/serializers.js';
 import { requireAdmin } from '../middlewares/auth.js';
-import { ProfileModel } from '../models/Profile.js';
+import { AgentConfigStateModel } from '../models/AgentConfigState.js';
 import { ProfileStorageStateModel } from '../models/ProfileStorageState.js';
 import { UserModel } from '../models/User.js';
 
@@ -14,6 +15,70 @@ router.use(requireAdmin);
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeAdminConfigProfile(profile: unknown) {
+  if (!profile || typeof profile !== 'object') {
+    return null;
+  }
+  const raw = profile as Record<string, unknown>;
+  const profileId = String(raw.id || '').trim();
+  if (!profileId) {
+    return null;
+  }
+  const normalized = normalizeConfigProfilePayload(profileId, raw) as Record<string, unknown>;
+  const fingerprintConfig =
+    normalized.fingerprintConfig && typeof normalized.fingerprintConfig === 'object'
+      ? (normalized.fingerprintConfig as Record<string, unknown>)
+      : {};
+  const proxySettings =
+    fingerprintConfig.proxySettings && typeof fingerprintConfig.proxySettings === 'object'
+      ? (fingerprintConfig.proxySettings as Record<string, unknown>)
+      : {};
+  const basicSettings =
+    fingerprintConfig.basicSettings && typeof fingerprintConfig.basicSettings === 'object'
+      ? (fingerprintConfig.basicSettings as Record<string, unknown>)
+      : {};
+  const runtimeMetadata =
+    fingerprintConfig.runtimeMetadata && typeof fingerprintConfig.runtimeMetadata === 'object'
+      ? (fingerprintConfig.runtimeMetadata as Record<string, unknown>)
+      : {};
+  const deviceProfile =
+    normalized.deviceProfile && typeof normalized.deviceProfile === 'object'
+      ? (normalized.deviceProfile as Record<string, unknown>)
+      : {};
+  const workspace = normalizeWorkspacePayload(profileId, normalized.workspace);
+
+  return {
+    id: profileId,
+    name: String(normalized.name || '').trim(),
+    userId: '',
+    status: String(normalized.status || 'stopped').trim() || 'stopped',
+    groupId: String(normalized.groupName || '').trim(),
+    proxyType: String(proxySettings.proxyType || proxySettings.proxyMode || 'direct').trim() || 'direct',
+    proxyHost: String(proxySettings.host || '').trim(),
+    proxyPort: String(proxySettings.port || '').trim(),
+    expectedProxyIp: String(runtimeMetadata.lastResolvedIp || '').trim(),
+    ua: String(fingerprintConfig.userAgent || deviceProfile.userAgent || '').trim(),
+    seed: String(fingerprintConfig.language || '').trim(),
+    isMobile:
+      String(deviceProfile.deviceClass || '').trim() === 'mobile' ||
+      String(deviceProfile.platform || '').trim().toLowerCase().includes('android') ||
+      String(deviceProfile.platform || '').trim().toLowerCase().includes('ios'),
+    startupPlatform: String(
+      normalized.platform || basicSettings.platform || normalized.environmentPurpose || ''
+    ).trim(),
+    startupUrl: String(basicSettings.customPlatformUrl || '').trim(),
+    storageStateSynced: false,
+    ownerEmail: '',
+    ownerName: '',
+    createdAt: String(normalized.createdAt || '').trim(),
+    updatedAt: String(normalized.updatedAt || '').trim(),
+    workspace,
+    environmentPurpose: String(normalized.environmentPurpose || '').trim(),
+    notes: String(normalized.notes || '').trim(),
+    tags: Array.isArray(normalized.tags) ? normalized.tags : [],
+  };
 }
 
 function getSyncProfileStatus(profile: {
@@ -37,6 +102,62 @@ function getSyncProfileStatus(profile: {
   return 'empty';
 }
 
+async function listCanonicalAdminProfiles() {
+  const [configStates, storageStates, users] = await Promise.all([
+    AgentConfigStateModel.find({
+      agentId: /^user:/,
+    })
+      .select('agentId profiles updatedAt')
+      .lean(),
+    ProfileStorageStateModel.find({}).select('profileId').lean(),
+    UserModel.find({}).select('_id email name status').lean(),
+  ]);
+
+  const syncedProfileIds = new Set(storageStates.map((item) => String(item.profileId)));
+  const userMap = new Map(
+    users.map((user) => [
+      String(user._id),
+      {
+        ownerEmail: user.email || '',
+        ownerName: user.name || '',
+        status: user.status || '',
+      },
+    ]),
+  );
+
+  const profiles: Array<Record<string, unknown>> = [];
+  for (const state of configStates) {
+    const agentId = String(state.agentId || '').trim();
+    if (!agentId.startsWith('user:')) {
+      continue;
+    }
+    const userId = agentId.slice('user:'.length);
+    const owner = userMap.get(userId) || { ownerEmail: '', ownerName: '', status: '' };
+    const stateProfiles = Array.isArray(state.profiles) ? state.profiles : [];
+    for (const rawProfile of stateProfiles) {
+      const normalized = normalizeAdminConfigProfile(rawProfile);
+      if (!normalized) {
+        continue;
+      }
+      profiles.push({
+        ...normalized,
+        userId,
+        ownerEmail: owner.ownerEmail,
+        ownerName: owner.ownerName,
+        storageStateSynced: syncedProfileIds.has(String(normalized.id)),
+      });
+    }
+  }
+
+  profiles.sort((left, right) => {
+    const rightTime = Date.parse(String(right.updatedAt || right.createdAt || ''));
+    const leftTime = Date.parse(String(left.updatedAt || left.createdAt || ''));
+    return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0);
+  });
+
+  return { profiles, users };
+}
+
 router.get(
   '/',
   asyncHandler(async (req, res) => {
@@ -48,62 +169,51 @@ router.get(
     const page = Math.max(1, Number(req.query.page || 1));
     const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize || 10)));
 
-    const profileQuery: Record<string, unknown> = {};
-    if (userId) {
-      profileQuery.userId = userId;
-    }
+    const { profiles, users } = await listCanonicalAdminProfiles();
+    const matchedUserIds =
+      keyword.length > 0
+        ? new Set(
+            users
+              .filter((user) => {
+                const regex = new RegExp(escapeRegExp(keyword), 'i');
+                return regex.test(String(user.email || '')) || regex.test(String(user.name || ''));
+              })
+              .map((user) => String(user._id)),
+          )
+        : null;
+    const keywordRegex = keyword.length > 0 ? new RegExp(escapeRegExp(keyword), 'i') : null;
 
-    if (keyword) {
-      const regex = new RegExp(escapeRegExp(keyword), 'i');
-      const matchedUsers = await UserModel.find({
-        $or: [{ email: regex }, { name: regex }],
-      })
-        .select('_id')
-        .lean();
+    const filteredProfiles = profiles.filter((profile) => {
+      if (userId && String(profile.userId || '') !== userId) {
+        return false;
+      }
 
-      profileQuery.$or = [
-        { name: regex },
-        { proxyHost: regex },
-        { expectedProxyIp: regex },
-        ...(matchedUsers.length ? [{ userId: { $in: matchedUsers.map((user) => user._id) } }] : []),
-      ];
-    }
+      if (keywordRegex) {
+        const matchesKeyword =
+          keywordRegex.test(String(profile.name || '')) ||
+          keywordRegex.test(String(profile.proxyHost || '')) ||
+          keywordRegex.test(String(profile.expectedProxyIp || '')) ||
+          keywordRegex.test(String(profile.ownerEmail || '')) ||
+          keywordRegex.test(String(profile.ownerName || '')) ||
+          Boolean(matchedUserIds?.has(String(profile.userId || '')));
+        if (!matchesKeyword) {
+          return false;
+        }
+      }
 
-    const [profiles, storageStates, users] = await Promise.all([
-      ProfileModel.find(profileQuery).sort({ createdAt: -1 }).lean(),
-      ProfileStorageStateModel.find({}).select('profileId').lean(),
-      UserModel.find({}).select('_id email name status').lean(),
-    ]);
+      if (syncFilter === 'ready' || syncFilter === 'partial' || syncFilter === 'empty') {
+        return getSyncProfileStatus(profile) === syncFilter;
+      }
 
-    const syncedProfileIds = new Set(storageStates.map((item) => String(item.profileId)));
-    const userMap = new Map(
-      users.map((user) => [
-        String(user._id),
-        {
-          ownerEmail: user.email,
-          ownerName: user.name || '',
-        },
-      ])
-    );
-
-    const hydratedProfiles = profiles.map((profile) => ({
-      ...serializeProfile(profile, syncedProfileIds.has(String(profile._id))),
-      ...(userMap.get(String(profile.userId)) || { ownerEmail: '', ownerName: '' }),
-    }));
-
-    const filteredProfiles =
-      syncFilter === 'ready' || syncFilter === 'partial' || syncFilter === 'empty'
-        ? hydratedProfiles.filter((profile) => getSyncProfileStatus(profile) === syncFilter)
-        : hydratedProfiles;
+      return true;
+    });
 
     const total = filteredProfiles.length;
     const pagedProfiles = filteredProfiles.slice((page - 1) * pageSize, page * pageSize);
 
     res.json({
       success: true,
-      profiles: pagedProfiles.map((profile) => ({
-        ...profile,
-      })),
+      profiles: pagedProfiles,
       total,
       page,
       pageSize,
@@ -111,9 +221,8 @@ router.get(
         totalProfiles: total,
         readyProfiles: filteredProfiles.filter((profile) => getSyncProfileStatus(profile) === 'ready')
           .length,
-        partialProfiles: filteredProfiles.filter(
-          (profile) => getSyncProfileStatus(profile) === 'partial'
-        ).length,
+        partialProfiles: filteredProfiles.filter((profile) => getSyncProfileStatus(profile) === 'partial')
+          .length,
         syncedStorageProfiles: filteredProfiles.filter((profile) => Boolean(profile.storageStateSynced))
           .length,
       },
@@ -126,26 +235,18 @@ router.get(
   asyncHandler(async (req, res) => {
     await connectMongo();
 
-    const [profile, storageState, users] = await Promise.all([
-      ProfileModel.findById(req.params.id).lean(),
-      ProfileStorageStateModel.findOne({ profileId: req.params.id }).select('_id').lean(),
-      UserModel.find({}).select('_id email name').lean(),
-    ]);
+    const profileId = String(req.params.id || '').trim();
+    const { profiles } = await listCanonicalAdminProfiles();
+    const profile = profiles.find((item) => String(item.id || '') === profileId) || null;
 
     if (!profile) {
       res.status(404).json({ success: false, error: 'Profile not found' });
       return;
     }
 
-    const owner = users.find((item) => String(item._id) === String(profile.userId));
-
     res.json({
       success: true,
-      profile: {
-        ...serializeProfile(profile, !!storageState),
-        ownerEmail: owner?.email || '',
-        ownerName: owner?.name || '',
-      },
+      profile,
     });
   })
 );
@@ -155,26 +256,25 @@ router.patch(
   asyncHandler(async (req, res) => {
     await connectMongo();
 
+    const profileId = String(req.params.id || '').trim();
     const nextUserId = typeof req.body?.userId === 'string' ? req.body.userId.trim() : '';
+    if (!profileId) {
+      throw new HttpError(400, 'profileId is required');
+    }
     if (!nextUserId) {
       throw new HttpError(400, 'userId is required');
     }
 
-    const [profile, targetUser, users, storageState] = await Promise.all([
-      ProfileModel.findById(req.params.id),
+    const [configStates, targetUser, users, storageState] = await Promise.all([
+      AgentConfigStateModel.find({ agentId: /^user:/ }).lean(),
       UserModel.findById(nextUserId).lean(),
       UserModel.find({}).select('_id email name').lean(),
-      ProfileStorageStateModel.findOne({ profileId: req.params.id }).select('_id').lean(),
+      ProfileStorageStateModel.findOne({ profileId }).select('_id').lean(),
     ]);
-
-    if (!profile) {
-      throw new HttpError(404, 'Profile not found');
-    }
 
     if (!targetUser) {
       throw new HttpError(404, 'Target user not found');
     }
-
     if (targetUser.status !== 'active') {
       throw new HttpError(400, 'Target user is disabled');
     }
@@ -186,28 +286,93 @@ router.patch(
           ownerEmail: user.email || '',
           ownerName: user.name || '',
         },
-      ])
+      ]),
     );
 
-    const fromUserId = String(profile.userId);
-    const fromOwner = ownerMap.get(fromUserId) || { ownerEmail: '', ownerName: '' };
+    const sourceState = configStates.find((state) =>
+      Array.isArray(state.profiles) &&
+      state.profiles.some(
+        (item: unknown) =>
+          Boolean(item) &&
+          typeof item === 'object' &&
+          String((item as Record<string, unknown>).id || '').trim() === profileId,
+      ),
+    );
+
+    if (!sourceState) {
+      throw new HttpError(404, 'Profile not found');
+    }
+
+    const sourceUserId = String(sourceState.agentId || '').replace(/^user:/, '');
+    const sourceProfiles = Array.isArray(sourceState.profiles) ? sourceState.profiles : [];
+    const movedProfile =
+      sourceProfiles.find(
+        (item: unknown) =>
+          Boolean(item) &&
+          typeof item === 'object' &&
+          String((item as Record<string, unknown>).id || '').trim() === profileId,
+      ) || null;
+
+    if (!movedProfile) {
+      throw new HttpError(404, 'Profile not found');
+    }
+
+    if (sourceUserId !== nextUserId) {
+      const nextSourceProfiles = sourceProfiles.filter((item: unknown) => {
+        if (!item || typeof item !== 'object') {
+          return true;
+        }
+        return String((item as Record<string, unknown>).id || '').trim() !== profileId;
+      });
+
+      await AgentConfigStateModel.findOneAndUpdate(
+        { agentId: sourceState.agentId },
+        {
+          $set: { profiles: nextSourceProfiles },
+          $inc: { syncVersion: 1 },
+        },
+        { new: true },
+      );
+
+      const targetState = configStates.find(
+        (state) => String(state.agentId || '') === resolveUserConfigStateId(nextUserId),
+      );
+      const targetProfiles = Array.isArray(targetState?.profiles) ? targetState!.profiles : [];
+      const dedupedTargetProfiles = targetProfiles.filter((item: unknown) => {
+        if (!item || typeof item !== 'object') {
+          return true;
+        }
+        return String((item as Record<string, unknown>).id || '').trim() !== profileId;
+      });
+
+      await AgentConfigStateModel.findOneAndUpdate(
+        { agentId: resolveUserConfigStateId(nextUserId) },
+        {
+          $set: { profiles: [...dedupedTargetProfiles, movedProfile] },
+          ...(targetState
+            ? { $inc: { syncVersion: 1 } }
+            : { $setOnInsert: { syncVersion: 1, globalConfigSyncVersion: 0 } }),
+        },
+        { upsert: true, new: true },
+      );
+    }
+
+    const normalized = normalizeAdminConfigProfile(movedProfile);
     const toOwner = ownerMap.get(String(targetUser._id)) || {
       ownerEmail: targetUser.email || '',
       ownerName: targetUser.name || '',
     };
-
-    profile.userId = targetUser._id;
-    await profile.save();
+    const fromOwner = ownerMap.get(sourceUserId) || { ownerEmail: '', ownerName: '' };
 
     await logAdminAction({
       adminUserId: req.authUser!.userId,
       adminEmail: req.authUser!.email,
       action: 'transfer_profile_ownership',
       targetType: 'profile',
-      targetId: String(profile._id),
-      targetLabel: profile.name,
+      targetId: profileId,
+      targetLabel: normalized?.name || profileId,
       detail: {
-        fromUserId,
+        fromUserId: sourceUserId,
         fromOwnerEmail: fromOwner.ownerEmail,
         toUserId: String(targetUser._id),
         toOwnerEmail: toOwner.ownerEmail,
@@ -217,9 +382,11 @@ router.patch(
     res.json({
       success: true,
       profile: {
-        ...serializeProfile(profile.toObject(), !!storageState),
+        ...normalized,
+        userId: String(targetUser._id),
         ownerEmail: toOwner.ownerEmail,
         ownerName: toOwner.ownerName,
+        storageStateSynced: Boolean(storageState),
       },
     });
   })
