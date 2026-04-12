@@ -790,6 +790,11 @@ function hasPendingProfileConfigChanges(profileId: string): boolean {
   return profile.fingerprintConfig.runtimeMetadata.lastEnvironmentSyncStatus === 'pending'
 }
 
+function hasUnsafeLocalProfileConfigState(profile: ProfileRecord): boolean {
+  const status = profile.fingerprintConfig.runtimeMetadata.lastEnvironmentSyncStatus
+  return status === 'pending' || status === 'conflict' || status === 'syncing'
+}
+
 function buildPortableProfileConfig(profile: ProfileRecord): ProfileRecord {
   return {
     ...profile,
@@ -807,6 +812,66 @@ function buildPortableProfileConfig(profile: ProfileRecord): ProfileRecord {
       },
     },
   }
+}
+
+type EnvironmentIndexApplyMode = 'index-only' | 'full-replace'
+
+function applyRemoteProfileIndexToLocalProfile(
+  localProfile: ProfileRecord,
+  remoteProfile: ProfileRecord,
+): { profile: ProfileRecord; changed: boolean } {
+  const metadata = localProfile.fingerprintConfig.runtimeMetadata
+  const hadMissingCloudIndexMarker =
+    metadata.lastEnvironmentSyncStatus === 'recovery' &&
+    /云端环境清单中已不存在当前环境/.test(metadata.lastEnvironmentSyncMessage || '')
+  const changed =
+    localProfile.name !== remoteProfile.name ||
+    localProfile.groupName !== remoteProfile.groupName ||
+    localProfile.notes !== remoteProfile.notes ||
+    localProfile.environmentPurpose !== remoteProfile.environmentPurpose ||
+    JSON.stringify(localProfile.tags) !== JSON.stringify(remoteProfile.tags) ||
+    hadMissingCloudIndexMarker
+  if (!changed) {
+    return { profile: localProfile, changed: false }
+  }
+  const persisted = persistProfile({
+    ...localProfile,
+    name: remoteProfile.name,
+    groupName: remoteProfile.groupName,
+    tags: Array.isArray(remoteProfile.tags) ? remoteProfile.tags : [],
+    notes: remoteProfile.notes,
+    environmentPurpose: remoteProfile.environmentPurpose,
+  })
+  return { profile: persisted, changed: true }
+}
+
+function markProfileMissingFromCloudIndex(profile: ProfileRecord): void {
+  if (
+    profile.status === 'running' ||
+    runtimeContexts.has(profile.id) ||
+    isProfileLaunchInFlight(profile.id) ||
+    hasUnsafeLocalProfileConfigState(profile)
+  ) {
+    return
+  }
+  updateEnvironmentSyncMetadata(profile.id, {
+    status: 'recovery',
+    message: '云端环境清单中已不存在当前环境，本地环境已保留，请手动上传或从云端拉取后处理',
+  })
+}
+
+function clearMissingCloudIndexMarker(profile: ProfileRecord): void {
+  const metadata = profile.fingerprintConfig.runtimeMetadata
+  if (
+    metadata.lastEnvironmentSyncStatus !== 'recovery' ||
+    !/云端环境清单中已不存在当前环境/.test(metadata.lastEnvironmentSyncMessage || '')
+  ) {
+    return
+  }
+  updateEnvironmentSyncMetadata(profile.id, {
+    status: 'synced',
+    message: '环境清单已与云端对齐',
+  })
 }
 
 function isManualProfileSyncReason(reason: string): boolean {
@@ -930,15 +995,24 @@ function applyPulledProfileToLocalDatabase(
   remoteProfile: ProfileRecord,
   options: {
     preservePendingLocalChanges?: boolean
+    mode?: EnvironmentIndexApplyMode
   } = {},
 ): { profile: ProfileRecord; changed: boolean } {
+  const mode = options.mode ?? 'full-replace'
   const localProfile = requireDatabase().getProfileById(remoteProfile.id)
   if (
+    mode === 'full-replace' &&
     options.preservePendingLocalChanges !== false &&
     localProfile &&
     hasPendingProfileConfigChanges(localProfile.id)
   ) {
     return { profile: localProfile, changed: false }
+  }
+
+  if (localProfile && mode === 'index-only') {
+    const merged = applyRemoteProfileIndexToLocalProfile(localProfile, remoteProfile)
+    clearMissingCloudIndexMarker(merged.profile)
+    return merged
   }
 
   const nextProfile = requireDatabase().updateProfile({
@@ -990,16 +1064,26 @@ async function syncEnvironmentIndexFromControlPlane(): Promise<ConfigSyncResult>
 
   const payload = await requestControlPlane('/api/config/profiles')
   const remoteProfiles = Array.isArray(payload.profiles) ? (payload.profiles as ProfileRecord[]) : []
+  const remoteProfileIds = new Set(
+    remoteProfiles.map((profile) => String(profile?.id || '').trim()).filter(Boolean),
+  )
   let syncedCount = 0
 
   for (const remoteProfile of remoteProfiles) {
     if (!remoteProfile?.id) {
       continue
     }
-    const applied = applyPulledProfileToLocalDatabase(remoteProfile)
+    const applied = applyPulledProfileToLocalDatabase(remoteProfile, { mode: 'index-only' })
     if (applied.changed) {
       syncedCount += 1
     }
+  }
+
+  for (const localProfile of requireDatabase().listProfiles()) {
+    if (remoteProfileIds.has(localProfile.id)) {
+      continue
+    }
+    markProfileMissingFromCloudIndex(localProfile)
   }
 
   const totalCount = requireDatabase().listProfiles().length
@@ -2974,8 +3058,16 @@ function resetCachedProfileStatesOnStartup(): void {
       metadata.launchValidationStage !== 'idle' ||
       metadata.launchRetryCount !== 0
     const needsEnvironmentSyncReset = metadata.lastEnvironmentSyncStatus === 'syncing'
+    const needsWorkspaceSummarySyncReset = metadata.lastWorkspaceSummarySyncStatus === 'syncing'
+    const needsWorkspaceSnapshotSyncReset = metadata.lastWorkspaceSnapshotSyncStatus === 'syncing'
 
-    if (!needsStatusReset && !needsMetadataReset && !needsEnvironmentSyncReset) {
+    if (
+      !needsStatusReset &&
+      !needsMetadataReset &&
+      !needsEnvironmentSyncReset &&
+      !needsWorkspaceSummarySyncReset &&
+      !needsWorkspaceSnapshotSyncReset
+    ) {
       continue
     }
 
@@ -2997,6 +3089,18 @@ function resetCachedProfileStatesOnStartup(): void {
                 lastEnvironmentSyncStatus: 'recovery',
                 lastEnvironmentSyncMessage: '检测到上次未完成同步，请选择上传当前环境或从云端拉取',
                 lastEnvironmentSyncAt: new Date().toISOString(),
+              }
+            : {}),
+          ...(needsWorkspaceSummarySyncReset
+            ? {
+                lastWorkspaceSummarySyncStatus: 'error',
+                lastWorkspaceSummarySyncMessage: '检测到上次环境摘要同步中断，将在下次变更时重新同步',
+              }
+            : {}),
+          ...(needsWorkspaceSnapshotSyncReset
+            ? {
+                lastWorkspaceSnapshotSyncStatus: 'error',
+                lastWorkspaceSnapshotSyncMessage: '检测到上次环境快照同步中断，将在下次保存时重新同步',
               }
             : {}),
         },

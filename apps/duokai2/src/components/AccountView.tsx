@@ -35,21 +35,6 @@ export function AccountView({
   onDeleteDevice: (deviceId: string) => void
 }) {
   const desktopT = i18nClient.getFixedT(locale, 'desktop')
-  const syncCopy =
-    locale === 'zh-CN'
-      ? {
-          title: '全局配置同步',
-          description: '模板、代理、云手机和应用设置会在这里单独同步，不再跟随单个环境一起上传。',
-          upload: '上传全局配置',
-          pull: '从云端拉取全局配置',
-        }
-      : {
-          title: 'Global configuration sync',
-          description:
-            'Templates, proxies, cloud phones, and app settings sync here independently instead of piggybacking on a single environment.',
-          upload: 'Upload global config',
-          pull: 'Pull global config',
-        }
 
   return (
     <section className="space-y-6">
@@ -128,14 +113,6 @@ export function AccountView({
                 </div>
                 <div className="mt-1 text-sm text-slate-700">
                   {currentAuthUser?.subscription?.plan || 'free'}
-                </div>
-              </div>
-              <div className="rounded-2xl border border-slate-200 px-4 py-3">
-                <div className="text-xs uppercase tracking-[0.12em] text-slate-400">
-                  {syncCopy.title}
-                </div>
-                <div className="mt-1 text-sm text-slate-700">
-                  {syncCopy.description}
                 </div>
               </div>
               <div className="rounded-2xl border border-slate-200 px-4 py-3">
