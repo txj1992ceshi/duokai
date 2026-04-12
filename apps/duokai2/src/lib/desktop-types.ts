@@ -33,6 +33,7 @@ export type EnvironmentListItem = {
     className: string
   }>
   status: 'queued' | 'starting' | 'running' | 'idle' | 'stopped' | 'error'
+  statusTone?: 'running' | 'launch-failed' | 'blocked' | 'idle' | 'stopped'
   launchPhaseLabel: string
   isLaunching: boolean
   canMoveToNurture: boolean

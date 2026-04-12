@@ -893,6 +893,88 @@ function buildEnvironmentSyncFailureMessage(
   return `${rawMessage}；${suggestion}`
 }
 
+function buildSyncWarningMessage(kind: 'storageState' | 'workspaceSummary' | 'workspaceSnapshot', message: string): string {
+  const base =
+    kind === 'storageState'
+      ? '云端登录态同步失败'
+      : kind === 'workspaceSummary'
+        ? '环境摘要同步失败'
+        : '环境快照同步失败'
+  const detail = message.trim() || '未知错误'
+  return `${base}：${detail}。不影响本地启动，可稍后手动同步。`
+}
+
+async function runNonBlockingSyncSideEffect(
+  profileId: string,
+  kind: 'storageState' | 'workspaceSummary' | 'workspaceSnapshot',
+  action: () => Promise<void>,
+): Promise<void> {
+  try {
+    await action()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    const profile = requireDatabase().getProfileById(profileId)
+    if (profile) {
+      if (kind === 'storageState') {
+        updateRuntimeMetadata(profile, {
+          lastStorageStateSyncStatus: 'error',
+          lastStorageStateSyncMessage: buildSyncWarningMessage(kind, message),
+        })
+      } else if (kind === 'workspaceSummary') {
+        updateRuntimeMetadata(profile, {
+          lastWorkspaceSummarySyncStatus: 'error',
+          lastWorkspaceSummarySyncMessage: buildSyncWarningMessage(kind, message),
+        })
+      } else {
+        updateRuntimeMetadata(profile, {
+          lastWorkspaceSnapshotSyncStatus: 'error',
+          lastWorkspaceSnapshotSyncMessage: buildSyncWarningMessage(kind, message),
+        })
+      }
+    }
+    audit(`${kind}_sync_warning`, {
+      profileId,
+      err: message,
+    })
+    logEvent(
+      'warn',
+      'runtime',
+      buildSyncWarningMessage(kind, message),
+      profileId,
+    )
+  }
+}
+
+function isLaunchBlockingFailure(
+  profile: ProfileRecord | null,
+  error: unknown,
+): boolean {
+  if (profile?.fingerprintConfig.runtimeMetadata.lastValidationLevel === 'block') {
+    return true
+  }
+  const message = error instanceof Error ? error.message : String(error)
+  return (
+    /workspace/i.test(message) ||
+    /runtime lock/i.test(message) ||
+    /proxy preflight failed/i.test(message) ||
+    /profile is already running|profile is already starting|profile is already queued/i.test(message) ||
+    /launch queue is full|profile launch is already pending/i.test(message)
+  )
+}
+
+function recordProfileLaunchFailure(profileId: string, error: unknown): void {
+  const profile = requireDatabase().getProfileById(profileId)
+  if (!profile) {
+    return
+  }
+  const message = error instanceof Error ? error.message : String(error)
+  updateRuntimeMetadata(profile, {
+    lastValidationLevel: isLaunchBlockingFailure(profile, error) ? 'block' : 'warn',
+    lastValidationMessages: [message],
+    launchValidationStage: 'idle',
+  })
+}
+
 async function pushProfileConfigToControlPlane(profileId: string, reason: string): Promise<ConfigSyncResult> {
   const profile = requireDatabase().getProfileById(profileId)
   if (!profile) {
@@ -1905,10 +1987,29 @@ async function refreshLastKnownGoodSnapshotStatus(profile: ProfileRecord): Promi
     deviceId: profile.fingerprintConfig.runtimeMetadata.lastStorageStateDeviceId || '',
     source: getDesktopAuthState().authenticated ? 'desktop' : 'local-disk',
   }
-  const assessment = await evaluateLastKnownGoodSnapshot(profile, {
-    storageState: currentStorageState,
-    fetchRemoteSnapshot: fetchWorkspaceSnapshotFromControlPlane,
-  })
+  let assessment: Awaited<ReturnType<typeof evaluateLastKnownGoodSnapshot>>
+  try {
+    assessment = await evaluateLastKnownGoodSnapshot(profile, {
+      storageState: currentStorageState,
+      fetchRemoteSnapshot: fetchWorkspaceSnapshotFromControlPlane,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    audit('workspace_snapshot_refresh_warning', {
+      profileId: profile.id,
+      err: message,
+    })
+    logEvent(
+      'warn',
+      'runtime',
+      buildSyncWarningMessage('workspaceSnapshot', message),
+      profile.id,
+    )
+    return updateRuntimeMetadata(profile, {
+      lastWorkspaceSnapshotSyncStatus: 'error',
+      lastWorkspaceSnapshotSyncMessage: buildSyncWarningMessage('workspaceSnapshot', message),
+    })
+  }
   const nextSnapshotSummary =
     assessment.status === 'invalid'
       ? applyLastKnownGoodAssessment(profile.workspace.snapshotSummary, {
@@ -3057,6 +3158,7 @@ function resetCachedProfileStatesOnStartup(): void {
     const needsMetadataReset =
       metadata.launchValidationStage !== 'idle' ||
       metadata.launchRetryCount !== 0
+    const needsStorageStateSyncReset = metadata.lastStorageStateSyncStatus === 'syncing'
     const needsEnvironmentSyncReset = metadata.lastEnvironmentSyncStatus === 'syncing'
     const needsWorkspaceSummarySyncReset = metadata.lastWorkspaceSummarySyncStatus === 'syncing'
     const needsWorkspaceSnapshotSyncReset = metadata.lastWorkspaceSnapshotSyncStatus === 'syncing'
@@ -3064,6 +3166,7 @@ function resetCachedProfileStatesOnStartup(): void {
     if (
       !needsStatusReset &&
       !needsMetadataReset &&
+      !needsStorageStateSyncReset &&
       !needsEnvironmentSyncReset &&
       !needsWorkspaceSummarySyncReset &&
       !needsWorkspaceSnapshotSyncReset
@@ -3084,6 +3187,12 @@ function resetCachedProfileStatesOnStartup(): void {
           ...metadata,
           launchValidationStage: 'idle',
           launchRetryCount: 0,
+          ...(needsStorageStateSyncReset
+            ? {
+                lastStorageStateSyncStatus: 'error',
+                lastStorageStateSyncMessage: '检测到上次登录态同步中断，将在下次启动或停止时重新同步',
+              }
+            : {}),
           ...(needsEnvironmentSyncReset
             ? {
                 lastEnvironmentSyncStatus: 'recovery',
@@ -4639,9 +4748,37 @@ async function deleteProfileConfigFromControlPlane(profileId: string): Promise<v
   if (!getDesktopAuthState().authenticated) {
     return
   }
-  await requestControlPlane(`/api/config/profiles/${encodeURIComponent(profileId)}`, {
-    method: 'DELETE',
-  })
+  try {
+    await requestControlPlane(`/api/config/profiles/${encodeURIComponent(profileId)}`, {
+      method: 'DELETE',
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (/profile not found|not found|404/i.test(message)) {
+      audit('profile_config_delete_missing', {
+        profileId,
+        err: message,
+      })
+      logEvent(
+        'warn',
+        'profile',
+        `Control plane profile config already missing for ${profileId}, continuing local delete`,
+        profileId,
+      )
+      return
+    }
+
+    audit('profile_config_delete_warning', {
+      profileId,
+      err: message,
+    })
+    logEvent(
+      'warn',
+      'profile',
+      `Control plane profile config delete failed for ${profileId}: ${message}. Continuing local delete`,
+      profileId,
+    )
+  }
 }
 
 function resolveProfileProxy(
@@ -5090,7 +5227,9 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       )
     const userDataDir = workspaceLaunch.userDataDir
     mkdirSync(userDataDir, { recursive: true })
-    await downloadProfileStorageStateFromControlPlane(profileId)
+    await runNonBlockingSyncSideEffect(profileId, 'storageState', async () => {
+      await downloadProfileStorageStateFromControlPlane(profileId)
+    })
     const runtimeHost = await runtimeHostManager.startEnvironment(profileId, userDataDir, getSettings())
     audit('runtime_host_ready', {
     profileId,
@@ -5302,11 +5441,13 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       finalUrl: startupNavigation.finalUrl,
     })
     if (startupNavigation.success && latestWorkspaceSnapshot) {
-      await markWorkspaceSnapshotAsLastKnownGood(
-        profileId,
-        latestWorkspaceSnapshot.snapshotId,
-        new Date().toISOString(),
-      )
+      await runNonBlockingSyncSideEffect(profileId, 'workspaceSnapshot', async () => {
+        await markWorkspaceSnapshotAsLastKnownGood(
+          profileId,
+          latestWorkspaceSnapshot.snapshotId,
+          new Date().toISOString(),
+        )
+      })
     }
     void syncProfileLaunchTrustToControlPlane(persisted)
   } catch (error) {
@@ -5335,6 +5476,7 @@ const scheduler = new RuntimeScheduler({
   onStart: launchRuntimeNow,
   onStatusChange: updateProfileStatus,
   onError: async (profileId, error) => {
+    recordProfileLaunchFailure(profileId, error)
     audit('start_profile_err', { profileId, err: String(error) })
     logEvent(
       'error',
@@ -5466,19 +5608,8 @@ async function performDesktopLogin(payload: {
 
 async function performRuntimeLaunch(profileId: string): Promise<{ warningMessage?: string }> {
   ensureWritable('runtime.launch')
-  try {
-    await enqueueLaunch(profileId)
-    return {}
-  } catch (error) {
-    await updateProfileStatus(profileId, 'error')
-    logEvent(
-      'error',
-      'runtime',
-      error instanceof Error ? error.message : 'Unknown runtime error',
-      profileId,
-    )
-    throw error
-  }
+  await enqueueLaunch(profileId)
+  return {}
 }
 
 async function verifyProfileForControlTask(profileId: string): Promise<{

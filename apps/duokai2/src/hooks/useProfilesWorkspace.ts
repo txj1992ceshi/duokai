@@ -34,6 +34,7 @@ export function useProfilesWorkspace({
   defaultRuntimeMetadata,
   isBlankProfileForm,
   getProfileVisualState,
+  getProfileStatusTone,
   getEnvironmentPurposeLabel,
   summarizeIdentitySignature,
   summarizeLocaleSignature,
@@ -55,6 +56,7 @@ export function useProfilesWorkspace({
   defaultRuntimeMetadata: FingerprintConfig['runtimeMetadata']
   isBlankProfileForm: (form: ProfileFormState) => boolean
   getProfileVisualState: (profile: ProfileRecord) => ProfileRecord['status']
+  getProfileStatusTone: (profile: ProfileRecord) => NonNullable<EnvironmentListItem['statusTone']>
   getEnvironmentPurposeLabel: (purpose: EnvironmentPurpose, locale: LocaleCode) => string
   summarizeIdentitySignature: (
     profile: ProfileRecord['deviceProfile'] | null,
@@ -151,6 +153,7 @@ export function useProfilesWorkspace({
             locale: summarizeLocaleSignature(profile.deviceProfile, profile.fingerprintConfig),
             hardware: summarizeHardwareSignature(profile.deviceProfile, profile.fingerprintConfig),
             status: visualStatus,
+            statusTone: getProfileStatusTone(profile),
             launchPhaseLabel: getLaunchPhaseLabel(profile),
             isLaunching: visualStatus === 'starting' || visualStatus === 'queued',
             canMoveToNurture: profile.environmentPurpose === 'register',
@@ -163,6 +166,7 @@ export function useProfilesWorkspace({
     [
       getEnvironmentPurposeLabel,
       getLaunchPhaseLabel,
+      getProfileStatusTone,
       getProfileVisualState,
       getEnvironmentSyncSummary,
       getRuntimeArtifactSyncSummaries,

@@ -183,6 +183,24 @@ export function resolveProfileVisualState(
   return profile.status
 }
 
+export function resolveProfileStatusTone(
+  profile: ProfileRecord,
+  visualStatus: ProfileRecord['status'],
+): 'running' | 'launch-failed' | 'blocked' | 'idle' | 'stopped' {
+  if (visualStatus === 'running') {
+    return 'running'
+  }
+  if (visualStatus === 'error') {
+    return profile.fingerprintConfig.runtimeMetadata.lastValidationLevel === 'block'
+      ? 'blocked'
+      : 'launch-failed'
+  }
+  if (visualStatus === 'idle') {
+    return 'idle'
+  }
+  return 'stopped'
+}
+
 export function getDesktopProfileLaunchPhaseLabel(
   profile: ProfileRecord,
   runtimeLaunchStages: Record<

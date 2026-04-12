@@ -104,6 +104,8 @@ const resources = {
           status: {
             running: '运行中',
             error: '异常',
+            launchFailed: '启动失败',
+            blocked: '已阻断',
             idle: '空闲',
             stopped: '未启动',
           },
@@ -309,6 +311,8 @@ const resources = {
           status: {
             running: 'Running',
             error: 'Error',
+            launchFailed: 'Launch failed',
+            blocked: 'Blocked',
             idle: 'Idle',
             stopped: 'Stopped',
           },

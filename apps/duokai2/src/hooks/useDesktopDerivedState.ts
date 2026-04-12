@@ -7,6 +7,7 @@ import {
   formatLocalizedDate,
   getDesktopProfileLaunchPhaseLabel,
   getDesktopUpdateActionLabel,
+  resolveProfileStatusTone,
   resolveProfileVisualState,
 } from '../lib/desktop-status-helpers'
 import type { DesktopApi } from '../shared/ipc'
@@ -163,6 +164,11 @@ export function useDesktopDerivedState({
     [locale, runtimeLaunchStages],
   )
 
+  const getProfileStatusTone = useCallback(
+    (profile: ProfileRecord) => resolveProfileStatusTone(profile, getProfileVisualState(profile)),
+    [getProfileVisualState],
+  )
+
   const getEnvironmentSyncSummary = useCallback(
     (profile: ProfileRecord) => getDesktopEnvironmentSyncSummary(profile, locale, t.common.never),
     [locale, t.common.never],
@@ -224,6 +230,7 @@ export function useDesktopDerivedState({
     runtimeStartingIds,
     runtimeLaunchStages,
     getProfileVisualState,
+    getProfileStatusTone,
     getLaunchPhaseLabel,
     getEnvironmentSyncSummary,
     getRuntimeArtifactSyncSummaries,

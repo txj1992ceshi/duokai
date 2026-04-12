@@ -16,16 +16,19 @@ import { EXPANDABLE_TRANSITION, EXPANDABLE_VARIANTS } from '../../lib/motion'
 
 function StatusBadge({
   status,
+  statusTone,
   launchPhaseLabel,
   isLaunching,
   labels,
 }: {
   status: EnvironmentListItem['status']
+  statusTone?: EnvironmentListItem['statusTone']
   launchPhaseLabel: string
   isLaunching: boolean
   labels: {
     running: string
     error: string
+    blocked: string
     idle: string
     stopped: string
   }
@@ -35,8 +38,10 @@ function StatusBadge({
     ? 'primary'
     : status === 'running'
       ? 'success'
-      : status === 'error'
+      : statusTone === 'blocked'
         ? 'danger'
+        : status === 'error'
+          ? 'warning'
         : isStoppedState
           ? 'warning'
           : 'neutral'
@@ -45,8 +50,10 @@ function StatusBadge({
     ? launchPhaseLabel
     : status === 'running'
       ? labels.running
-      : status === 'error'
-        ? labels.error
+      : statusTone === 'blocked'
+        ? labels.blocked
+        : status === 'error'
+          ? labels.error
         : status === 'idle'
           ? labels.idle
           : labels.stopped
@@ -62,8 +69,10 @@ function StatusBadge({
             ? 'h-2.5 w-2.5 bg-emerald-500 animate-[duokai-breathe_1.3s_ease-in-out_infinite]'
             : isLaunching
               ? 'h-2.5 w-2.5 bg-blue-500 animate-pulse'
-              : status === 'error'
+              : statusTone === 'blocked'
                 ? 'h-2.5 w-2.5 bg-rose-500'
+                : status === 'error'
+                  ? 'h-2.5 w-2.5 bg-amber-500'
                 : 'h-3.5 w-3.5 bg-amber-400 shadow-[0_0_0_4px_rgba(251,191,36,0.22)] dark:bg-amber-300 dark:shadow-[0_0_0_4px_rgba(251,191,36,0.14)]'
         }`}
       />
@@ -157,6 +166,7 @@ export function EnvironmentRow({
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement | null>(null)
   const canStop = item.status === 'running' || item.status === 'queued' || item.status === 'starting'
+  const launchBlocked = item.status === 'error' && item.statusTone === 'blocked'
   const actionLabel = canStop
     ? t('environment.row.actions.stop')
     : item.status === 'error'
@@ -216,11 +226,13 @@ export function EnvironmentRow({
           <div className="flex min-h-[92px] min-w-[132px] items-center justify-center self-center">
             <StatusBadge
               status={item.status}
+              statusTone={item.statusTone}
               launchPhaseLabel={item.launchPhaseLabel}
               isLaunching={item.isLaunching}
               labels={{
                 running: t('environment.row.status.running'),
-                error: t('environment.row.status.error'),
+                error: t('environment.row.status.launchFailed'),
+                blocked: t('environment.row.status.blocked'),
                 idle: t('environment.row.status.idle'),
                 stopped: t('environment.row.status.stopped'),
               }}
@@ -262,10 +274,11 @@ export function EnvironmentRow({
               {expanded ? t('environment.row.actions.collapse') : t('environment.row.actions.details')}
             </Button>
             <Button
-              variant={canStop ? 'danger' : 'primary'}
+              variant={canStop ? 'danger' : launchBlocked ? 'secondary' : 'primary'}
               size="sm"
               className="min-w-[104px] row-span-2 row-start-1 col-start-3 h-full min-h-[92px]"
               onClick={canStop ? onStop : onLaunch}
+              disabled={launchBlocked}
             >
               {actionIcon}
               {actionLabel}

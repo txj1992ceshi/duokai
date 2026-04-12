@@ -347,7 +347,7 @@ export interface ProfileRuntimeMetadata {
   lastStorageStateVersion: number
   lastStorageStateSyncedAt: string
   lastStorageStateDeviceId: string
-  lastStorageStateSyncStatus: 'idle' | 'synced' | 'pending' | 'conflict' | 'error'
+  lastStorageStateSyncStatus: 'idle' | 'synced' | 'syncing' | 'pending' | 'conflict' | 'error'
   lastStorageStateSyncMessage: string
   lastWorkspaceSummarySyncAt: string
   lastWorkspaceSummarySyncStatus: 'idle' | 'synced' | 'syncing' | 'error'
