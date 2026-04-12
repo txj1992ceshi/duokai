@@ -40,6 +40,10 @@ const resources = {
           logs: '运行日志',
           account: '个人中心',
         },
+        actions: {
+          uploadGlobalConfig: '上传全局配置',
+          pullGlobalConfig: '拉取全局配置',
+        },
       },
       headings: {
         dashboard: {
@@ -240,6 +244,10 @@ const resources = {
         secondary: {
           logs: 'Logs',
           account: 'Account',
+        },
+        actions: {
+          uploadGlobalConfig: 'Upload global config',
+          pullGlobalConfig: 'Pull global config',
         },
       },
       headings: {

@@ -98,8 +98,14 @@ export function buildFingerprintInitScript(profileId: string, config: Fingerprin
   const screenOverrides = {
     width: ${config.advanced.windowWidth},
     height: ${config.advanced.windowHeight},
-    availWidth: ${config.advanced.windowWidth},
-    availHeight: ${Math.max(config.advanced.windowHeight - 40, 100)},
+    availWidth: Math.max(
+      ${config.advanced.windowWidth} - Math.max(0, (window.outerWidth || 0) - (window.innerWidth || 0)),
+      100
+    ),
+    availHeight: Math.max(
+      ${config.advanced.windowHeight} - Math.max(0, (window.outerHeight || 0) - (window.innerHeight || 0)),
+      100
+    ),
     colorDepth: 24,
     pixelDepth: 24,
   };

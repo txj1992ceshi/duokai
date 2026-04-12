@@ -38,36 +38,60 @@ export function DesktopWorkspaceChrome({
   onSelectEnvironmentTab: (key: EnvironmentCenterTab['key']) => void
 }) {
   const desktopT = i18nClient.getFixedT(locale, 'desktop')
+  const hasTopBanners = Boolean(errorMessage || syncWarningMessage || agentReadOnlyMessage || (
+    updateState &&
+    (updateState.status === 'available' ||
+      updateState.status === 'downloading' ||
+      updateState.status === 'downloaded')
+  ))
 
   return (
     <>
-      {errorMessage ? <div className="banner error">{errorMessage}</div> : null}
-      {syncWarningMessage ? <div className="banner warning">{syncWarningMessage}</div> : null}
-      {agentReadOnlyMessage ? <div className="banner warning">{agentReadOnlyMessage}</div> : null}
-      {updateState &&
-      (updateState.status === 'available' ||
-        updateState.status === 'downloading' ||
-        updateState.status === 'downloaded') ? (
-        <div className="banner info updater-banner">
-          <div>
-            <strong>
-              {desktopT('shell.updateTitle', { version: updateState.latestVersion || '' })}
-            </strong>
-            <p>{describeUpdateStatus(updateState)}</p>
-          </div>
-          <div className="updater-banner-actions">
-            <button
-              type="button"
-              className="primary"
-              onClick={onPrimaryUpdateAction}
-              disabled={updateState.status === 'downloading'}
-            >
-              {getUpdateActionLabel(updateState)}
-            </button>
-            <button type="button" className="secondary-button" onClick={onOpenReleasePage}>
-              {desktopT('shell.releasePage')}
-            </button>
-          </div>
+      {hasTopBanners ? (
+        <div className="mb-6 space-y-3">
+          {errorMessage ? (
+            <div className="flex min-h-[54px] items-center rounded-[22px] border px-5 py-4 text-sm font-medium shadow-sm border-[var(--duokai-banner-error-border)] bg-[var(--duokai-banner-error-bg)] text-[var(--duokai-banner-error-text)]">
+              {errorMessage}
+            </div>
+          ) : null}
+          {syncWarningMessage ? (
+            <div className="flex min-h-[54px] items-center rounded-[22px] border px-5 py-4 text-sm font-medium shadow-sm border-[var(--duokai-banner-warning-border)] bg-[var(--duokai-banner-warning-bg)] text-[var(--duokai-banner-warning-text)]">
+              {syncWarningMessage}
+            </div>
+          ) : null}
+          {agentReadOnlyMessage ? (
+            <div className="flex min-h-[54px] items-center rounded-[22px] border px-5 py-4 text-sm font-medium shadow-sm border-[var(--duokai-banner-warning-border)] bg-[var(--duokai-banner-warning-bg)] text-[var(--duokai-banner-warning-text)]">
+              {agentReadOnlyMessage}
+            </div>
+          ) : null}
+          {updateState &&
+          (updateState.status === 'available' ||
+            updateState.status === 'downloading' ||
+            updateState.status === 'downloaded') ? (
+            <div className="flex flex-col gap-4 rounded-[22px] border px-5 py-4 shadow-sm border-[var(--duokai-banner-info-border)] bg-[var(--duokai-banner-info-bg)] text-[var(--duokai-banner-info-text)] md:flex-row md:items-center md:justify-between">
+              <div className="min-w-0">
+                <strong className="block text-sm font-semibold">
+                  {desktopT('shell.updateTitle', { version: updateState.latestVersion || '' })}
+                </strong>
+                <p className="mt-1 text-sm opacity-80">
+                  {describeUpdateStatus(updateState)}
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-3 md:flex-nowrap">
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={onPrimaryUpdateAction}
+                  disabled={updateState.status === 'downloading'}
+                >
+                  {getUpdateActionLabel(updateState)}
+                </button>
+                <button type="button" className="secondary-button" onClick={onOpenReleasePage}>
+                  {desktopT('shell.releasePage')}
+                </button>
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
 

@@ -155,8 +155,9 @@ test('resolveWorkspaceLaunchConfig uses workspace runtime source of truth', () =
   assert.equal(resolved.canonicalRoot, path.dirname(profile.workspace!.paths.profileDir))
   assert.equal(resolved.locale, 'fr-FR')
   assert.equal(resolved.timezoneId, 'Europe/Paris')
-  assert.deepEqual(resolved.viewport, { width: 1600, height: 900 })
-  assert.deepEqual(resolved.launchArgs, ['--workspace-arg', '--disable-webrtc'])
+  assert.deepEqual(resolved.windowSize, { width: 1600, height: 900 })
+  assert.equal(resolved.viewport, null)
+  assert.deepEqual(resolved.launchArgs, ['--window-size=1600,900', '--workspace-arg', '--disable-webrtc'])
 })
 
 test('runLocalIsolationPreflight passes with canonical workspace launch paths and runtime lock', () => {

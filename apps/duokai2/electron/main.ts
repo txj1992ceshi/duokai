@@ -809,6 +809,25 @@ function buildPortableProfileConfig(profile: ProfileRecord): ProfileRecord {
   }
 }
 
+function isManualProfileSyncReason(reason: string): boolean {
+  return reason.includes('manual')
+}
+
+function buildEnvironmentSyncFailureMessage(
+  reason: string,
+  rawMessage: string,
+  mode: 'upload' | 'pull',
+): string {
+  const suggestion =
+    mode === 'upload'
+      ? '自动上传失败，请手动上传最新本地环境。'
+      : '自动拉取失败，请手动从云端拉取最新环境。'
+  if (isManualProfileSyncReason(reason)) {
+    return rawMessage
+  }
+  return `${rawMessage}；${suggestion}`
+}
+
 async function pushProfileConfigToControlPlane(profileId: string, reason: string): Promise<ConfigSyncResult> {
   const profile = requireDatabase().getProfileById(profileId)
   if (!profile) {
@@ -831,6 +850,7 @@ async function pushProfileConfigToControlPlane(profileId: string, reason: string
       method: 'PUT',
       body: JSON.stringify({
         baseVersion: profile.fingerprintConfig.runtimeMetadata.lastEnvironmentSyncVersion || 0,
+        force: isManualProfileSyncReason(reason),
         profile: buildPortableProfileConfig(profile),
       }),
     })
@@ -848,29 +868,81 @@ async function pushProfileConfigToControlPlane(profileId: string, reason: string
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     const isConflict = /profile config sync version mismatch|版本冲突|sync version mismatch/i.test(message)
+    const nextMessage = buildEnvironmentSyncFailureMessage(reason, message, 'upload')
     updateEnvironmentSyncMetadata(profileId, {
       status: isConflict ? 'conflict' : 'error',
-      message,
+      message: nextMessage,
     })
-    return buildConfigSyncPushFailedResult(`当前环境同步失败：${message}`)
+    return buildConfigSyncPushFailedResult(`当前环境同步失败：${nextMessage}`)
   }
 }
 
-async function pullProfileConfigFromControlPlane(profileId: string): Promise<ConfigSyncResult> {
-  if (hasPendingProfileConfigChanges(profileId)) {
+async function pullProfileConfigFromControlPlane(
+  profileId: string,
+  options: {
+    force?: boolean
+  } = {},
+): Promise<ConfigSyncResult> {
+  const force = options.force === true
+  const localProfile = requireDatabase().getProfileById(profileId)
+  if (!localProfile) {
+    throw new Error('Profile not found')
+  }
+  if (!force && hasPendingProfileConfigChanges(profileId)) {
     throw new Error('当前环境存在本地待同步改动，请先上传到云端，避免覆盖本地环境')
   }
+  if (force && (runtimeContexts.has(profileId) || isProfileLaunchInFlight(profileId) || localProfile.status === 'running')) {
+    throw new Error('当前环境正在运行或启动中，请先停止环境后再从云端拉取')
+  }
+
+  if (force) {
+    await syncEnvironmentIndexFromControlPlane()
+  }
+
   const payload = await requestControlPlane(`/api/config/profiles/${encodeURIComponent(profileId)}`)
   const remoteProfile = (payload.profile || null) as ProfileRecord | null
   if (!remoteProfile) {
     throw new Error('云端未找到当前环境配置')
   }
-  const localProfile = requireDatabase().getProfileById(profileId)
-  if (!localProfile) {
-    throw new Error('Profile not found')
+  applyPulledProfileToLocalDatabase(
+    {
+      ...remoteProfile,
+      fingerprintConfig: {
+        ...remoteProfile.fingerprintConfig,
+        runtimeMetadata: {
+          ...remoteProfile.fingerprintConfig.runtimeMetadata,
+          lastEnvironmentSyncVersion: Number(
+            payload.syncVersion || remoteProfile.fingerprintConfig.runtimeMetadata.lastEnvironmentSyncVersion || 0,
+          ),
+        },
+      },
+    },
+    { preservePendingLocalChanges: !force },
+  )
+  updateEnvironmentSyncMetadata(profileId, {
+    status: 'synced',
+    message: force ? '已强制从云端拉取当前环境配置' : '已从云端拉取当前环境配置',
+  })
+  return buildConfigSyncPushSuccessResult(force ? '已强制从云端拉取当前环境' : '当前环境已从云端拉取')
+}
+
+function applyPulledProfileToLocalDatabase(
+  remoteProfile: ProfileRecord,
+  options: {
+    preservePendingLocalChanges?: boolean
+  } = {},
+): { profile: ProfileRecord; changed: boolean } {
+  const localProfile = requireDatabase().getProfileById(remoteProfile.id)
+  if (
+    options.preservePendingLocalChanges !== false &&
+    localProfile &&
+    hasPendingProfileConfigChanges(localProfile.id)
+  ) {
+    return { profile: localProfile, changed: false }
   }
+
   const nextProfile = requireDatabase().updateProfile({
-    id: profileId,
+    id: remoteProfile.id,
     name: remoteProfile.name,
     proxyId: remoteProfile.proxyId,
     groupName: remoteProfile.groupName,
@@ -881,12 +953,11 @@ async function pullProfileConfigFromControlPlane(profileId: string): Promise<Con
     fingerprintConfig: {
       ...remoteProfile.fingerprintConfig,
       runtimeMetadata: {
-        ...localProfile.fingerprintConfig.runtimeMetadata,
+        ...(localProfile?.fingerprintConfig.runtimeMetadata || {}),
         ...remoteProfile.fingerprintConfig.runtimeMetadata,
         lastEnvironmentSyncStatus: 'synced',
-        lastEnvironmentSyncMessage: '已从云端拉取当前环境配置',
+        lastEnvironmentSyncMessage: '已从云端拉取环境配置',
         lastEnvironmentSyncAt: new Date().toISOString(),
-        lastEnvironmentSyncVersion: Number(payload.syncVersion || remoteProfile.fingerprintConfig.runtimeMetadata.lastEnvironmentSyncVersion || 0),
       },
     },
     workspace: remoteProfile.workspace ?? null,
@@ -897,20 +968,53 @@ async function pullProfileConfigFromControlPlane(profileId: string): Promise<Con
       workspace: nextWorkspace,
     })
   })
-  if (normalizedWorkspace !== nextProfile.workspace) {
-    persistProfile({
-      ...nextProfile,
-      workspace: normalizedWorkspace,
-    })
+  const persisted =
+    normalizedWorkspace !== nextProfile.workspace
+      ? persistProfile({
+          ...nextProfile,
+          workspace: normalizedWorkspace,
+        })
+      : nextProfile
+
+  if (!localProfile) {
+    requireDatabase().setProfileStatus(remoteProfile.id, 'stopped')
   }
-  return buildConfigSyncSuccessResult('account', {
-    syncVersion: Number(payload.syncVersion || 0),
-    proxies: [],
-    templates: [],
-    cloudPhones: [],
-    settings: {},
-  })
+
+  return { profile: persisted, changed: true }
 }
+
+async function syncEnvironmentIndexFromControlPlane(): Promise<ConfigSyncResult> {
+  if (!getDesktopAuthState().authenticated) {
+    return buildConfigSyncPendingResult('请先登录后再同步环境清单')
+  }
+
+  const payload = await requestControlPlane('/api/config/profiles')
+  const remoteProfiles = Array.isArray(payload.profiles) ? (payload.profiles as ProfileRecord[]) : []
+  let syncedCount = 0
+
+  for (const remoteProfile of remoteProfiles) {
+    if (!remoteProfile?.id) {
+      continue
+    }
+    const applied = applyPulledProfileToLocalDatabase(remoteProfile)
+    if (applied.changed) {
+      syncedCount += 1
+    }
+  }
+
+  const totalCount = requireDatabase().listProfiles().length
+  return {
+    count: totalCount,
+    source: 'account',
+    usedLocalCache: false,
+    message:
+      syncedCount > 0
+        ? `已从云端同步 ${syncedCount} 个环境，当前共 ${totalCount} 个环境`
+        : `环境清单已与云端对齐，当前共 ${totalCount} 个环境`,
+    warningMessage: '',
+  }
+}
+
 
 function audit(action: string, payload: Record<string, unknown> = {}) {
   try {
@@ -1780,10 +1884,24 @@ async function finalizeRuntimeShutdown(
     }
 
     const latestProfileBeforeConfigSync = requireDatabase().getProfileById(profileId)
+    let profileConfigReadyForRuntimeArtifacts = true
     if (latestProfileBeforeConfigSync && hasPendingProfileConfigChanges(profileId)) {
       try {
-        await pushProfileConfigToControlPlane(profileId, `runtime-shutdown:${reason}`)
+        const result = await pushProfileConfigToControlPlane(profileId, `runtime-shutdown:${reason}`)
+        const latestMetadata =
+          requireDatabase().getProfileById(profileId)?.fingerprintConfig.runtimeMetadata ||
+          latestProfileBeforeConfigSync.fingerprintConfig.runtimeMetadata
+        profileConfigReadyForRuntimeArtifacts =
+          latestMetadata.lastEnvironmentSyncStatus === 'synced'
+        if (!profileConfigReadyForRuntimeArtifacts) {
+          audit('shutdown_runtime_artifacts_skipped', {
+            profileId,
+            reason,
+            message: result.warningMessage || result.message || latestMetadata.lastEnvironmentSyncMessage,
+          })
+        }
       } catch (error) {
+        profileConfigReadyForRuntimeArtifacts = false
         audit('shutdown_config_sync_failed', {
           profileId,
           reason,
@@ -1793,7 +1911,7 @@ async function finalizeRuntimeShutdown(
     }
 
     const latestProfile = requireDatabase().getProfileById(profileId)
-    if (latestProfile?.workspace) {
+    if (latestProfile?.workspace && profileConfigReadyForRuntimeArtifacts) {
       try {
         await syncWorkspaceSummaryToControlPlane(latestProfile)
       } catch (error) {
@@ -1817,7 +1935,7 @@ async function finalizeRuntimeShutdown(
       }
     }
 
-    if (context) {
+    if (context && profileConfigReadyForRuntimeArtifacts) {
       try {
         await uploadProfileStorageStateToControlPlane(profileId, {
           context,
@@ -5213,6 +5331,22 @@ async function performDesktopLogin(payload: {
         throw new Error('登录响应缺少用户或令牌')
       }
       saveDesktopAuth(apiBase, token, user)
+      try {
+        await syncEnvironmentIndexFromControlPlane()
+      } catch (syncError) {
+        const message = syncError instanceof Error ? syncError.message : String(syncError)
+        setLastConfigSyncResult({
+          count: requireDatabase().listProfiles().length,
+          source: 'account',
+          usedLocalCache: true,
+          message: '',
+          warningMessage: `自动拉取环境清单失败，请手动从云端拉取最新环境：${message}`,
+        })
+        audit('profile_index_pull_after_login_failed', {
+          apiBase,
+          err: message,
+        })
+      }
       return getDesktopAuthState()
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error))
@@ -5771,16 +5905,23 @@ async function registerIpcHandlers(): Promise<void> {
     if (hasPendingLocalConfigChanges()) {
       throw new Error('存在本地待同步的全局配置改动，请先上传，再从云端拉取')
     }
-    return await syncConfigFromControlPlaneIfForced({
+    const globalResult = await syncConfigFromControlPlaneIfForced({
       force: options?.force ?? true,
       useLocalCacheOnError: options?.useLocalCacheOnError ?? true,
     })
+    const profileResult = await syncEnvironmentIndexFromControlPlane()
+    return {
+      ...profileResult,
+      warningMessage: globalResult.warningMessage || profileResult.warningMessage,
+      message:
+        [globalResult.message, profileResult.message]
+          .map((item) => String(item || '').trim())
+          .filter(Boolean)
+          .join('；') || profileResult.message,
+    }
   })
-  ipcMain.handle('auth.syncProfiles', async (_event, options?: ConfigSyncOptions) =>
-    syncConfigFromControlPlaneIfForced({
-      force: options?.force ?? true,
-      useLocalCacheOnError: options?.useLocalCacheOnError ?? true,
-    }),
+  ipcMain.handle('auth.syncProfiles', async () =>
+    syncEnvironmentIndexFromControlPlane(),
   )
 
   ipcMain.handle('meta.getInfo', async () => getDesktopRuntimeInfo())
@@ -6014,7 +6155,7 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('profiles.pullConfig', async (_event, profileId: string) => {
     ensureWritable('profiles.pullConfig')
-    return pullProfileConfigFromControlPlane(profileId)
+    return pullProfileConfigFromControlPlane(profileId, { force: true })
   })
   ipcMain.handle('profiles.revealDirectory', async (_event, profileId: string) => {
     ensureWorkspaceLayoutForProfileId(profileId)

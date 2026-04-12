@@ -17,6 +17,7 @@ import { useDesktopFeedback } from './hooks/useDesktopFeedback'
 import { useDesktopBridge } from './hooks/useDesktopBridge'
 import { useDesktopNavigation } from './hooks/useDesktopNavigation'
 import { useDesktopWorkspaceViewProps } from './hooks/useDesktopWorkspaceViewProps'
+import i18nClient from './lib/i18n-client'
 import {
   buildProviderConfig,
   emptyCloudPhone,
@@ -85,6 +86,7 @@ function App() {
 
   const locale = uiLocaleOverride ?? getLocaleFromSettings(settings.uiLanguage)
   const t = dictionaries[locale]
+  const desktopT = i18nClient.getFixedT(locale, 'desktop')
   const rendererOperatingSystem = detectRendererOperatingSystem()
   const defaultEnvironmentLanguage = normalizeEnvironmentLanguage(
     settings.defaultEnvironmentLanguage,
@@ -379,6 +381,19 @@ function App() {
     setResourceMode,
     setProfilePageMode,
   })
+
+  const sidebarActions = [
+    {
+      key: 'syncGlobalConfig' as const,
+      label: desktopT('navigation.actions.uploadGlobalConfig'),
+      onClick: () => void syncGlobalConfig(),
+    },
+    {
+      key: 'pullGlobalConfig' as const,
+      label: desktopT('navigation.actions.pullGlobalConfig'),
+      onClick: () => void pullGlobalConfig(),
+    },
+  ]
 
   const {
     checkForUpdates,
@@ -720,8 +735,6 @@ function App() {
     saveAccountProfile,
     uploadAccountAvatar,
     saveAccountPassword,
-    syncGlobalConfig,
-    pullGlobalConfig,
     revokeAccountDevice,
     deleteAccountDevice,
   })
@@ -761,6 +774,7 @@ function App() {
         breadcrumbItems={breadcrumbItems}
         mainNav={mainNav}
         secondaryNav={secondaryNav}
+        sidebarActions={sidebarActions}
         statusText={busyMessage || t.common.runningSummary(summary.runningProfiles, summary.totalProfiles)}
         userTitle={currentAuthUser?.name || currentAuthUser?.username || currentAuthUser?.email || 'U'}
         userSubtitle={currentAuthUser?.email || currentAuthUser?.username || t.common.loading}

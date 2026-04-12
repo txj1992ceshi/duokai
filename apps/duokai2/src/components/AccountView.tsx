@@ -18,8 +18,6 @@ export function AccountView({
   onSaveProfile,
   onUploadAvatar,
   onSavePassword,
-  onSyncGlobalConfig,
-  onPullGlobalConfig,
   onRevokeDevice,
   onDeleteDevice,
 }: {
@@ -33,8 +31,6 @@ export function AccountView({
   onSaveProfile: () => void
   onUploadAvatar: () => void
   onSavePassword: () => void
-  onSyncGlobalConfig: () => void
-  onPullGlobalConfig: () => void
   onRevokeDevice: (deviceId: string) => void
   onDeleteDevice: (deviceId: string) => void
 }) {
@@ -124,14 +120,6 @@ export function AccountView({
               <div className="mt-1 text-sm text-slate-500">
                 {desktopT('account.subscription.description')}
               </div>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Button type="button" variant="secondary" onClick={onSyncGlobalConfig}>
-                {syncCopy.upload}
-              </Button>
-              <Button type="button" variant="secondary" onClick={onPullGlobalConfig}>
-                {syncCopy.pull}
-              </Button>
             </div>
             <div className="grid gap-3">
               <div className="rounded-2xl border border-slate-200 px-4 py-3">

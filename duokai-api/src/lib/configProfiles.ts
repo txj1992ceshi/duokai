@@ -30,6 +30,21 @@ export async function findConfigProfileForUser(userId: string, profileId: string
   };
 }
 
+export async function listConfigProfilesForUser(userId: string) {
+  const state = await AgentConfigStateModel.findOne({
+    agentId: resolveUserConfigStateId(userId),
+  })
+    .select('profiles syncVersion')
+    .lean();
+  const profiles = Array.isArray(state?.profiles) ? state.profiles : [];
+  return {
+    state,
+    profiles: profiles.filter(
+      (item: unknown): item is Record<string, unknown> => Boolean(item) && typeof item === 'object'
+    ),
+  };
+}
+
 export function normalizeConfigProfilePayload(profileId: string, profile: Record<string, unknown>) {
   const nextProfile: Record<string, unknown> = {
     ...profile,

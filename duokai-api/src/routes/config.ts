@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   deleteConfigProfileForUser,
   findConfigProfileForUser,
+  listConfigProfilesForUser,
   normalizeConfigProfilePayload,
   resolveUserConfigStateId,
   upsertConfigProfileForUser,
@@ -14,6 +15,15 @@ import { requireUser } from '../middlewares/auth.js';
 import { AgentConfigStateModel } from '../models/AgentConfigState.js';
 
 const router = Router();
+
+router.use((req, _res, next) => {
+  logSyncRouteEvent('info', 'config_router_request_received', {
+    route: req.originalUrl,
+    method: req.method,
+    hasAuthorizationHeader: Boolean(req.headers.authorization),
+  });
+  next();
+});
 
 function buildEmptyGlobalSnapshot() {
   return {
@@ -125,6 +135,32 @@ router.post(
 );
 
 router.get(
+  '/profiles',
+  requireUser,
+  asyncHandler(async (req, res) => {
+    await connectMongo();
+    const { profiles } = await listConfigProfilesForUser(req.authUser!.userId);
+    const normalizedProfiles = profiles
+      .map((profile: Record<string, unknown>) =>
+        normalizeProfilePayload(String((profile as Record<string, unknown>).id || '').trim(), profile)
+      )
+      .filter(Boolean);
+
+    logSyncRouteEvent('info', 'config_profile_index_listed', {
+      route: 'GET /api/config/profiles',
+      userId: req.authUser!.userId,
+      count: normalizedProfiles.length,
+    });
+
+    res.json({
+      success: true,
+      profiles: normalizedProfiles,
+      count: normalizedProfiles.length,
+    });
+  })
+);
+
+router.get(
   '/profiles/:id',
   requireUser,
   asyncHandler(async (req, res) => {
@@ -174,6 +210,7 @@ router.put(
 
     const incomingRecord = incoming as Record<string, unknown>;
     const baseVersion = Number(req.body?.baseVersion ?? incomingRecord.configSyncVersion ?? 0);
+    const force = req.body?.force === true;
     if (!Number.isFinite(baseVersion) || baseVersion < 0) {
       res.status(400).json({ success: false, error: 'baseVersion must be a non-negative number' });
       return;
@@ -181,7 +218,7 @@ router.put(
 
     const { profile } = await findConfigProfileForUser(req.authUser!.userId, profileId);
     const currentVersion = Number((profile as Record<string, unknown> | null)?.configSyncVersion || 0);
-    if (profile && currentVersion !== baseVersion) {
+    if (!force && profile && currentVersion !== baseVersion) {
       res.status(409).json({
         success: false,
         error: 'profile config sync version mismatch',

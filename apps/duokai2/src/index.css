@@ -17,6 +17,15 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  --duokai-banner-error-bg: #fecdd3;
+  --duokai-banner-error-border: #fb7185;
+  --duokai-banner-error-text: #0f172a;
+  --duokai-banner-warning-bg: #fde68a;
+  --duokai-banner-warning-border: #f59e0b;
+  --duokai-banner-warning-text: #0f172a;
+  --duokai-banner-info-bg: #e0f2fe;
+  --duokai-banner-info-border: #7dd3fc;
+  --duokai-banner-info-text: #0f172a;
 }
 
 * {
@@ -42,6 +51,18 @@ body {
     radial-gradient(circle at 88% 10%, var(--duokai-bg-accent-c), transparent 24%),
     radial-gradient(circle at 52% 100%, var(--duokai-bg-accent-a), transparent 34%),
     linear-gradient(180deg, color-mix(in srgb, var(--duokai-bg) 84%, transparent), var(--duokai-bg));
+}
+
+.dark {
+  --duokai-banner-error-bg: rgba(244, 63, 94, 0.16);
+  --duokai-banner-error-border: rgba(251, 113, 133, 0.3);
+  --duokai-banner-error-text: #ffe4e6;
+  --duokai-banner-warning-bg: rgba(245, 158, 11, 0.16);
+  --duokai-banner-warning-border: rgba(251, 191, 36, 0.3);
+  --duokai-banner-warning-text: #fef3c7;
+  --duokai-banner-info-bg: rgba(14, 165, 233, 0.14);
+  --duokai-banner-info-border: rgba(125, 211, 252, 0.25);
+  --duokai-banner-info-text: #e0f2fe;
 }
 
 .dark .bg-white {

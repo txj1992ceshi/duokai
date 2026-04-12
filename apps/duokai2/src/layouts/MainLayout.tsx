@@ -1,6 +1,6 @@
 import type { CSSProperties, ReactNode } from 'react'
 import { Badge, Breadcrumb, Button, Card } from '@duokai/ui'
-import { LayoutDashboard, Layers3, Logs, Settings, Shield, UserCircle2 } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpToLine, LayoutDashboard, Layers3, Logs, Settings, Shield, UserCircle2 } from 'lucide-react'
 import type { DesktopRuntimeInfo } from '../shared/types'
 
 export type MainNavKey = 'environmentCenter' | 'proxyRepository' | 'groupManagement' | 'settings'
@@ -20,6 +20,12 @@ export interface SecondaryNavItem {
   onClick: () => void
 }
 
+export interface SidebarActionItem {
+  key: 'syncGlobalConfig' | 'pullGlobalConfig'
+  label: string
+  onClick: () => void
+}
+
 const navIcons = {
   environmentCenter: LayoutDashboard,
   proxyRepository: Shield,
@@ -27,6 +33,11 @@ const navIcons = {
   settings: Settings,
   logs: Logs,
   account: UserCircle2,
+}
+
+const actionIcons = {
+  syncGlobalConfig: ArrowUpToLine,
+  pullGlobalConfig: ArrowDownToLine,
 }
 
 function SidebarButton({
@@ -74,6 +85,7 @@ export function MainLayout({
   breadcrumbItems,
   mainNav,
   secondaryNav,
+  sidebarActions,
   statusText,
   userTitle,
   userSubtitle,
@@ -91,6 +103,7 @@ export function MainLayout({
   breadcrumbItems: Array<{ label: string; current?: boolean }>
   mainNav: MainNavItem[]
   secondaryNav: SecondaryNavItem[]
+  sidebarActions?: SidebarActionItem[]
   statusText: string
   userTitle: string
   userSubtitle: string
@@ -161,6 +174,20 @@ export function MainLayout({
               />
             ))}
           </div>
+
+          {sidebarActions?.length ? (
+            <div className="mt-6 border-t border-slate-800 pt-4">
+              {sidebarActions.map((item) => (
+                <SidebarButton
+                  key={item.key}
+                  label={item.label}
+                  active={false}
+                  onClick={item.onClick}
+                  icon={actionIcons[item.key]}
+                />
+              ))}
+            </div>
+          ) : null}
         </nav>
 
         <Card

@@ -322,6 +322,7 @@ export function useProfileActions({
       const api = requireDesktopApi(['profiles.syncConfig'])
       const result = await api.profiles.syncConfig(profileId)
       setNoticeMessage(result.message || copy.profileConfigSynced)
+      await refreshAll()
     })
   }
 
@@ -330,6 +331,7 @@ export function useProfileActions({
       const api = requireDesktopApi(['profiles.pullConfig'])
       const result = await api.profiles.pullConfig(profileId)
       setNoticeMessage(result.message || copy.profileConfigPulled)
+      await refreshAll()
     })
   }
 

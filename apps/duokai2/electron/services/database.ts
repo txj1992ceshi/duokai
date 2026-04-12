@@ -142,6 +142,7 @@ type CloudPhoneRow = {
 type CountRow = { count: number }
 
 const REMOTE_SYNC_EXCLUDED_SETTINGS = new Set([
+  'controlPlaneApiBase',
   'controlPlaneAuthToken',
   'controlPlaneAuthUser',
   'controlPlaneAuthRemember',

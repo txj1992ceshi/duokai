@@ -212,10 +212,14 @@ export interface ResolvedWorkspaceLaunchConfig {
   canonicalRoot: string
   locale: string
   timezoneId: string
-  viewport: {
+  windowSize: {
     width: number
     height: number
   }
+  viewport: {
+    width: number
+    height: number
+  } | null
   webrtcPolicy: WebRtcMode
   launchArgs: string[]
 }
