@@ -413,6 +413,9 @@ export const defaultFingerprint: FingerprintConfig = {
     hardwareProfileVersion: '',
     hardwareSeed: '',
     hardwareProfileSource: '',
+    hardwareTemplateId: '',
+    hardwareVariantId: '',
+    hardwareCatalogVersion: '',
   },
 }
 

@@ -8,6 +8,7 @@ import { collectStorageDiagnosticsSummary } from '../lib/storageDiagnostics.js';
 import { hasLegacyInlineStorageStatePayload } from '../lib/storageView.js';
 import { requireAdmin } from '../middlewares/auth.js';
 import { AgentConfigStateModel } from '../models/AgentConfigState.js';
+import { ConfigSyncEventModel } from '../models/ConfigSyncEvent.js';
 import { ProfileStorageStateModel } from '../models/ProfileStorageState.js';
 import { WorkspaceSnapshotModel } from '../models/WorkspaceSnapshot.js';
 import { UserModel } from '../models/User.js';
@@ -77,6 +78,10 @@ function normalizeAdminConfigProfile(profile: unknown) {
     ownerName: '',
     createdAt: String(normalized.createdAt || '').trim(),
     updatedAt: String(normalized.updatedAt || '').trim(),
+    canonicalSyncVersion: Number(raw.configSyncVersion || normalized.configSyncVersion || 0),
+    lastEnvironmentSyncStatus: String(runtimeMetadata.lastEnvironmentSyncStatus || '').trim(),
+    lastEnvironmentSyncMessage: String(runtimeMetadata.lastEnvironmentSyncMessage || '').trim(),
+    lastEnvironmentSyncVersion: Number(runtimeMetadata.lastEnvironmentSyncVersion || 0),
     workspace,
     environmentPurpose: String(normalized.environmentPurpose || '').trim(),
     notes: String(normalized.notes || '').trim(),
@@ -106,7 +111,7 @@ function getSyncProfileStatus(profile: {
 }
 
 async function listCanonicalAdminProfiles() {
-  const [configStates, storageStates, workspaceSnapshots, users] = await Promise.all([
+  const [configStates, storageStates, workspaceSnapshots, users, syncEvents] = await Promise.all([
     AgentConfigStateModel.find({
       agentId: /^user:/,
     })
@@ -115,6 +120,10 @@ async function listCanonicalAdminProfiles() {
     ProfileStorageStateModel.find({}).select('profileId fileRef inlineStateJson stateJson').lean(),
     WorkspaceSnapshotModel.find({}).select('profileId fileRef').lean(),
     UserModel.find({}).select('_id email name status').lean(),
+    ConfigSyncEventModel.find({ scope: 'environment' })
+      .sort({ createdAt: -1 })
+      .limit(2000)
+      .lean(),
   ]);
 
   const syncedProfileIds = new Set(storageStates.map((item) => String(item.profileId)));
@@ -136,6 +145,22 @@ async function listCanonicalAdminProfiles() {
       },
     ]),
   );
+  const profileEventMap = new Map<string, Record<string, unknown>[]>();
+  const userEventCountMap = new Map<string, number>();
+  for (const event of syncEvents) {
+    const eventUserId = String(event.userId || '');
+    userEventCountMap.set(eventUserId, (userEventCountMap.get(eventUserId) || 0) + 1);
+    const eventProfileIds = Array.isArray(event.profileIds)
+      ? event.profileIds
+          .map((item: unknown) => String(item || '').trim())
+          .filter(Boolean)
+      : [];
+    for (const profileId of eventProfileIds) {
+      const existing = profileEventMap.get(profileId) || [];
+      existing.push(event as unknown as Record<string, unknown>);
+      profileEventMap.set(profileId, existing);
+    }
+  }
 
   const profiles: Array<Record<string, unknown>> = [];
   for (const state of configStates) {
@@ -151,6 +176,22 @@ async function listCanonicalAdminProfiles() {
       if (!normalized) {
         continue;
       }
+      const profileEvents = profileEventMap.get(String(normalized.id)) || [];
+      const latestAutoPushEvent =
+        profileEvents.find(
+          (event) =>
+            String(event.mode || '') === 'auto' &&
+            String(event.direction || '') === 'push'
+        ) || null;
+      const latestAutoPullEvent =
+        profileEvents.find(
+          (event) =>
+            String(event.mode || '') === 'auto' &&
+            String(event.direction || '') === 'pull'
+        ) || null;
+      const latestErrorEvent =
+        profileEvents.find((event) => String(event.status || '').includes('failed')) || null;
+      const latestEvent = profileEvents[0] || null;
       profiles.push({
         ...normalized,
         userId,
@@ -158,6 +199,11 @@ async function listCanonicalAdminProfiles() {
         ownerName: owner.ownerName,
         storageStateSynced: syncedProfileIds.has(String(normalized.id)),
         workspaceSnapshotSynced: workspaceSnapshotProfileIds.has(String(normalized.id)),
+        autoSyncTaskCount: userEventCountMap.get(userId) || 0,
+        lastAutoPushAt: String(latestAutoPushEvent?.createdAt || '').trim(),
+        lastAutoPullAt: String(latestAutoPullEvent?.createdAt || '').trim(),
+        lastAutoSyncError: String(latestErrorEvent?.errorMessage || '').trim(),
+        lastWriterDeviceId: String(latestEvent?.deviceId || '').trim(),
       });
     }
   }
@@ -250,6 +296,10 @@ router.get(
           .length,
         syncedStorageProfiles: filteredProfiles.filter((profile) => Boolean(profile.storageStateSynced))
           .length,
+        autoSyncTaskCount: filteredProfiles.reduce(
+          (total, profile) => total + Number(profile.autoSyncTaskCount || 0),
+          0
+        ),
         storageStateBackedByFile: storageSummary.storageStateBackedByFile,
         workspaceSnapshotBackedByFile: storageSummary.workspaceSnapshotBackedByFile,
         legacyInlinePayloadCount: diagnostics.legacyInlinePayloadCount,

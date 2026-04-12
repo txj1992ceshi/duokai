@@ -19,6 +19,59 @@ const router = Router();
 
 router.use(requireUser);
 
+// Legacy runtime compatibility only. Canonical environment APIs live under /api/config/profiles.
+const LEGACY_PROFILES_WARNING =
+  'Legacy runtime compatibility only. Canonical environment source is /api/config/profiles.';
+const LEGACY_PROFILES_CANONICAL_SOURCE = 'config-profiles';
+
+function setLegacyProfilesHeaders(res: { set: (name: string, value: string) => unknown }) {
+  res.set('X-Duokai-Legacy-Route', 'true');
+  res.set('X-Duokai-Canonical-Source', LEGACY_PROFILES_CANONICAL_SOURCE);
+}
+
+function buildLegacyProfilesMeta(extra: Record<string, unknown> = {}) {
+  return {
+    legacy: true,
+    canonicalSource: LEGACY_PROFILES_CANONICAL_SOURCE,
+    warning: LEGACY_PROFILES_WARNING,
+    ...extra,
+  };
+}
+
+router.use((req, res, next) => {
+  setLegacyProfilesHeaders(res);
+  logSyncRouteEvent('warn', 'legacy_profiles_route_used', {
+    route: req.originalUrl,
+    method: req.method,
+  });
+  next();
+});
+
+// Only runtime/diagnostic summary fields may still flow through this legacy compatibility route.
+const LEGACY_RUNTIME_PATCH_KEYS = new Set([
+  'status',
+  'lastActive',
+  'lastLaunchAt',
+  'lastSuccessAt',
+  'lastRestoreAt',
+  'runtimeSessionId',
+  'startupPlatform',
+  'startupUrl',
+  'startupNavigation',
+  'proxyVerification',
+  'configFingerprintHash',
+  'proxyFingerprintHash',
+  'expectedProxyIp',
+  'expectedProxyCountry',
+  'expectedProxyRegion',
+  'preferredProxyTransport',
+  'lastResolvedProxyTransport',
+  'lastHostEnvironment',
+  'lastQuickIsolationCheck',
+  'trustedLaunchSnapshot',
+  'lastLaunchBlock',
+]);
+
 function normalizeCooldownSummary(input: unknown) {
   if (!input || typeof input !== 'object') {
     return { active: false, reason: '', until: '' };
@@ -51,6 +104,9 @@ router.get(
       profiles: profiles.map((profile) =>
         serializeProfile(profile, syncedProfileIds.has(String(profile._id)))
       ),
+      ...buildLegacyProfilesMeta({
+        mode: 'runtime-diagnostics',
+      }),
     });
   })
 );
@@ -133,6 +189,9 @@ router.post(
     res.json({
       success: true,
       profile: serializeProfile(profile),
+      ...buildLegacyProfilesMeta({
+        mode: 'legacy-write-compatibility',
+      }),
     });
   })
 );
@@ -163,6 +222,9 @@ router.get(
     res.json({
       success: true,
       profile: serializeProfile(profile, !!storageState),
+      ...buildLegacyProfilesMeta({
+        mode: 'runtime-diagnostics',
+      }),
     });
   })
 );
@@ -175,34 +237,14 @@ router.patch(
     const body = req.body || {};
     const profileId = String(req.params.id);
     const updateData: Record<string, unknown> = {};
+    const ignoredFields = Object.keys(body).filter((key) => !LEGACY_RUNTIME_PATCH_KEYS.has(key));
     const resolved = await resolveRuntimeProfileForUser(authUser.userId, profileId);
 
-    if (typeof body.name === 'string') updateData.name = body.name.trim();
-    if (typeof body.platform === 'string') updateData.platform = body.platform.trim();
-    if (typeof body.purpose === 'string') updateData.purpose = body.purpose.trim();
-    if (body.runtimeMode !== undefined) updateData.runtimeMode = normalizeRuntimeMode(body.runtimeMode);
-    if (typeof body.proxyBindingMode === 'string') updateData.proxyBindingMode = body.proxyBindingMode.trim();
-    if (typeof body.ipUsageMode === 'string') updateData.ipUsageMode = body.ipUsageMode.trim();
-    if (typeof body.lifecycleState === 'string') updateData.lifecycleState = body.lifecycleState.trim();
-    if (Array.isArray(body.riskFlags)) updateData.riskFlags = body.riskFlags;
-    if (body.cooldownSummary !== undefined) updateData.cooldownSummary = normalizeCooldownSummary(body.cooldownSummary);
-    if (typeof body.fingerprintPresetRef === 'string') updateData.fingerprintPresetRef = body.fingerprintPresetRef.trim();
-    if (typeof body.workspaceManifestRef === 'string') updateData.workspaceManifestRef = body.workspaceManifestRef.trim();
-    if (typeof body.proxyAssetId === 'string') updateData.proxyAssetId = body.proxyAssetId.trim();
-    if (typeof body.activeLeaseId === 'string') updateData.activeLeaseId = body.activeLeaseId.trim();
-    if (typeof body.ownerLabel === 'string') updateData.ownerLabel = body.ownerLabel.trim();
     if (typeof body.status === 'string') updateData.status = body.status;
-    if (Array.isArray(body.tags)) updateData.tags = body.tags;
     if (typeof body.lastActive === 'string') updateData.lastActive = body.lastActive;
     if (typeof body.lastLaunchAt === 'string') updateData.lastLaunchAt = body.lastLaunchAt;
     if (typeof body.lastSuccessAt === 'string') updateData.lastSuccessAt = body.lastSuccessAt;
     if (typeof body.lastRestoreAt === 'string') updateData.lastRestoreAt = body.lastRestoreAt;
-    if (typeof body.proxy === 'string') updateData.proxy = body.proxy;
-    if (typeof body.proxyType === 'string') updateData.proxyType = body.proxyType;
-    if (typeof body.proxyHost === 'string') updateData.proxyHost = body.proxyHost;
-    if (typeof body.proxyPort === 'string') updateData.proxyPort = body.proxyPort;
-    if (typeof body.proxyUsername === 'string') updateData.proxyUsername = body.proxyUsername;
-    if (typeof body.proxyPassword === 'string') updateData.proxyPassword = body.proxyPassword;
     if (typeof body.expectedProxyIp === 'string') updateData.expectedProxyIp = body.expectedProxyIp;
     if (typeof body.expectedProxyCountry === 'string') updateData.expectedProxyCountry = body.expectedProxyCountry;
     if (typeof body.expectedProxyRegion === 'string') updateData.expectedProxyRegion = body.expectedProxyRegion;
@@ -216,9 +258,6 @@ router.patch(
       updateData.lastHostEnvironment = body.lastHostEnvironment;
     }
     if (typeof body.ua === 'string') updateData.ua = body.ua;
-    if (typeof body.seed === 'string') updateData.seed = body.seed;
-    if (typeof body.isMobile === 'boolean') updateData.isMobile = body.isMobile;
-    if (typeof body.groupId === 'string') updateData.groupId = body.groupId;
     if (typeof body.runtimeSessionId === 'string') updateData.runtimeSessionId = body.runtimeSessionId;
     if (typeof body.startupPlatform === 'string') updateData.startupPlatform = body.startupPlatform;
     if (typeof body.startupUrl === 'string') updateData.startupUrl = body.startupUrl;
@@ -241,11 +280,16 @@ router.patch(
     if (body.lastLaunchBlock !== undefined) {
       updateData.lastLaunchBlock = body.lastLaunchBlock;
     }
-    if (body.workspace !== undefined) {
-      updateData.workspace = normalizeWorkspacePayload(profileId, body.workspace);
-    }
-
     let profile: Record<string, unknown> | null = null;
+
+    if (ignoredFields.length > 0) {
+      logSyncRouteEvent('warn', 'legacy_profile_patch_ignored_fields', {
+        route: 'PATCH /api/profiles/:id',
+        profileId,
+        profileIdType: resolveProfileIdType(profileId),
+        ignoredFields,
+      });
+    }
 
     if (!resolved) {
       logSyncRouteEvent('warn', 'profile_patch_profile_missing', {
@@ -304,13 +348,17 @@ router.patch(
               id: profileId,
               storageStateSynced: !!storageState,
             },
+      ...buildLegacyProfilesMeta({
+        mode: 'legacy-runtime-patch',
+        ignoredFields,
+      }),
     });
     logSyncRouteEvent('info', 'profile_patch_applied', {
       route: 'PATCH /api/profiles/:id',
       profileId,
       profileIdType: resolveProfileIdType(profileId),
       profileSource: resolved.source,
-      updatedWorkspace: body.workspace !== undefined,
+      ignoredFields,
     });
   })
 );
@@ -334,6 +382,9 @@ router.delete(
     res.json({
       success: true,
       message: 'Profile deleted successfully',
+      ...buildLegacyProfilesMeta({
+        mode: 'legacy-delete-compatibility',
+      }),
     });
   })
 );

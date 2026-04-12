@@ -363,6 +363,9 @@ export interface ProfileRuntimeMetadata {
   hardwareProfileVersion: string
   hardwareSeed: string
   hardwareProfileSource: 'generated' | 'manual' | 'template' | ''
+  hardwareTemplateId: string
+  hardwareVariantId: string
+  hardwareCatalogVersion: string
 }
 
 export interface DeviceProfileSupportMatrix {
@@ -895,15 +898,19 @@ export interface DesktopAuthState {
   rememberCredentials: boolean
   rememberedIdentifier: string
   rememberedPassword: string
+  lastEnvironmentSyncResult: ConfigSyncResult | null
   lastGlobalConfigSyncResult: ConfigSyncResult | null
 }
 
 export interface ConfigSyncResult {
+  scope: 'global-config' | 'environment'
   count: number
   source: 'agent' | 'account'
   usedLocalCache: boolean
   message: string
   warningMessage: string
+  syncVersion?: number
+  updatedAt?: string
   cloudProfileCount?: number
   localMirroredProfileCount?: number
   autoUploadedCount?: number
@@ -917,7 +924,18 @@ export interface ConfigSyncResult {
   deletedRemoteCount?: number
   upsertedProfileCount?: number
   updatedProfileCount?: number
-  globalConfigChanged?: boolean
+}
+
+export interface EnvironmentSyncTaskRecord {
+  taskId: string
+  kind: 'environment-auto-push'
+  profileIds: string[]
+  reason: string
+  createdAt: string
+  lastTriedAt: string
+  retryCount: number
+  lastError: string
+  status: 'pending' | 'retrying' | 'succeeded' | 'failed-warning'
 }
 
 export interface ProfileDirectoryInfo {

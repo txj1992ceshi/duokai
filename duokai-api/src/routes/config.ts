@@ -13,6 +13,7 @@ import { normalizeWorkspacePayload } from '../lib/serializers.js';
 import { logSyncRouteEvent, resolveProfileIdType } from '../lib/syncRouteLogger.js';
 import { requireUser } from '../middlewares/auth.js';
 import { AgentConfigStateModel } from '../models/AgentConfigState.js';
+import { ConfigSyncEventModel } from '../models/ConfigSyncEvent.js';
 
 const router = Router();
 
@@ -278,6 +279,50 @@ router.delete(
     res.json({
       success: true,
       message: 'Profile config deleted successfully',
+    });
+  })
+);
+
+router.post(
+  '/sync-events',
+  requireUser,
+  asyncHandler(async (req, res) => {
+    await connectMongo();
+
+    const scope = String(req.body?.scope || '').trim();
+    const direction = String(req.body?.direction || '').trim();
+    const mode = String(req.body?.mode || '').trim();
+    const status = String(req.body?.status || '').trim();
+    const deviceId = String(req.body?.deviceId || '').trim();
+    const reason = String(req.body?.reason || '').trim();
+    const errorMessage = String(req.body?.errorMessage || '').trim();
+    const profileIds = Array.isArray(req.body?.profileIds)
+      ? req.body.profileIds.map((item: unknown) => String(item || '').trim()).filter(Boolean)
+      : [];
+
+    if (!scope || !direction || !mode || !status) {
+      res.status(400).json({ success: false, error: 'scope, direction, mode and status are required' });
+      return;
+    }
+
+    const created = await ConfigSyncEventModel.create({
+      userId: req.authUser!.userId,
+      deviceId,
+      scope,
+      direction,
+      mode,
+      status,
+      profileIds,
+      reason,
+      errorMessage,
+      cloudProfileCount: Number(req.body?.cloudProfileCount || 0),
+      localMirroredProfileCount: Number(req.body?.localMirroredProfileCount || 0),
+    });
+
+    res.json({
+      success: true,
+      id: String(created._id),
+      createdAt: created.createdAt || new Date(),
     });
   })
 );

@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import { createDefaultFingerprint } from './factories.ts'
 import {
+  HARDWARE_CATALOG_VERSION,
   assignStableHardwareFingerprint,
   sanitizeTemplateHardwareFingerprint,
   shouldMigrateStableHardwareFingerprint,
@@ -18,6 +19,9 @@ test('assignStableHardwareFingerprint is stable for the same profile id', () => 
   assert.equal(first.advanced.webglRenderer, second.advanced.webglRenderer)
   assert.equal(first.runtimeMetadata.hardwareProfileVersion, STABLE_HARDWARE_PROFILE_VERSION)
   assert.equal(first.runtimeMetadata.hardwareProfileSource, 'generated')
+  assert.equal(first.runtimeMetadata.hardwareCatalogVersion, HARDWARE_CATALOG_VERSION)
+  assert.equal(first.runtimeMetadata.hardwareTemplateId, second.runtimeMetadata.hardwareTemplateId)
+  assert.equal(first.runtimeMetadata.hardwareVariantId, second.runtimeMetadata.hardwareVariantId)
 })
 
 test('assignStableHardwareFingerprint differs across profile ids', () => {
@@ -37,6 +41,51 @@ test('macOS hardware profiles keep macOS-compatible renderers', () => {
   assert.doesNotMatch(generated.advanced.webglRenderer, /Direct3D/i)
 })
 
+test('macOS hardware profiles use realistic cpu and memory pairings', () => {
+  const macFingerprint = createDefaultFingerprint()
+  const generated = assignStableHardwareFingerprint(macFingerprint, 'profile-mac-realistic')
+  const pairing = `${generated.advanced.cpuCores}/${generated.advanced.memoryGb}`
+  const supportedPairings = new Set(['8/8', '8/16', '8/24', '11/18', '11/36', '12/18', '12/36'])
+
+  assert.equal(generated.advanced.operatingSystem, 'macOS')
+  assert.equal(supportedPairings.has(pairing), true)
+})
+
+test('macOS Air templates never emit Pro-only resolutions', () => {
+  const macFingerprint = createDefaultFingerprint()
+  const generated = assignStableHardwareFingerprint(macFingerprint, 'profile-mac-air-resolution', {
+    forceRegenerate: true,
+    seed: 'mac-air-template-seed',
+  })
+
+  if (generated.runtimeMetadata.hardwareTemplateId.startsWith('mac_air_')) {
+    assert.equal(['1512x982', '1728x1117'].includes(generated.resolution), false)
+  }
+})
+
+test('Windows business templates stay on business-class GPU renderers', () => {
+  const fingerprint = createDefaultFingerprint()
+  fingerprint.advanced.operatingSystem = 'Windows'
+
+  const generated = assignStableHardwareFingerprint(fingerprint, 'profile-win-business-seed', {
+    forceRegenerate: true,
+    seed: 'win-business-template-seed',
+  })
+
+  if (generated.runtimeMetadata.hardwareTemplateId.startsWith('win_business_')) {
+    assert.match(generated.advanced.webglRenderer, /UHD|Iris\(R\) Xe|Iris Xe/i)
+    assert.doesNotMatch(generated.advanced.webglRenderer, /RTX|GTX|Radeon/i)
+  }
+})
+
+test('generated profiles record template metadata', () => {
+  const generated = assignStableHardwareFingerprint(createDefaultFingerprint(), 'profile-metadata')
+
+  assert.ok(generated.runtimeMetadata.hardwareTemplateId.length > 0)
+  assert.ok(generated.runtimeMetadata.hardwareVariantId.length > 0)
+  assert.equal(generated.runtimeMetadata.hardwareCatalogVersion, HARDWARE_CATALOG_VERSION)
+})
+
 test('manual hardware identity is preserved and marked as manual', () => {
   const fingerprint = createDefaultFingerprint()
   fingerprint.advanced.deviceName = 'DESKTOP-CUSTOM99'
@@ -48,6 +97,7 @@ test('manual hardware identity is preserved and marked as manual', () => {
   const preserved = assignStableHardwareFingerprint(fingerprint, 'profile-manual')
   assert.equal(preserved.advanced.deviceName, 'DESKTOP-CUSTOM99')
   assert.equal(preserved.runtimeMetadata.hardwareProfileSource, 'manual')
+  assert.equal(preserved.runtimeMetadata.hardwareTemplateId, '')
 })
 
 test('sanitizeTemplateHardwareFingerprint marks template source without fixing hardware identity', () => {
@@ -57,6 +107,8 @@ test('sanitizeTemplateHardwareFingerprint marks template source without fixing h
   assert.equal(sanitized.runtimeMetadata.hardwareProfileSource, 'template')
   assert.equal(sanitized.runtimeMetadata.hardwareProfileId, '')
   assert.equal(sanitized.runtimeMetadata.hardwareSeed, '')
+  assert.equal(sanitized.runtimeMetadata.hardwareTemplateId, '')
+  assert.equal(sanitized.runtimeMetadata.hardwareVariantId, '')
 })
 
 test('legacy defaults are marked for migration', () => {

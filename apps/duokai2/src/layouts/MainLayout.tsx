@@ -21,7 +21,7 @@ export interface SecondaryNavItem {
 }
 
 export interface SidebarActionItem {
-  key: 'syncGlobalConfig' | 'pullGlobalConfig'
+  key: 'syncProfiles' | 'pullProfiles' | 'syncGlobalConfig' | 'pullGlobalConfig'
   label: string
   onClick: () => void
 }
@@ -36,6 +36,8 @@ const navIcons = {
 }
 
 const actionIcons = {
+  syncProfiles: ArrowUpToLine,
+  pullProfiles: ArrowDownToLine,
   syncGlobalConfig: ArrowUpToLine,
   pullGlobalConfig: ArrowDownToLine,
 }

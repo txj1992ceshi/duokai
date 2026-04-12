@@ -60,6 +60,7 @@ app.use('/api/auth', authRouter);
 app.use('/api/admin/users', adminUsersRouter);
 app.use('/api/admin/action-logs', adminActionLogsRouter);
 app.use('/api/admin/profiles', adminProfilesRouter);
+// Legacy runtime compatibility only. Canonical environment APIs live under /api/config/profiles.
 app.use('/api/profiles', profilesRouter);
 app.use('/api/groups', groupsRouter);
 app.use('/api/behaviors', behaviorsRouter);

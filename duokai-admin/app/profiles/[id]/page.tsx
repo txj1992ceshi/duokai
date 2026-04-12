@@ -34,6 +34,15 @@ type ProfileDetail = {
   ownerName?: string;
   createdAt?: string;
   updatedAt?: string;
+  canonicalSyncVersion?: number;
+  lastEnvironmentSyncStatus?: string;
+  lastEnvironmentSyncMessage?: string;
+  lastEnvironmentSyncVersion?: number;
+  autoSyncTaskCount?: number;
+  lastAutoPushAt?: string;
+  lastAutoPullAt?: string;
+  lastAutoSyncError?: string;
+  lastWriterDeviceId?: string;
 };
 
 type AdminUser = {
@@ -236,6 +245,15 @@ export default function ProfileDetailPage() {
                 : '未配置'}
             </div>
             <div>storageStateSynced：{profile.storageStateSynced ? '已同步' : '未同步'}</div>
+            <div>canonicalSyncVersion：{profile.canonicalSyncVersion ?? 0}</div>
+            <div>lastEnvironmentSyncStatus：{profile.lastEnvironmentSyncStatus || '-'}</div>
+            <div>lastEnvironmentSyncVersion：{profile.lastEnvironmentSyncVersion ?? 0}</div>
+            <div>lastEnvironmentSyncMessage：{profile.lastEnvironmentSyncMessage || '-'}</div>
+            <div>lastAutoPushAt：{formatDateTime(profile.lastAutoPushAt)}</div>
+            <div>lastAutoPullAt：{formatDateTime(profile.lastAutoPullAt)}</div>
+            <div>lastWriterDeviceId：{profile.lastWriterDeviceId || '-'}</div>
+            <div>autoSyncTaskCount：{profile.autoSyncTaskCount ?? 0}</div>
+            <div>lastAutoSyncError：{profile.lastAutoSyncError || '-'}</div>
           </DetailCard>
         </CardGrid>
       </SectionBlock>

@@ -193,7 +193,8 @@ type ConfigPushOptions = {
   onConflict?: 'pull-and-throw' | 'preserve-local-and-throw'
 }
 
-let lastConfigSyncResult: ConfigSyncResult | null = null
+let lastEnvironmentSyncResult: ConfigSyncResult | null = null
+let lastGlobalConfigSyncResult: ConfigSyncResult | null = null
 let lastUserConfigSyncVersion = 0
 let localConfigMutationVersion = 0
 let sessionAuthApiBase = ''
@@ -348,7 +349,14 @@ function ensureWritable(action: string): void {
 }
 
 function setLastConfigSyncResult(result: ConfigSyncResult | null): ConfigSyncResult | null {
-  lastConfigSyncResult = result
+  if (!result) {
+    lastEnvironmentSyncResult = null
+    lastGlobalConfigSyncResult = null
+  } else if (result.scope === 'environment') {
+    lastEnvironmentSyncResult = result
+  } else {
+    lastGlobalConfigSyncResult = result
+  }
   emitConfigChanged()
   return result
 }
@@ -358,6 +366,7 @@ function buildConfigSyncSuccessResult(
   snapshot: GlobalConfigSnapshot,
 ): ConfigSyncResult {
   return {
+    scope: 'global-config',
     count:
       (Array.isArray(snapshot.proxies) ? snapshot.proxies.length : 0) +
       (Array.isArray(snapshot.templates) ? snapshot.templates.length : 0) +
@@ -371,6 +380,7 @@ function buildConfigSyncSuccessResult(
 
 function buildConfigSyncFallbackResult(message: string): ConfigSyncResult {
   return {
+    scope: 'global-config',
     count:
       requireDatabase().listTemplates().length +
       requireDatabase().listProxies().length +
@@ -384,6 +394,7 @@ function buildConfigSyncFallbackResult(message: string): ConfigSyncResult {
 
 function buildConfigSyncPendingResult(message = '本地全局配置已保存，等待同步到云端'): ConfigSyncResult {
   return {
+    scope: 'global-config',
     count:
       requireDatabase().listTemplates().length +
       requireDatabase().listProxies().length +
@@ -397,6 +408,7 @@ function buildConfigSyncPendingResult(message = '本地全局配置已保存，�
 
 function buildConfigSyncInFlightResult(message = '正在同步本地全局配置到云端'): ConfigSyncResult {
   return {
+    scope: 'global-config',
     count:
       requireDatabase().listTemplates().length +
       requireDatabase().listProxies().length +
@@ -410,6 +422,7 @@ function buildConfigSyncInFlightResult(message = '正在同步本地全局配置
 
 function buildConfigSyncPushSuccessResult(message = '本地全局配置已同步到云端'): ConfigSyncResult {
   return {
+    scope: 'global-config',
     count:
       requireDatabase().listTemplates().length +
       requireDatabase().listProxies().length +
@@ -423,6 +436,7 @@ function buildConfigSyncPushSuccessResult(message = '本地全局配置已同步
 
 function buildConfigSyncPushFailedResult(message: string): ConfigSyncResult {
   return {
+    scope: 'global-config',
     count:
       requireDatabase().listTemplates().length +
       requireDatabase().listProxies().length +
@@ -431,6 +445,58 @@ function buildConfigSyncPushFailedResult(message: string): ConfigSyncResult {
     usedLocalCache: true,
     message: '',
     warningMessage: message,
+  }
+}
+
+function buildEnvironmentSyncPendingResult(
+  message = '本地环境镜像已保存，等待同步到云端',
+): ConfigSyncResult {
+  return {
+    scope: 'environment',
+    count: requireDatabase().listProfiles().length,
+    source: agentService?.getState().enabled ? 'agent' : 'account',
+    usedLocalCache: true,
+    message: '',
+    warningMessage: message,
+    localMirroredProfileCount: requireDatabase().listProfiles().length,
+  }
+}
+
+function buildEnvironmentSyncInFlightResult(
+  message = '正在自动同步环境到云端',
+): ConfigSyncResult {
+  return {
+    scope: 'environment',
+    count: requireDatabase().listProfiles().length,
+    source: agentService?.getState().enabled ? 'agent' : 'account',
+    usedLocalCache: true,
+    message: '',
+    warningMessage: message,
+    localMirroredProfileCount: requireDatabase().listProfiles().length,
+  }
+}
+
+function buildEnvironmentSyncPushSuccessResult(message: string): ConfigSyncResult {
+  return {
+    scope: 'environment',
+    count: requireDatabase().listProfiles().length,
+    source: agentService?.getState().enabled ? 'agent' : 'account',
+    usedLocalCache: false,
+    message,
+    warningMessage: '',
+    localMirroredProfileCount: requireDatabase().listProfiles().length,
+  }
+}
+
+function buildEnvironmentSyncPushFailedResult(message: string): ConfigSyncResult {
+  return {
+    scope: 'environment',
+    count: requireDatabase().listProfiles().length,
+    source: agentService?.getState().enabled ? 'agent' : 'account',
+    usedLocalCache: true,
+    message: '',
+    warningMessage: message,
+    localMirroredProfileCount: requireDatabase().listProfiles().length,
   }
 }
 
@@ -451,7 +517,6 @@ function buildEnvironmentCountFields(
       | 'deletedRemoteCount'
       | 'upsertedProfileCount'
       | 'updatedProfileCount'
-      | 'globalConfigChanged'
     >
   >,
 ): Partial<ConfigSyncResult> {
@@ -476,21 +541,13 @@ function hasConfigSnapshotData(snapshot: GlobalConfigSnapshot | null | undefined
   )
 }
 
-function hasRemoteConfigSnapshotData(snapshot: RemoteConfigSnapshot | null | undefined): boolean {
-  if (!snapshot) {
-    return false
-  }
-  return (snapshot.profiles?.length || 0) > 0 || hasConfigSnapshotData(snapshot)
-}
-
 function hasLocalConfigData(): boolean {
   const database = requireDatabase()
   return hasConfigSnapshotData(database.exportGlobalConfigSnapshot(0))
 }
 
 function hasLocalSharedData(): boolean {
-  const database = requireDatabase()
-  return hasRemoteConfigSnapshotData(database.exportRemoteConfigSnapshot(0))
+  return requireDatabase().listProfiles().length > 0
 }
 
 function applyRemoteConfigSnapshot(snapshot: GlobalConfigSnapshot): void {
@@ -519,24 +576,18 @@ async function pullConfigSnapshotFromAccount(): Promise<GlobalConfigSnapshot> {
   }
 }
 
-async function pullRemoteConfigSnapshotFromAccount(): Promise<RemoteConfigSnapshot> {
-  const [globalSnapshot, profilesPayload] = await Promise.all([
-    pullConfigSnapshotFromAccount(),
-    requestControlPlane('/api/config/profiles'),
-  ])
+async function pullEnvironmentSnapshotFromAccount(): Promise<RemoteConfigSnapshot> {
+  const profilesPayload = await requestControlPlane('/api/config/profiles')
   const profiles = Array.isArray(profilesPayload.profiles)
     ? (profilesPayload.profiles as ProfileRecord[]).filter((profile) => Boolean(profile?.id))
     : []
   return {
-    syncVersion: Number(globalSnapshot.syncVersion || 0),
+    syncVersion: 0,
     profiles,
-    proxies: Array.isArray(globalSnapshot.proxies) ? globalSnapshot.proxies : [],
-    templates: Array.isArray(globalSnapshot.templates) ? globalSnapshot.templates : [],
-    cloudPhones: Array.isArray(globalSnapshot.cloudPhones) ? globalSnapshot.cloudPhones : [],
-    settings:
-      globalSnapshot.settings && typeof globalSnapshot.settings === 'object'
-        ? globalSnapshot.settings
-        : {},
+    proxies: [],
+    templates: [],
+    cloudPhones: [],
+    settings: {},
   }
 }
 
@@ -558,6 +609,7 @@ async function syncConfigFromControlPlane(options: ConfigSyncOptions = {}): Prom
 
     if (!snapshot) {
       const result = setLastConfigSyncResult({
+        scope: 'global-config',
         count: requireDatabase().listTemplates().length +
           requireDatabase().listProxies().length +
           requireDatabase().listCloudPhones().length,
@@ -576,6 +628,7 @@ async function syncConfigFromControlPlane(options: ConfigSyncOptions = {}): Prom
         localProxyCount: requireDatabase().listProxies().length,
       })
       return setLastConfigSyncResult({
+        scope: 'global-config',
         count:
           requireDatabase().listTemplates().length +
           requireDatabase().listProxies().length +
@@ -658,41 +711,35 @@ async function syncConfigToControlPlaneOrThrow(
   }
 }
 
-async function pushFullConfigSnapshotToControlPlaneOrThrow(
+async function pushEnvironmentProfilesToControlPlaneOrThrow(
   mode: EnvironmentMirrorSyncMode = 'manual-force-upload',
 ): Promise<{
   cloudProfileCount: number
   localMirroredProfileCount: number
   autoUploadedCount: number
   removedLocalMirrorCount: number
-  globalConfigChanged: boolean
 }> {
-  const localSnapshot = requireDatabase().exportRemoteConfigSnapshot(lastUserConfigSyncVersion)
+  const localSnapshot = requireDatabase().exportRemoteConfigSnapshot(0)
 
   if (agentService?.getState().enabled) {
     await agentService.pushConfigSnapshot({
       profiles: localSnapshot.profiles,
-      proxies: localSnapshot.proxies,
-      templates: localSnapshot.templates,
-      cloudPhones: localSnapshot.cloudPhones,
-      settings: localSnapshot.settings,
+      proxies: [],
+      templates: [],
+      cloudPhones: [],
+      settings: {},
     }, { mode: 'replace' })
     return {
       cloudProfileCount: localSnapshot.profiles.length,
       localMirroredProfileCount: localSnapshot.profiles.length,
       autoUploadedCount: localSnapshot.profiles.length,
       removedLocalMirrorCount: 0,
-      globalConfigChanged: true,
     }
   }
 
   if (!getDesktopAuthState().authenticated) {
     throw new Error('请先登录桌面端')
   }
-
-  await syncConfigToControlPlaneOrThrow('replace', {
-    onConflict: 'preserve-local-and-throw',
-  })
 
   const remoteProfilesPayload = await requestControlPlane('/api/config/profiles')
   const remoteProfiles = Array.isArray(remoteProfilesPayload.profiles)
@@ -748,7 +795,6 @@ async function pushFullConfigSnapshotToControlPlaneOrThrow(
     localMirroredProfileCount: localProfiles.length,
     autoUploadedCount,
     removedLocalMirrorCount: deletedRemoteCount,
-    globalConfigChanged: true,
   }
 }
 
@@ -834,29 +880,26 @@ async function reconcileEnvironmentMirrorFromSnapshot(
   }
 }
 
-async function pullFullConfigSnapshotFromControlPlaneOrThrow(
+async function pullEnvironmentProfilesFromControlPlaneOrThrow(
   mode: EnvironmentMirrorSyncMode = 'manual-force-pull',
 ): Promise<{
   cloudProfileCount: number
   localMirroredProfileCount: number
   autoPulledCount: number
   removedLocalMirrorCount: number
-  globalConfigChanged: boolean
 }> {
   let snapshot: RemoteConfigSnapshot | null = null
 
   if (agentService?.getState().enabled) {
     snapshot = (await agentService.pullConfigSnapshot()) as RemoteConfigSnapshot | null
   } else if (getDesktopAuthState().authenticated) {
-    snapshot = await pullRemoteConfigSnapshotFromAccount()
-    lastUserConfigSyncVersion = Number(snapshot.syncVersion || 0)
+    snapshot = await pullEnvironmentSnapshotFromAccount()
   }
 
   if (!snapshot) {
-    throw new Error('当前没有可拉取的云端共享数据')
+    throw new Error('当前没有可拉取的云端环境')
   }
 
-  applyRemoteConfigSnapshot(snapshot)
   const reconcileResult = await reconcileEnvironmentMirrorFromSnapshot(snapshot, mode)
 
   for (const profile of requireDatabase().listProfiles()) {
@@ -867,8 +910,8 @@ async function pullFullConfigSnapshotFromControlPlaneOrThrow(
       status: 'synced',
       message:
         mode === 'auto-full-reconcile'
-          ? '已自动从云端收敛共享环境配置'
-          : '已从云端拉取共享环境配置',
+          ? '已自动从云端收敛环境配置'
+          : '已从云端拉取环境配置',
     })
   }
 
@@ -877,7 +920,6 @@ async function pullFullConfigSnapshotFromControlPlaneOrThrow(
     localMirroredProfileCount: reconcileResult.localMirroredProfileCount,
     autoPulledCount: reconcileResult.autoPulledCount,
     removedLocalMirrorCount: reconcileResult.removedLocalMirrorCount,
-    globalConfigChanged: true,
   }
 }
 
@@ -889,8 +931,6 @@ let sharedDataAutoPushTimer: NodeJS.Timeout | null = null
 let sharedDataAutoPushRetryTimer: NodeJS.Timeout | null = null
 let sharedDataAutoPushInFlight = false
 let sharedDataAutoPushQueued = false
-let sharedDataAutoPushReason = ''
-let sharedDataAutoPushProfileIds = new Set<string>()
 
 type EnvironmentMirrorSyncMode =
   | 'auto-full-reconcile'
@@ -966,16 +1006,40 @@ function readLatestRuntimeNetworkDiagnosticsFromAudit():
   return null
 }
 
-async function pushLocalConfigToControlPlaneManually(reason: string): Promise<ConfigSyncResult> {
-  if (!hasLocalSharedData()) {
-    const result = buildConfigSyncPushFailedResult('当前没有可上传的本地共享数据')
+async function pushGlobalConfigToControlPlaneManually(reason: string): Promise<ConfigSyncResult> {
+  if (!hasLocalConfigData()) {
+    const result = buildConfigSyncPushFailedResult('当前没有可上传的本地全局配置')
     return setLastConfigSyncResult(result)!
   }
   setLastConfigSyncResult(buildConfigSyncInFlightResult())
   try {
-    const resultPayload = await pushFullConfigSnapshotToControlPlaneOrThrow('manual-force-upload')
-    const result = buildConfigSyncPushSuccessResult(
-      `已将本地共享数据上传到云端：云端 ${resultPayload.cloudProfileCount} 个环境，本地镜像 ${resultPayload.localMirroredProfileCount} 个环境，新增/覆盖 ${resultPayload.autoUploadedCount} 个环境，删除云端旧镜像 ${resultPayload.removedLocalMirrorCount} 个`,
+    await syncConfigToControlPlaneOrThrow('replace', {
+      onConflict: 'preserve-local-and-throw',
+    })
+    const result = buildConfigSyncPushSuccessResult('已将本地全局配置上传到云端')
+    result.updatedAt = new Date().toISOString()
+    result.syncVersion = lastUserConfigSyncVersion
+    audit('global_config_push_manual_succeeded', { reason })
+    return setLastConfigSyncResult(result)!
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    audit('global_config_push_manual_failed', { reason, err: message })
+    return setLastConfigSyncResult(
+      buildConfigSyncPushFailedResult(`本地全局配置已保留，但上传失败：${message}`),
+    )!
+  }
+}
+
+async function pushEnvironmentProfilesToControlPlaneManually(reason: string): Promise<ConfigSyncResult> {
+  if (!hasLocalSharedData()) {
+    const result = buildEnvironmentSyncPushFailedResult('当前没有可上传的本地环境镜像')
+    return setLastConfigSyncResult(result)!
+  }
+  setLastConfigSyncResult(buildEnvironmentSyncInFlightResult('正在上传环境到云端'))
+  try {
+    const resultPayload = await pushEnvironmentProfilesToControlPlaneOrThrow('manual-force-upload')
+    const result = buildEnvironmentSyncPushSuccessResult(
+      `已将本地环境上传到云端：云端 ${resultPayload.cloudProfileCount} 个环境，本地镜像 ${resultPayload.localMirroredProfileCount} 个环境，新增/覆盖 ${resultPayload.autoUploadedCount} 个环境，删除云端旧镜像 ${resultPayload.removedLocalMirrorCount} 个`,
     )
     Object.assign(
       result,
@@ -988,16 +1052,32 @@ async function pushLocalConfigToControlPlaneManually(reason: string): Promise<Co
         localProfileCount: resultPayload.localMirroredProfileCount,
         deletedRemoteCount: resultPayload.removedLocalMirrorCount,
         upsertedProfileCount: resultPayload.autoUploadedCount,
-        globalConfigChanged: resultPayload.globalConfigChanged,
       }),
     )
-    audit('config_push_manual_succeeded', { reason })
+    audit('environment_push_manual_succeeded', { reason })
+    void reportEnvironmentSyncEvent({
+      direction: 'push',
+      mode: 'manual',
+      status: 'succeeded',
+      profileIds: requireDatabase().listProfiles().map((profile) => profile.id),
+      reason,
+      cloudProfileCount: resultPayload.cloudProfileCount,
+      localMirroredProfileCount: resultPayload.localMirroredProfileCount,
+    })
     return setLastConfigSyncResult(result)!
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    audit('config_push_manual_failed', { reason, err: message })
+    audit('environment_push_manual_failed', { reason, err: message })
+    void reportEnvironmentSyncEvent({
+      direction: 'push',
+      mode: 'manual',
+      status: 'failed-warning',
+      profileIds: requireDatabase().listProfiles().map((profile) => profile.id),
+      reason,
+      errorMessage: message,
+    })
     return setLastConfigSyncResult(
-      buildConfigSyncPushFailedResult(`本地修改已保留，但云端同步失败：${message}`),
+      buildEnvironmentSyncPushFailedResult(`本地环境已保留，但上传失败：${message}`),
     )!
   }
 }
@@ -1006,9 +1086,9 @@ function scheduleProfileConfigAfterLocalMutation(
   action: 'create' | 'update' | 'clone',
   profile: ProfileRecord,
 ): void {
-  markLocalConfigDirty(
+  setLastConfigSyncResult(buildEnvironmentSyncPendingResult(
     `${action === 'create' ? '环境已创建' : action === 'update' ? '环境已更新' : '环境已复制'}，等待同步到云端`,
-  )
+  ))
   updateEnvironmentSyncMetadata(profile.id, {
     status: 'pending',
     message:
@@ -1048,12 +1128,7 @@ function scheduleSharedDataAutoPushRetry(): void {
 }
 
 function scheduleSharedDataAutoPush(reason: string, profileIds: string[] = []): void {
-  sharedDataAutoPushReason = reason
-  for (const profileId of profileIds) {
-    if (profileId) {
-      sharedDataAutoPushProfileIds.add(profileId)
-    }
-  }
+  requireDatabase().enqueueEnvironmentSyncTask(reason, profileIds)
   sharedDataAutoPushQueued = true
   if (sharedDataAutoPushTimer) {
     clearTimeout(sharedDataAutoPushTimer)
@@ -1072,17 +1147,23 @@ async function flushSharedDataAutoPush(): Promise<void> {
     return
   }
 
+  const queuedTask = requireDatabase().getNextEnvironmentSyncTask()
+  if (!queuedTask) {
+    sharedDataAutoPushQueued = false
+    return
+  }
+
   sharedDataAutoPushInFlight = true
   sharedDataAutoPushQueued = false
   clearSharedDataAutoPushRetry()
-  const affectedProfileIds = Array.from(sharedDataAutoPushProfileIds)
-  sharedDataAutoPushProfileIds = new Set<string>()
-  setLastConfigSyncResult(buildConfigSyncInFlightResult('正在自动同步共享数据到云端'))
+  const activeTask = requireDatabase().markEnvironmentSyncTaskRetrying(queuedTask.taskId) ?? queuedTask
+  const affectedProfileIds = activeTask.profileIds
+  setLastConfigSyncResult(buildEnvironmentSyncInFlightResult('正在自动同步环境到云端'))
 
   try {
-    const resultPayload = await pushFullConfigSnapshotToControlPlaneOrThrow('auto-push')
-    const result = buildConfigSyncPushSuccessResult(
-      `已自动同步共享数据：云端 ${resultPayload.cloudProfileCount} 个环境，本地镜像 ${resultPayload.localMirroredProfileCount} 个，自动上传 ${resultPayload.autoUploadedCount} 个，移除云端旧镜像 ${resultPayload.removedLocalMirrorCount} 个`,
+    const resultPayload = await pushEnvironmentProfilesToControlPlaneOrThrow('auto-push')
+    const result = buildEnvironmentSyncPushSuccessResult(
+      `已自动同步环境：云端 ${resultPayload.cloudProfileCount} 个环境，本地镜像 ${resultPayload.localMirroredProfileCount} 个，自动上传 ${resultPayload.autoUploadedCount} 个，移除云端旧镜像 ${resultPayload.removedLocalMirrorCount} 个`,
     )
     Object.assign(
       result,
@@ -1091,16 +1172,26 @@ async function flushSharedDataAutoPush(): Promise<void> {
         localMirroredProfileCount: resultPayload.localMirroredProfileCount,
         autoUploadedCount: resultPayload.autoUploadedCount,
         removedLocalMirrorCount: resultPayload.removedLocalMirrorCount,
-        globalConfigChanged: resultPayload.globalConfigChanged,
       }),
     )
     setLastConfigSyncResult(result)
-    audit('shared_data_auto_push_succeeded', {
-      reason: sharedDataAutoPushReason,
+    requireDatabase().markEnvironmentSyncTaskSucceeded(activeTask.taskId)
+    audit('environment_auto_push_succeeded', {
+      taskId: activeTask.taskId,
+      reason: activeTask.reason,
       cloudProfileCount: resultPayload.cloudProfileCount,
       localMirroredProfileCount: resultPayload.localMirroredProfileCount,
       autoUploadedCount: resultPayload.autoUploadedCount,
       removedLocalMirrorCount: resultPayload.removedLocalMirrorCount,
+    })
+    void reportEnvironmentSyncEvent({
+      direction: 'push',
+      mode: 'auto',
+      status: 'succeeded',
+      profileIds: affectedProfileIds,
+      reason: activeTask.reason,
+      cloudProfileCount: resultPayload.cloudProfileCount,
+      localMirroredProfileCount: resultPayload.localMirroredProfileCount,
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -1110,13 +1201,23 @@ async function flushSharedDataAutoPush(): Promise<void> {
         message: buildEnvironmentSyncFailureMessage('auto-push', message, 'upload'),
       })
     }
+    requireDatabase().markEnvironmentSyncTaskFailed(activeTask.taskId, message)
     setLastConfigSyncResult(
-      buildConfigSyncPushFailedResult(`共享数据自动上传失败：${message}`),
+      buildEnvironmentSyncPushFailedResult(`环境自动上传失败：${message}`),
     )
-    audit('shared_data_auto_push_failed', {
-      reason: sharedDataAutoPushReason,
+    audit('environment_auto_push_failed', {
+      taskId: activeTask.taskId,
+      reason: activeTask.reason,
       err: message,
       affectedProfileIds,
+    })
+    void reportEnvironmentSyncEvent({
+      direction: 'push',
+      mode: 'auto',
+      status: 'failed-warning',
+      profileIds: affectedProfileIds,
+      reason: activeTask.reason,
+      errorMessage: message,
     })
     scheduleSharedDataAutoPushRetry()
   } finally {
@@ -1308,9 +1409,9 @@ async function pushProfileConfigToControlPlane(profileId: string, reason: string
   if (!getDesktopAuthState().authenticated) {
     updateEnvironmentSyncMetadata(profileId, {
       status: 'pending',
-      message: '本地共享环境配置已保存，登录后可上传到云端',
+      message: '本地环境配置已保存，登录后可上传到云端',
     })
-    return buildConfigSyncPendingResult('本地共享环境配置已保存，登录后可上传到云端')
+    return buildEnvironmentSyncPendingResult('本地环境配置已保存，登录后可上传到云端')
   }
 
   updateEnvironmentSyncMetadata(profileId, {
@@ -1331,12 +1432,12 @@ async function pushProfileConfigToControlPlane(profileId: string, reason: string
     if (updatedProfile) {
       updateRuntimeMetadata(updatedProfile, {
         lastEnvironmentSyncStatus: 'synced',
-        lastEnvironmentSyncMessage: '环境共享配置已同步到云端',
+        lastEnvironmentSyncMessage: '环境配置已同步到云端',
         lastEnvironmentSyncAt: new Date().toISOString(),
         lastEnvironmentSyncVersion: syncVersion,
       })
     }
-    return buildConfigSyncPushSuccessResult('当前环境已同步到云端')
+    return buildEnvironmentSyncPushSuccessResult('当前环境已同步到云端')
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     const isConflict = /profile config sync version mismatch|版本冲突|sync version mismatch/i.test(message)
@@ -1345,7 +1446,7 @@ async function pushProfileConfigToControlPlane(profileId: string, reason: string
       status: isManualProfileSyncReason(reason) ? (isConflict ? 'conflict' : 'error') : 'recovery',
       message: nextMessage,
     })
-    return buildConfigSyncPushFailedResult(`当前环境同步失败：${nextMessage}`)
+    return buildEnvironmentSyncPushFailedResult(`当前环境同步失败：${nextMessage}`)
   }
 }
 
@@ -1391,7 +1492,7 @@ async function pullProfileConfigFromControlPlane(
     status: 'synced',
     message: force ? '已强制从云端拉取当前环境配置' : '已从云端拉取当前环境配置',
   })
-  return buildConfigSyncPushSuccessResult(force ? '已强制从云端拉取当前环境' : '当前环境已从云端拉取')
+  return buildEnvironmentSyncPushSuccessResult(force ? '已强制从云端拉取当前环境' : '当前环境已从云端拉取')
 }
 
 function applyPulledProfileToLocalDatabase(
@@ -1464,31 +1565,41 @@ async function reconcileEnvironmentMirrorFromControlPlane(
   mode: EnvironmentMirrorSyncMode = 'auto-full-reconcile',
 ): Promise<ConfigSyncResult> {
   if (!getDesktopAuthState().authenticated) {
-    return buildConfigSyncPendingResult('请先登录后再同步共享环境')
+    return buildEnvironmentSyncPendingResult('请先登录后再同步环境')
   }
 
-  const result = await pullFullConfigSnapshotFromControlPlaneOrThrow(mode)
-  return {
+  const result = await pullEnvironmentProfilesFromControlPlaneOrThrow(mode)
+  const syncResult: ConfigSyncResult = {
+    scope: 'environment',
     count: result.localMirroredProfileCount,
     source: agentService?.getState().enabled ? 'agent' : 'account',
     usedLocalCache: false,
     message:
       mode === 'auto-full-reconcile'
-        ? `已自动从云端收敛共享数据：云端 ${result.cloudProfileCount} 个环境 / 本地镜像 ${result.localMirroredProfileCount} 个 / 拉取更新 ${result.autoPulledCount} 个 / 移除旧镜像 ${result.removedLocalMirrorCount} 个`
-        : `已从云端拉取共享数据：云端 ${result.cloudProfileCount} 个环境 / 本地镜像 ${result.localMirroredProfileCount} 个 / 拉取更新 ${result.autoPulledCount} 个 / 移除旧镜像 ${result.removedLocalMirrorCount} 个`,
+        ? `已自动从云端收敛环境：云端 ${result.cloudProfileCount} 个环境 / 本地镜像 ${result.localMirroredProfileCount} 个 / 拉取更新 ${result.autoPulledCount} 个 / 移除旧镜像 ${result.removedLocalMirrorCount} 个`
+        : `已从云端拉取环境：云端 ${result.cloudProfileCount} 个环境 / 本地镜像 ${result.localMirroredProfileCount} 个 / 拉取更新 ${result.autoPulledCount} 个 / 移除旧镜像 ${result.removedLocalMirrorCount} 个`,
     warningMessage: '',
     ...buildEnvironmentCountFields({
       cloudProfileCount: result.cloudProfileCount,
       localMirroredProfileCount: result.localMirroredProfileCount,
       autoPulledCount: result.autoPulledCount,
       removedLocalMirrorCount: result.removedLocalMirrorCount,
-      globalConfigChanged: result.globalConfigChanged,
       remoteProfileCount: result.cloudProfileCount,
       localProfileCountAfterPull: result.localMirroredProfileCount,
       removedLocalOrphanCount: result.removedLocalMirrorCount,
       updatedProfileCount: result.autoPulledCount,
     }),
   }
+  void reportEnvironmentSyncEvent({
+    direction: 'pull',
+    mode: mode === 'auto-full-reconcile' ? 'auto' : 'manual',
+    status: 'succeeded',
+    profileIds: requireDatabase().listProfiles().map((profile) => profile.id),
+    reason: mode,
+    cloudProfileCount: result.cloudProfileCount,
+    localMirroredProfileCount: result.localMirroredProfileCount,
+  })
+  return syncResult
 }
 
 function audit(action: string, payload: Record<string, unknown> = {}) {
@@ -3057,7 +3168,8 @@ function getDesktopAuthState(): DesktopAuthState {
     rememberCredentials: remembered.rememberCredentials,
     rememberedIdentifier: remembered.identifier,
     rememberedPassword: remembered.password,
-    lastGlobalConfigSyncResult: lastConfigSyncResult,
+    lastEnvironmentSyncResult,
+    lastGlobalConfigSyncResult,
   }
 }
 
@@ -3166,6 +3278,45 @@ async function requestControlPlane(
     throw new Error(message)
   }
   return payload
+}
+
+async function reportEnvironmentSyncEvent(payload: {
+  direction: 'push' | 'pull'
+  mode: 'auto' | 'manual'
+  status: 'succeeded' | 'failed-warning'
+  profileIds?: string[]
+  reason?: string
+  errorMessage?: string
+  cloudProfileCount?: number
+  localMirroredProfileCount?: number
+}): Promise<void> {
+  if (!getDesktopAuthState().authenticated) {
+    return
+  }
+  try {
+    await requestControlPlane('/api/config/sync-events', {
+      method: 'POST',
+      body: JSON.stringify({
+        scope: 'environment',
+        direction: payload.direction,
+        mode: payload.mode,
+        status: payload.status,
+        profileIds: payload.profileIds ?? [],
+        reason: payload.reason || '',
+        errorMessage: payload.errorMessage || '',
+        cloudProfileCount: payload.cloudProfileCount || 0,
+        localMirroredProfileCount: payload.localMirroredProfileCount || requireDatabase().listProfiles().length,
+        deviceId: getControlPlaneDeviceId(),
+      }),
+    })
+  } catch (error) {
+    audit('environment_sync_event_report_failed', {
+      direction: payload.direction,
+      mode: payload.mode,
+      status: payload.status,
+      err: error instanceof Error ? error.message : String(error),
+    })
+  }
 }
 
 type JsonRequestInit = {
@@ -5811,14 +5962,26 @@ async function performDesktopLogin(payload: {
       try {
         const result = await reconcileEnvironmentMirrorFromControlPlane('auto-full-reconcile')
         setLastConfigSyncResult(result)
+        if (requireDatabase().getNextEnvironmentSyncTask()) {
+          scheduleSharedDataAutoPush('resume-environment-sync-after-login')
+        }
       } catch (syncError) {
         const message = syncError instanceof Error ? syncError.message : String(syncError)
+        void reportEnvironmentSyncEvent({
+          direction: 'pull',
+          mode: 'auto',
+          status: 'failed-warning',
+          reason: 'auto-full-reconcile',
+          errorMessage: message,
+        })
         setLastConfigSyncResult({
+          scope: 'environment',
           count: requireDatabase().listProfiles().length,
           source: 'account',
           usedLocalCache: true,
           message: '',
-          warningMessage: `自动拉取共享环境失败，请手动从云端拉取最新环境：${message}`,
+          warningMessage: `自动拉取环境失败，请手动从云端拉取最新环境：${message}`,
+          localMirroredProfileCount: requireDatabase().listProfiles().length,
         })
         audit('profile_index_pull_after_login_failed', {
           apiBase,
@@ -6366,35 +6529,62 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('auth.logout', async () => clearDesktopAuth())
   ipcMain.handle('auth.syncGlobalConfig', async () =>
-    pushLocalConfigToControlPlaneManually('auth.manual-upload'),
+    pushGlobalConfigToControlPlaneManually('auth.manual-upload-global-config'),
   )
   ipcMain.handle('auth.pullGlobalConfig', async () => {
-    if (runtimeContexts.size > 0 || scheduler.getQueuedIds().length > 0 || scheduler.getStartingIds().length > 0) {
-      throw new Error('当前存在运行中或启动中的环境，请先停止环境后再从云端拉取共享数据')
-    }
-    const result = await pullFullConfigSnapshotFromControlPlaneOrThrow('manual-force-pull')
-    return setLastConfigSyncResult({
-      count: result.localMirroredProfileCount,
-      source: agentService?.getState().enabled ? 'agent' : 'account',
-      usedLocalCache: false,
-      message: `已从云端拉取共享数据：云端 ${result.cloudProfileCount} 个环境，本地已收敛为 ${result.localMirroredProfileCount} 个环境，拉取更新 ${result.autoPulledCount} 个，移除本地旧镜像 ${result.removedLocalMirrorCount} 个`,
-      warningMessage: '',
-      ...buildEnvironmentCountFields({
-        cloudProfileCount: result.cloudProfileCount,
-        localMirroredProfileCount: result.localMirroredProfileCount,
-        autoPulledCount: result.autoPulledCount,
-        removedLocalMirrorCount: result.removedLocalMirrorCount,
-        remoteProfileCount: result.cloudProfileCount,
-        localProfileCountAfterPull: result.localMirroredProfileCount,
-        removedLocalOrphanCount: result.removedLocalMirrorCount,
-        updatedProfileCount: result.autoPulledCount,
-        globalConfigChanged: result.globalConfigChanged,
-      }),
-    } satisfies ConfigSyncResult)!
+    const result = await syncConfigFromControlPlane()
+    result.scope = 'global-config'
+    result.updatedAt = new Date().toISOString()
+    return setLastConfigSyncResult(result)!
   })
   ipcMain.handle('auth.syncProfiles', async () =>
-    reconcileEnvironmentMirrorFromControlPlane('auto-full-reconcile'),
+    pushEnvironmentProfilesToControlPlaneManually('auth.manual-upload-profiles'),
   )
+  ipcMain.handle('auth.pullProfiles', async () => {
+    if (runtimeContexts.size > 0 || scheduler.getQueuedIds().length > 0 || scheduler.getStartingIds().length > 0) {
+      throw new Error('当前存在运行中或启动中的环境，请先停止环境后再从云端拉取环境')
+    }
+    try {
+      const result = await pullEnvironmentProfilesFromControlPlaneOrThrow('manual-force-pull')
+      void reportEnvironmentSyncEvent({
+        direction: 'pull',
+        mode: 'manual',
+        status: 'succeeded',
+        profileIds: requireDatabase().listProfiles().map((profile) => profile.id),
+        reason: 'manual-force-pull',
+        cloudProfileCount: result.cloudProfileCount,
+        localMirroredProfileCount: result.localMirroredProfileCount,
+      })
+      return setLastConfigSyncResult({
+        scope: 'environment',
+        count: result.localMirroredProfileCount,
+        source: agentService?.getState().enabled ? 'agent' : 'account',
+        usedLocalCache: false,
+        message: `已从云端拉取环境：云端 ${result.cloudProfileCount} 个环境，本地已收敛为 ${result.localMirroredProfileCount} 个环境，拉取更新 ${result.autoPulledCount} 个，移除本地旧镜像 ${result.removedLocalMirrorCount} 个`,
+        warningMessage: '',
+        ...buildEnvironmentCountFields({
+          cloudProfileCount: result.cloudProfileCount,
+          localMirroredProfileCount: result.localMirroredProfileCount,
+          autoPulledCount: result.autoPulledCount,
+          removedLocalMirrorCount: result.removedLocalMirrorCount,
+          remoteProfileCount: result.cloudProfileCount,
+          localProfileCountAfterPull: result.localMirroredProfileCount,
+          removedLocalOrphanCount: result.removedLocalMirrorCount,
+          updatedProfileCount: result.autoPulledCount,
+        }),
+      } satisfies ConfigSyncResult)!
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      void reportEnvironmentSyncEvent({
+        direction: 'pull',
+        mode: 'manual',
+        status: 'failed-warning',
+        reason: 'manual-force-pull',
+        errorMessage: message,
+      })
+      throw error
+    }
+  })
 
   ipcMain.handle('meta.getInfo', async () => getDesktopRuntimeInfo())
   ipcMain.handle('meta.getAgentState', async () => getAgentStateSnapshot())
@@ -6611,8 +6801,8 @@ async function registerIpcHandlers(): Promise<void> {
     ensureWritable('profiles.delete')
     await stopRuntime(profileId)
     requireDatabase().deleteProfile(profileId)
-    markLocalConfigDirty('环境已在本地删除，等待同步到云端')
-    scheduleSharedDataAutoPush('delete-profile')
+    setLastConfigSyncResult(buildEnvironmentSyncPendingResult('环境已在本地删除，等待同步到云端'))
+    scheduleSharedDataAutoPush('delete-profile', [profileId])
     logEvent('warn', 'profile', `Deleted profile ${profileId}`, profileId)
   })
   ipcMain.handle('profiles.clone', async (_event, profileId: string) => {
@@ -6648,17 +6838,19 @@ async function registerIpcHandlers(): Promise<void> {
     ensureWritable('profiles.bulkDelete')
     await stopMany(payload.profileIds)
     requireDatabase().bulkDeleteProfiles(payload.profileIds)
-    markLocalConfigDirty('批量环境已在本地删除，等待同步到云端')
-    scheduleSharedDataAutoPush('bulk-delete-profile')
+    setLastConfigSyncResult(buildEnvironmentSyncPendingResult('批量环境已在本地删除，等待同步到云端'))
+    scheduleSharedDataAutoPush('bulk-delete-profile', payload.profileIds)
     logEvent('warn', 'profile', `Deleted ${payload.profileIds.length} profiles`, null)
   })
   ipcMain.handle('profiles.bulkAssignGroup', async (_event, payload: ProfileBulkActionPayload) => {
     ensureWritable('profiles.bulkAssignGroup')
     requireDatabase().bulkAssignGroup(payload.profileIds, payload.groupName ?? '')
+    setLastConfigSyncResult(buildEnvironmentSyncPendingResult('环境分组已在本地更新，等待上传到云端'))
     updateEnvironmentSyncMetadataForProfiles(payload.profileIds, {
       status: 'pending',
       message: '环境分组已在本地更新，等待上传到云端',
     })
+    scheduleSharedDataAutoPush('bulk-assign-profile-group', payload.profileIds)
     logEvent('info', 'profile', `Updated group for ${payload.profileIds.length} profiles`, null)
   })
 

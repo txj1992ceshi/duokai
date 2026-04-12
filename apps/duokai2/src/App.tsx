@@ -386,6 +386,16 @@ function App() {
 
   const sidebarActions = [
     {
+      key: 'syncProfiles' as const,
+      label: desktopT('navigation.actions.uploadProfiles'),
+      onClick: () => void syncProfiles(),
+    },
+    {
+      key: 'pullProfiles' as const,
+      label: desktopT('navigation.actions.pullProfiles'),
+      onClick: () => void pullProfiles(),
+    },
+    {
       key: 'syncGlobalConfig' as const,
       label: desktopT('navigation.actions.uploadGlobalConfig'),
       onClick: () => void syncGlobalConfig(),
@@ -407,6 +417,8 @@ function App() {
     saveAccountProfile,
     saveAccountPassword,
     uploadAccountAvatar,
+    syncProfiles,
+    pullProfiles,
     syncGlobalConfig,
     pullGlobalConfig,
     revokeAccountDevice,

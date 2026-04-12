@@ -543,6 +543,9 @@ export function createDefaultFingerprint(): FingerprintConfig {
     hardwareProfileVersion: '',
     hardwareSeed: '',
     hardwareProfileSource: '',
+    hardwareTemplateId: '',
+    hardwareVariantId: '',
+    hardwareCatalogVersion: '',
   }
 
   return {

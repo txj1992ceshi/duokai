@@ -61,6 +61,8 @@ export interface DesktopApi {
     logout: () => Promise<DesktopAuthState>
     syncGlobalConfig: () => Promise<ConfigSyncResult>
     pullGlobalConfig: () => Promise<ConfigSyncResult>
+    syncProfiles: () => Promise<ConfigSyncResult>
+    pullProfiles: () => Promise<ConfigSyncResult>
   }
   meta: {
     getInfo: () => Promise<DesktopRuntimeInfo>

@@ -27,6 +27,8 @@ const api: DesktopApi = {
     logout: () => ipcRenderer.invoke('auth.logout'),
     syncGlobalConfig: () => ipcRenderer.invoke('auth.syncGlobalConfig'),
     pullGlobalConfig: () => ipcRenderer.invoke('auth.pullGlobalConfig'),
+    syncProfiles: () => ipcRenderer.invoke('auth.syncProfiles'),
+    pullProfiles: () => ipcRenderer.invoke('auth.pullProfiles'),
   },
   meta: {
     getInfo: () => ipcRenderer.invoke('meta.getInfo'),

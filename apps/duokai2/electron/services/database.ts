@@ -16,6 +16,7 @@ import type {
   CloudPhoneRecord,
   DashboardSummary,
   DeviceProfile,
+  EnvironmentSyncTaskRecord,
   EnvironmentPurpose,
   ExportBundle,
   FingerprintConfig,
@@ -140,6 +141,18 @@ type CloudPhoneRow = {
 }
 
 type CountRow = { count: number }
+
+type EnvironmentSyncTaskRow = {
+  task_id: string
+  kind: EnvironmentSyncTaskRecord['kind']
+  profile_ids: string
+  reason: string
+  created_at: string
+  last_tried_at: string | null
+  retry_count: number
+  last_error: string
+  status: EnvironmentSyncTaskRecord['status']
+}
 
 const REMOTE_SYNC_EXCLUDED_SETTINGS = new Set([
   'controlPlaneApiBase',
@@ -278,6 +291,18 @@ export class DatabaseService {
         fingerprint_settings TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS environment_sync_tasks (
+        task_id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        profile_ids TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        last_tried_at TEXT,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS runtime_logs (
@@ -683,6 +708,126 @@ export class DatabaseService {
       .prepare(`SELECT * FROM profiles ORDER BY datetime(created_at) DESC`)
       .all() as ProfileRow[]
     return rows.map((row) => this.mapProfile(row))
+  }
+
+  private mapEnvironmentSyncTask(row: EnvironmentSyncTaskRow): EnvironmentSyncTaskRecord {
+    return {
+      taskId: row.task_id,
+      kind: row.kind,
+      profileIds: JSON.parse(row.profile_ids || '[]'),
+      reason: row.reason,
+      createdAt: row.created_at,
+      lastTriedAt: row.last_tried_at || '',
+      retryCount: row.retry_count,
+      lastError: row.last_error,
+      status: row.status,
+    }
+  }
+
+  listEnvironmentSyncTasks(limit = 50): EnvironmentSyncTaskRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM environment_sync_tasks
+         ORDER BY datetime(created_at) DESC
+         LIMIT ?`,
+      )
+      .all(limit) as EnvironmentSyncTaskRow[]
+    return rows.map((row) => this.mapEnvironmentSyncTask(row))
+  }
+
+  enqueueEnvironmentSyncTask(reason: string, profileIds: string[] = []): EnvironmentSyncTaskRecord {
+    const normalizedProfileIds = Array.from(new Set(profileIds.filter(Boolean)))
+    const existing = this.db
+      .prepare(
+        `SELECT * FROM environment_sync_tasks
+         WHERE kind = 'environment-auto-push' AND status IN ('pending', 'retrying', 'failed-warning')
+         ORDER BY datetime(created_at) ASC
+         LIMIT 1`,
+      )
+      .get() as EnvironmentSyncTaskRow | undefined
+
+    if (existing) {
+      const mergedProfileIds = Array.from(
+        new Set([
+          ...JSON.parse(existing.profile_ids || '[]'),
+          ...normalizedProfileIds,
+        ]),
+      )
+      this.db
+        .prepare(
+          `UPDATE environment_sync_tasks
+           SET profile_ids = ?, reason = ?, status = CASE WHEN status = 'succeeded' THEN 'pending' ELSE status END
+           WHERE task_id = ?`,
+        )
+        .run(JSON.stringify(mergedProfileIds), reason || existing.reason, existing.task_id)
+      return this.getEnvironmentSyncTaskById(existing.task_id)!
+    }
+
+    const taskId = randomUUID()
+    const now = new Date().toISOString()
+    this.db
+      .prepare(
+        `INSERT INTO environment_sync_tasks (
+          task_id, kind, profile_ids, reason, created_at, last_tried_at, retry_count, last_error, status
+        ) VALUES (?, 'environment-auto-push', ?, ?, ?, NULL, 0, '', 'pending')`,
+      )
+      .run(taskId, JSON.stringify(normalizedProfileIds), reason, now)
+    return this.getEnvironmentSyncTaskById(taskId)!
+  }
+
+  getEnvironmentSyncTaskById(taskId: string): EnvironmentSyncTaskRecord | null {
+    const row = this.db
+      .prepare(`SELECT * FROM environment_sync_tasks WHERE task_id = ?`)
+      .get(taskId) as EnvironmentSyncTaskRow | undefined
+    return row ? this.mapEnvironmentSyncTask(row) : null
+  }
+
+  getNextEnvironmentSyncTask(): EnvironmentSyncTaskRecord | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM environment_sync_tasks
+         WHERE kind = 'environment-auto-push' AND status IN ('pending', 'failed-warning')
+         ORDER BY datetime(created_at) ASC
+         LIMIT 1`,
+      )
+      .get() as EnvironmentSyncTaskRow | undefined
+    return row ? this.mapEnvironmentSyncTask(row) : null
+  }
+
+  markEnvironmentSyncTaskRetrying(taskId: string): EnvironmentSyncTaskRecord | null {
+    const now = new Date().toISOString()
+    this.db
+      .prepare(
+        `UPDATE environment_sync_tasks
+         SET status = 'retrying', last_tried_at = ?, retry_count = retry_count + 1
+         WHERE task_id = ?`,
+      )
+      .run(now, taskId)
+    return this.getEnvironmentSyncTaskById(taskId)
+  }
+
+  markEnvironmentSyncTaskSucceeded(taskId: string): EnvironmentSyncTaskRecord | null {
+    const now = new Date().toISOString()
+    this.db
+      .prepare(
+        `UPDATE environment_sync_tasks
+         SET status = 'succeeded', last_tried_at = ?, last_error = ''
+         WHERE task_id = ?`,
+      )
+      .run(now, taskId)
+    return this.getEnvironmentSyncTaskById(taskId)
+  }
+
+  markEnvironmentSyncTaskFailed(taskId: string, lastError: string): EnvironmentSyncTaskRecord | null {
+    const now = new Date().toISOString()
+    this.db
+      .prepare(
+        `UPDATE environment_sync_tasks
+         SET status = 'failed-warning', last_tried_at = ?, last_error = ?
+         WHERE task_id = ?`,
+      )
+      .run(now, lastError, taskId)
+    return this.getEnvironmentSyncTaskById(taskId)
   }
 
   listCloudPhones(): CloudPhoneRecord[] {
