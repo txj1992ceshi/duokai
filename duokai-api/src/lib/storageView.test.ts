@@ -5,6 +5,7 @@ import {
   compactWorkspaceMetadata,
   compactWorkspaceSnapshotDocument,
   compactWorkspaceSnapshotManifest,
+  hasLegacyWorkspaceSnapshotPayload,
   shouldIncludeArtifactContent,
 } from './storageView.js';
 
@@ -109,4 +110,35 @@ test('compactWorkspaceSnapshotDocument collapses heavy snapshot content to metad
     healthSummary: { status: 'ok' },
     consistencySummary: { status: 'ok' },
   });
+});
+
+test('hasLegacyWorkspaceSnapshotPayload detects heavy snapshot payloads only', () => {
+  assert.equal(
+    hasLegacyWorkspaceSnapshotPayload({
+      manifest: { schemaVersion: 1, trustedSnapshotStatus: 'valid' },
+      workspaceMetadata: {
+        identityProfileId: 'profile-1',
+        templateBinding: { templateRevision: 'r1' },
+      },
+      storageState: { version: 2, inlineStateJson: null, stateJson: null },
+      directoryManifest: [],
+      healthSummary: { status: 'ok' },
+      consistencySummary: { status: 'ok' },
+    }),
+    false
+  );
+
+  assert.equal(
+    hasLegacyWorkspaceSnapshotPayload({
+      manifest: { schemaVersion: 1, trustedSnapshotStatus: 'valid', extra: 'heavy' },
+      workspaceMetadata: {
+        identityProfileId: 'profile-1',
+        templateBinding: { templateRevision: 'r1' },
+        paths: { profileDir: '/tmp/profile' },
+      },
+      storageState: { version: 2, inlineStateJson: { cookies: [] }, stateJson: null },
+      directoryManifest: [{ key: 'profileDir', path: '/tmp/profile' }],
+    }),
+    true
+  );
 });

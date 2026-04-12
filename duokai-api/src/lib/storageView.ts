@@ -87,3 +87,31 @@ export function compactWorkspaceSnapshotDocument(
     consistencySummary: isRecord(value.consistencySummary) ? value.consistencySummary : {},
   };
 }
+
+export function hasLegacyWorkspaceSnapshotPayload(value: Record<string, unknown>): boolean {
+  const compacted = compactWorkspaceSnapshotDocument(value);
+
+  const manifest = isRecord(value.manifest) ? value.manifest : {};
+  const compactManifest = isRecord(compacted.manifest) ? compacted.manifest : {};
+  if (Object.keys(manifest).length > Object.keys(compactManifest).length) {
+    return true;
+  }
+
+  const workspaceMetadata = isRecord(value.workspaceMetadata) ? value.workspaceMetadata : {};
+  const compactWorkspaceMetadataValue = isRecord(compacted.workspaceMetadata)
+    ? compacted.workspaceMetadata
+    : {};
+  if (Object.keys(workspaceMetadata).length > Object.keys(compactWorkspaceMetadataValue).length) {
+    return true;
+  }
+
+  const storageState = isRecord(value.storageState) ? value.storageState : {};
+  if (storageState.inlineStateJson !== null && storageState.inlineStateJson !== undefined) {
+    return true;
+  }
+  if (storageState.stateJson !== null && storageState.stateJson !== undefined) {
+    return true;
+  }
+
+  return Array.isArray(value.directoryManifest) && value.directoryManifest.length > 0;
+}

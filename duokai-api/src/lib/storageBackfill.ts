@@ -4,7 +4,7 @@ import {
   writeStorageStateArtifact,
   writeWorkspaceSnapshotArtifact,
 } from './storageArtifacts.js';
-import { compactWorkspaceSnapshotDocument } from './storageView.js';
+import { compactWorkspaceSnapshotDocument, hasLegacyWorkspaceSnapshotPayload } from './storageView.js';
 import { ProfileStorageStateModel } from '../models/ProfileStorageState.js';
 import { WorkspaceSnapshotModel } from '../models/WorkspaceSnapshot.js';
 
@@ -27,15 +27,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function hasInlineStorageStatePayload(value: Record<string, unknown>): boolean {
   return value.inlineStateJson !== null && value.inlineStateJson !== undefined
     || value.stateJson !== null && value.stateJson !== undefined;
-}
-
-function hasWorkspaceSnapshotPayload(value: Record<string, unknown>): boolean {
-  return (
-    (isRecord(value.manifest) && Object.keys(value.manifest).length > 0) ||
-    (isRecord(value.workspaceMetadata) && Object.keys(value.workspaceMetadata).length > 0) ||
-    (isRecord(value.storageState) && Object.keys(value.storageState).length > 0) ||
-    (Array.isArray(value.directoryManifest) && value.directoryManifest.length > 0)
-  );
 }
 
 function buildSnapshotArtifactPayload(snapshot: Record<string, unknown>) {
@@ -189,7 +180,7 @@ export async function backfillStorageArtifacts(
   for (const item of workspaceSnapshots) {
     try {
       const record = item as Record<string, unknown>;
-      const hasPayload = hasWorkspaceSnapshotPayload(record);
+      const hasPayload = hasLegacyWorkspaceSnapshotPayload(record);
       const hasFileRef = String(record.fileRef || '').trim().length > 0;
       if (!hasPayload) {
         continue;

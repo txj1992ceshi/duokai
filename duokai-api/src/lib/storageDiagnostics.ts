@@ -2,6 +2,7 @@ import { access } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 
 import { ensureFileRepositoryRoot, getFileRepositoryRoot } from './fileRepository.js';
+import { hasLegacyWorkspaceSnapshotPayload } from './storageView.js';
 import { ProfileStorageStateModel } from '../models/ProfileStorageState.js';
 import { WorkspaceSnapshotModel } from '../models/WorkspaceSnapshot.js';
 
@@ -21,25 +22,6 @@ function hasInlineStorageStatePayload(value: Record<string, unknown>): boolean {
   return (
     (value.inlineStateJson !== null && value.inlineStateJson !== undefined) ||
     (value.stateJson !== null && value.stateJson !== undefined)
-  );
-}
-
-function hasWorkspaceSnapshotPayload(value: Record<string, unknown>): boolean {
-  const manifest = value.manifest;
-  const workspaceMetadata = value.workspaceMetadata;
-  const storageState = value.storageState;
-  const directoryManifest = value.directoryManifest;
-  return (
-    (!!manifest && typeof manifest === 'object' && !Array.isArray(manifest) && Object.keys(manifest).length > 0) ||
-    (!!workspaceMetadata &&
-      typeof workspaceMetadata === 'object' &&
-      !Array.isArray(workspaceMetadata) &&
-      Object.keys(workspaceMetadata).length > 0) ||
-    (!!storageState &&
-      typeof storageState === 'object' &&
-      !Array.isArray(storageState) &&
-      Object.keys(storageState).length > 0) ||
-    (Array.isArray(directoryManifest) && directoryManifest.length > 0)
   );
 }
 
@@ -77,7 +59,7 @@ export async function collectStorageDiagnosticsSummary(): Promise<StorageDiagnos
     (item) => String(item.fileRef || '').trim().length > 0
   ).length;
   const workspaceSnapshotLegacyInlineCount = workspaceSnapshots.filter((item) =>
-    hasWorkspaceSnapshotPayload(item as Record<string, unknown>)
+    hasLegacyWorkspaceSnapshotPayload(item as Record<string, unknown>)
   ).length;
 
   const uniqueFileRefs = new Set<string>();
