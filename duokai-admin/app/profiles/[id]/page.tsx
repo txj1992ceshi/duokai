@@ -43,6 +43,26 @@ type ProfileDetail = {
   lastAutoPullAt?: string;
   lastAutoSyncError?: string;
   lastWriterDeviceId?: string;
+  lastStorageStateSyncStatus?: string;
+  lastStorageStateSyncMessage?: string;
+  lastWorkspaceSummarySyncStatus?: string;
+  lastWorkspaceSummarySyncMessage?: string;
+  lastWorkspaceSnapshotSyncStatus?: string;
+  lastWorkspaceSnapshotSyncMessage?: string;
+  lastValidationLevel?: string;
+  lastValidationMessages?: string[];
+};
+
+type IssueTimelineItem = {
+  id: string;
+  category: string;
+  severity: 'blocking' | 'warning' | 'info';
+  reasonCode: string;
+  message: string;
+  occurredAt: string;
+  recoveredAt: string;
+  isRecovered: boolean;
+  deviceId?: string;
 };
 
 type AdminUser = {
@@ -91,6 +111,8 @@ export default function ProfileDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [currentIssues, setCurrentIssues] = useState<IssueTimelineItem[]>([]);
+  const [recoveredIssues, setRecoveredIssues] = useState<IssueTimelineItem[]>([]);
 
   useEffect(() => {
     const auth = readAdminAuth();
@@ -123,6 +145,10 @@ export default function ProfileDetailPage() {
         const p = data.profile as ProfileDetail;
         setProfile(p);
         setTargetUserId(String(p.userId || ''));
+        setCurrentIssues(Array.isArray(data?.issues?.activeIssues) ? data.issues.activeIssues : []);
+        setRecoveredIssues(
+          Array.isArray(data?.issues?.recoveredIssues) ? data.issues.recoveredIssues : []
+        );
         setUsers(
           usersRes.ok && usersData?.success && Array.isArray(usersData.users)
             ? usersData.users.filter((user: AdminUser) => user.status !== 'disabled')
@@ -172,6 +198,12 @@ export default function ProfileDetailPage() {
   if (!profile) return <div className="text-sm text-neutral-400">环境不存在</div>;
 
   const syncProfile = getSyncProfile(profile);
+
+  function renderIssueTone(severity: IssueTimelineItem['severity']) {
+    if (severity === 'blocking') return 'text-red-300';
+    if (severity === 'warning') return 'text-yellow-300';
+    return 'text-cyan-300';
+  }
 
   return (
     <div className="space-y-6">
@@ -254,8 +286,72 @@ export default function ProfileDetailPage() {
             <div>lastWriterDeviceId：{profile.lastWriterDeviceId || '-'}</div>
             <div>autoSyncTaskCount：{profile.autoSyncTaskCount ?? 0}</div>
             <div>lastAutoSyncError：{profile.lastAutoSyncError || '-'}</div>
+            <div>lastStorageStateSyncStatus：{profile.lastStorageStateSyncStatus || '-'}</div>
+            <div>lastStorageStateSyncMessage：{profile.lastStorageStateSyncMessage || '-'}</div>
+            <div>lastWorkspaceSummarySyncStatus：{profile.lastWorkspaceSummarySyncStatus || '-'}</div>
+            <div>lastWorkspaceSummarySyncMessage：{profile.lastWorkspaceSummarySyncMessage || '-'}</div>
+            <div>lastWorkspaceSnapshotSyncStatus：{profile.lastWorkspaceSnapshotSyncStatus || '-'}</div>
+            <div>lastWorkspaceSnapshotSyncMessage：{profile.lastWorkspaceSnapshotSyncMessage || '-'}</div>
+            <div>lastValidationLevel：{profile.lastValidationLevel || '-'}</div>
+            <div>
+              lastValidationMessages：
+              {Array.isArray(profile.lastValidationMessages) && profile.lastValidationMessages.length
+                ? profile.lastValidationMessages.join(' | ')
+                : '-'}
+            </div>
           </DetailCard>
         </CardGrid>
+      </SectionBlock>
+
+      <SectionBlock title="当前待处理异常" description="当前仍影响使用或需要管理员关注的异常项。">
+        {currentIssues.length ? (
+          <div className="space-y-3">
+            {currentIssues.map((issue) => (
+              <div
+                key={issue.id}
+                className="rounded-2xl border border-neutral-800 bg-neutral-900 px-5 py-4 text-sm"
+              >
+                <div className={`font-medium ${renderIssueTone(issue.severity)}`}>
+                  {issue.category} / {issue.reasonCode}
+                </div>
+                <div className="mt-2 text-neutral-200">{issue.message || '-'}</div>
+                <div className="mt-2 text-xs text-neutral-500">
+                  发生时间：{formatDateTime(issue.occurredAt)} | 设备：{issue.deviceId || '-'}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-dashed border-neutral-800 bg-neutral-900/60 px-5 py-6 text-sm text-neutral-400">
+            当前没有待处理异常。
+          </div>
+        )}
+      </SectionBlock>
+
+      <SectionBlock title="历史已恢复异常" description="最近已经恢复或已落到恢复态的异常记录。">
+        {recoveredIssues.length ? (
+          <div className="space-y-3">
+            {recoveredIssues.map((issue) => (
+              <div
+                key={issue.id}
+                className="rounded-2xl border border-neutral-800 bg-neutral-900 px-5 py-4 text-sm"
+              >
+                <div className={`font-medium ${renderIssueTone(issue.severity)}`}>
+                  {issue.category} / {issue.reasonCode}
+                </div>
+                <div className="mt-2 text-neutral-200">{issue.message || '-'}</div>
+                <div className="mt-2 text-xs text-neutral-500">
+                  发生时间：{formatDateTime(issue.occurredAt)} | 恢复时间：
+                  {formatDateTime(issue.recoveredAt)} | 设备：{issue.deviceId || '-'}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-dashed border-neutral-800 bg-neutral-900/60 px-5 py-6 text-sm text-neutral-400">
+            暂无已恢复异常记录。
+          </div>
+        )}
       </SectionBlock>
     </div>
   );

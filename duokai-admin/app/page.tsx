@@ -46,6 +46,14 @@ type StorageDiagnostics = {
   unreadableFileRefCount?: number;
 };
 
+type IssueSummary = {
+  currentIssueUserCount: number;
+  currentBlockingProfileCount: number;
+  currentSyncWarningProfileCount: number;
+  recentIssueCount24h: number;
+  recoveredCount24h: number;
+};
+
 type RuntimeStatusPayload = {
   online?: boolean;
   sessions?: Array<{ sessionId?: string }>;
@@ -84,6 +92,13 @@ export default function AdminHomePage() {
     legacyInlinePayloadCount: 0,
   });
   const [storageDiagnostics, setStorageDiagnostics] = useState<StorageDiagnostics>({});
+  const [issueSummary, setIssueSummary] = useState<IssueSummary>({
+    currentIssueUserCount: 0,
+    currentBlockingProfileCount: 0,
+    currentSyncWarningProfileCount: 0,
+    recentIssueCount24h: 0,
+    recoveredCount24h: 0,
+  });
 
   const loadDashboard = useCallback(async () => {
     if (!authChecked) return;
@@ -91,21 +106,26 @@ export default function AdminHomePage() {
     setLoading(true);
     setError('');
     try {
-      const [usersRes, profilesRes, runtimeRes] = await Promise.all([
+      const [usersRes, profilesRes, runtimeRes, issueSummaryRes] = await Promise.all([
         adminFetch('/api/admin/users'),
         adminFetch('/api/admin/profiles'),
         adminFetch('/api/runtime/status'),
+        adminFetch('/api/admin/profiles/issues/summary'),
       ]);
 
       const usersData = await usersRes.json();
       const profilesData = await profilesRes.json();
       const runtimeData = await runtimeRes.json();
+      const issueSummaryData = await issueSummaryRes.json();
 
       if (!usersRes.ok || !usersData.success) {
         throw new Error(usersData.error || '加载用户统计失败');
       }
       if (!profilesRes.ok || !profilesData.success) {
         throw new Error(profilesData.error || '加载环境统计失败');
+      }
+      if (!issueSummaryRes.ok || !issueSummaryData.success) {
+        throw new Error(issueSummaryData.error || '加载异常摘要失败');
       }
 
       setUsers(Array.isArray(usersData.users) ? usersData.users : []);
@@ -130,6 +150,17 @@ export default function AdminHomePage() {
       setRuntimeStatus({
         online: Boolean(runtimeData?.online),
         sessions: Array.isArray(runtimeData?.sessions) ? runtimeData.sessions : [],
+      });
+      setIssueSummary({
+        currentIssueUserCount: Number(issueSummaryData?.summary?.currentIssueUserCount || 0),
+        currentBlockingProfileCount: Number(
+          issueSummaryData?.summary?.currentBlockingProfileCount || 0
+        ),
+        currentSyncWarningProfileCount: Number(
+          issueSummaryData?.summary?.currentSyncWarningProfileCount || 0
+        ),
+        recentIssueCount24h: Number(issueSummaryData?.summary?.recentIssueCount24h || 0),
+        recoveredCount24h: Number(issueSummaryData?.summary?.recoveredCount24h || 0),
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : '加载统计失败');
@@ -190,6 +221,31 @@ export default function AdminHomePage() {
         <StatCard label="禁用用户数" value={disabledUsers} accentClassName="text-yellow-400" />
         <StatCard label="管理员数" value={adminUsers} accentClassName="text-blue-400" />
         <StatCard label="环境总数" value={totalProfiles} />
+        <StatCard
+          label="当前异常用户数"
+          value={issueSummary.currentIssueUserCount}
+          accentClassName="text-orange-400"
+        />
+        <StatCard
+          label="当前阻断环境数"
+          value={issueSummary.currentBlockingProfileCount}
+          accentClassName="text-red-400"
+        />
+        <StatCard
+          label="当前同步告警环境数"
+          value={issueSummary.currentSyncWarningProfileCount}
+          accentClassName="text-yellow-400"
+        />
+        <StatCard
+          label="24h 新增异常"
+          value={issueSummary.recentIssueCount24h}
+          accentClassName="text-orange-300"
+        />
+        <StatCard
+          label="24h 自动恢复"
+          value={issueSummary.recoveredCount24h}
+          accentClassName="text-emerald-400"
+        />
         <StatCard label="Ready 环境数" value={readyProfiles} accentClassName="text-green-400" />
         <StatCard
           label="已同步登录态环境数"

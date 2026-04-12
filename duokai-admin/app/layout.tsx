@@ -73,6 +73,9 @@ export default function RootLayout({
               <Link href="/profiles" className={navClass('/profiles')}>
                 环境总览
               </Link>
+              <Link href="/issues" className={navClass('/issues')}>
+                异常判断
+              </Link>
               <Link href="/runtime" className={navClass('/runtime')}>
                 运行状态
               </Link>
