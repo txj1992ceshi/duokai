@@ -904,6 +904,11 @@ export interface ConfigSyncResult {
   usedLocalCache: boolean
   message: string
   warningMessage: string
+  cloudProfileCount?: number
+  localMirroredProfileCount?: number
+  autoUploadedCount?: number
+  autoPulledCount?: number
+  removedLocalMirrorCount?: number
   remoteProfileCount?: number
   localProfileCount?: number
   localProfileCountAfterPull?: number

@@ -434,6 +434,30 @@ function buildConfigSyncPushFailedResult(message: string): ConfigSyncResult {
   }
 }
 
+function buildEnvironmentCountFields(
+  patch: Partial<
+    Pick<
+      ConfigSyncResult,
+      | 'cloudProfileCount'
+      | 'localMirroredProfileCount'
+      | 'autoUploadedCount'
+      | 'autoPulledCount'
+      | 'removedLocalMirrorCount'
+      | 'remoteProfileCount'
+      | 'localProfileCount'
+      | 'localProfileCountAfterPull'
+      | 'orphanProfileCount'
+      | 'removedLocalOrphanCount'
+      | 'deletedRemoteCount'
+      | 'upsertedProfileCount'
+      | 'updatedProfileCount'
+      | 'globalConfigChanged'
+    >
+  >,
+): Partial<ConfigSyncResult> {
+  return patch
+}
+
 function markLocalConfigDirty(message?: string): number {
   localConfigMutationVersion += 1
   setLastConfigSyncResult(buildConfigSyncPendingResult(message))
@@ -471,11 +495,6 @@ function hasLocalSharedData(): boolean {
 
 function applyRemoteConfigSnapshot(snapshot: GlobalConfigSnapshot): void {
   requireDatabase().applyGlobalConfigSnapshot(snapshot)
-  emitConfigChanged()
-}
-
-function applyFullRemoteConfigSnapshot(snapshot: RemoteConfigSnapshot): void {
-  requireDatabase().applyRemoteConfigSnapshot(snapshot)
   emitConfigChanged()
 }
 
@@ -639,11 +658,13 @@ async function syncConfigToControlPlaneOrThrow(
   }
 }
 
-async function pushFullConfigSnapshotToControlPlaneOrThrow(): Promise<{
-  remoteProfileCount: number
-  localProfileCount: number
-  deletedRemoteCount: number
-  upsertedProfileCount: number
+async function pushFullConfigSnapshotToControlPlaneOrThrow(
+  mode: EnvironmentMirrorSyncMode = 'manual-force-upload',
+): Promise<{
+  cloudProfileCount: number
+  localMirroredProfileCount: number
+  autoUploadedCount: number
+  removedLocalMirrorCount: number
   globalConfigChanged: boolean
 }> {
   const localSnapshot = requireDatabase().exportRemoteConfigSnapshot(lastUserConfigSyncVersion)
@@ -657,10 +678,10 @@ async function pushFullConfigSnapshotToControlPlaneOrThrow(): Promise<{
       settings: localSnapshot.settings,
     }, { mode: 'replace' })
     return {
-      remoteProfileCount: localSnapshot.profiles.length,
-      localProfileCount: localSnapshot.profiles.length,
-      deletedRemoteCount: 0,
-      upsertedProfileCount: localSnapshot.profiles.length,
+      cloudProfileCount: localSnapshot.profiles.length,
+      localMirroredProfileCount: localSnapshot.profiles.length,
+      autoUploadedCount: localSnapshot.profiles.length,
+      removedLocalMirrorCount: 0,
       globalConfigChanged: true,
     }
   }
@@ -699,7 +720,7 @@ async function pushFullConfigSnapshotToControlPlaneOrThrow(): Promise<{
     deletedRemoteCount += 1
   }
 
-  let upsertedProfileCount = 0
+  let autoUploadedCount = 0
   for (const profile of localProfiles) {
     const payload = await requestControlPlane(`/api/config/profiles/${encodeURIComponent(profile.id)}`, {
       method: 'PUT',
@@ -709,12 +730,13 @@ async function pushFullConfigSnapshotToControlPlaneOrThrow(): Promise<{
         profile,
       }),
     })
-    upsertedProfileCount += 1
+    autoUploadedCount += 1
     const updatedProfile = requireDatabase().getProfileById(profile.id)
     if (updatedProfile) {
       updateRuntimeMetadata(updatedProfile, {
         lastEnvironmentSyncStatus: 'synced',
-        lastEnvironmentSyncMessage: '环境共享配置已同步到云端',
+        lastEnvironmentSyncMessage:
+          mode === 'auto-push' ? '环境共享配置已自动同步到云端' : '环境共享配置已同步到云端',
         lastEnvironmentSyncAt: new Date().toISOString(),
         lastEnvironmentSyncVersion: Number(payload.syncVersion || 0),
       })
@@ -722,19 +744,103 @@ async function pushFullConfigSnapshotToControlPlaneOrThrow(): Promise<{
   }
 
   return {
-    remoteProfileCount: localProfiles.length,
-    localProfileCount: localProfiles.length,
-    deletedRemoteCount,
-    upsertedProfileCount,
+    cloudProfileCount: localProfiles.length,
+    localMirroredProfileCount: localProfiles.length,
+    autoUploadedCount,
+    removedLocalMirrorCount: deletedRemoteCount,
     globalConfigChanged: true,
   }
 }
 
-async function pullFullConfigSnapshotFromControlPlaneOrThrow(): Promise<{
-  remoteProfileCount: number
-  localProfileCountAfterPull: number
-  removedLocalOrphanCount: number
-  updatedProfileCount: number
+function isRuntimeProtectedProfile(profile: ProfileRecord | null): boolean {
+  if (!profile) {
+    return false
+  }
+  return (
+    profile.status === 'running' ||
+    profile.status === 'starting' ||
+    profile.status === 'queued' ||
+    runtimeContexts.has(profile.id) ||
+    isProfileLaunchInFlight(profile.id)
+  )
+}
+
+async function reconcileEnvironmentMirrorFromSnapshot(
+  snapshot: RemoteConfigSnapshot,
+  mode: EnvironmentMirrorSyncMode,
+): Promise<{
+  cloudProfileCount: number
+  localMirroredProfileCount: number
+  autoPulledCount: number
+  removedLocalMirrorCount: number
+}> {
+  const remoteProfiles = Array.isArray(snapshot.profiles) ? snapshot.profiles : []
+  const remoteIds = new Set(remoteProfiles.map((profile) => String(profile.id || '')).filter(Boolean))
+  let autoPulledCount = 0
+  let removedLocalMirrorCount = 0
+
+  for (const remoteProfile of remoteProfiles) {
+    if (!remoteProfile?.id) {
+      continue
+    }
+    const localProfile = requireDatabase().getProfileById(remoteProfile.id)
+    if (mode === 'auto-full-reconcile' && isRuntimeProtectedProfile(localProfile)) {
+      updateEnvironmentSyncMetadata(remoteProfile.id, {
+        status: 'recovery',
+        message: '检测到云端环境配置更新，但当前环境正在运行或启动中，已暂缓覆盖本地镜像',
+      })
+      continue
+    }
+    const applied = applyPulledProfileToLocalDatabase(
+      {
+        ...remoteProfile,
+        fingerprintConfig: {
+          ...remoteProfile.fingerprintConfig,
+          runtimeMetadata: {
+            ...remoteProfile.fingerprintConfig.runtimeMetadata,
+            lastEnvironmentSyncVersion: Number(
+              remoteProfile.fingerprintConfig.runtimeMetadata.lastEnvironmentSyncVersion || 0,
+            ),
+          },
+        },
+      },
+      { preservePendingLocalChanges: false },
+    )
+    if (applied.changed) {
+      autoPulledCount += 1
+    }
+  }
+
+  for (const localProfile of requireDatabase().listProfiles()) {
+    if (remoteIds.has(localProfile.id)) {
+      continue
+    }
+    if (mode === 'auto-full-reconcile' && isRuntimeProtectedProfile(localProfile)) {
+      updateEnvironmentSyncMetadata(localProfile.id, {
+        status: 'recovery',
+        message: '云端已删除当前环境，但本地环境正在运行或启动中，已暂缓移除本地镜像',
+      })
+      continue
+    }
+    requireDatabase().deleteProfile(localProfile.id)
+    removedLocalMirrorCount += 1
+  }
+
+  return {
+    cloudProfileCount: remoteProfiles.length,
+    localMirroredProfileCount: requireDatabase().listProfiles().length,
+    autoPulledCount,
+    removedLocalMirrorCount,
+  }
+}
+
+async function pullFullConfigSnapshotFromControlPlaneOrThrow(
+  mode: EnvironmentMirrorSyncMode = 'manual-force-pull',
+): Promise<{
+  cloudProfileCount: number
+  localMirroredProfileCount: number
+  autoPulledCount: number
+  removedLocalMirrorCount: number
   globalConfigChanged: boolean
 }> {
   let snapshot: RemoteConfigSnapshot | null = null
@@ -750,30 +856,27 @@ async function pullFullConfigSnapshotFromControlPlaneOrThrow(): Promise<{
     throw new Error('当前没有可拉取的云端共享数据')
   }
 
-  const beforeIds = new Set(requireDatabase().listProfiles().map((profile) => profile.id))
-  const remoteIds = new Set((snapshot.profiles || []).map((profile) => String(profile.id || '')).filter(Boolean))
-  let removedLocalOrphanCount = 0
-  for (const localId of beforeIds) {
-    if (!remoteIds.has(localId)) {
-      removedLocalOrphanCount += 1
+  applyRemoteConfigSnapshot(snapshot)
+  const reconcileResult = await reconcileEnvironmentMirrorFromSnapshot(snapshot, mode)
+
+  for (const profile of requireDatabase().listProfiles()) {
+    if (isRuntimeProtectedProfile(profile) && mode === 'auto-full-reconcile') {
+      continue
     }
-  }
-
-  applyFullRemoteConfigSnapshot(snapshot)
-
-  const localProfilesAfterPull = requireDatabase().listProfiles()
-  for (const profile of localProfilesAfterPull) {
     updateEnvironmentSyncMetadata(profile.id, {
       status: 'synced',
-      message: '已从云端拉取共享环境配置',
+      message:
+        mode === 'auto-full-reconcile'
+          ? '已自动从云端收敛共享环境配置'
+          : '已从云端拉取共享环境配置',
     })
   }
 
   return {
-    remoteProfileCount: remoteIds.size,
-    localProfileCountAfterPull: localProfilesAfterPull.length,
-    removedLocalOrphanCount,
-    updatedProfileCount: remoteIds.size,
+    cloudProfileCount: reconcileResult.cloudProfileCount,
+    localMirroredProfileCount: reconcileResult.localMirroredProfileCount,
+    autoPulledCount: reconcileResult.autoPulledCount,
+    removedLocalMirrorCount: reconcileResult.removedLocalMirrorCount,
     globalConfigChanged: true,
   }
 }
@@ -782,6 +885,18 @@ const AUDIT_LOG_PATH = resolveAuditLogPath()
 let gracefulShutdownInFlight = false
 let beforeQuitHandled = false
 let lastRuntimeNetworkDiagnostics: NonNullable<RuntimeHostInfo['networkDiagnostics']> | null = null
+let sharedDataAutoPushTimer: NodeJS.Timeout | null = null
+let sharedDataAutoPushRetryTimer: NodeJS.Timeout | null = null
+let sharedDataAutoPushInFlight = false
+let sharedDataAutoPushQueued = false
+let sharedDataAutoPushReason = ''
+let sharedDataAutoPushProfileIds = new Set<string>()
+
+type EnvironmentMirrorSyncMode =
+  | 'auto-full-reconcile'
+  | 'auto-push'
+  | 'manual-force-upload'
+  | 'manual-force-pull'
 
 function emitConfigChanged(): void {
   for (const window of BrowserWindow.getAllWindows()) {
@@ -858,15 +973,24 @@ async function pushLocalConfigToControlPlaneManually(reason: string): Promise<Co
   }
   setLastConfigSyncResult(buildConfigSyncInFlightResult())
   try {
-    const resultPayload = await pushFullConfigSnapshotToControlPlaneOrThrow()
+    const resultPayload = await pushFullConfigSnapshotToControlPlaneOrThrow('manual-force-upload')
     const result = buildConfigSyncPushSuccessResult(
-      `已将本地共享数据上传到云端：云端现有 ${resultPayload.remoteProfileCount} 个环境，本地 ${resultPayload.localProfileCount} 个环境，新增/覆盖 ${resultPayload.upsertedProfileCount} 个环境，删除云端旧环境 ${resultPayload.deletedRemoteCount} 个`,
+      `已将本地共享数据上传到云端：云端 ${resultPayload.cloudProfileCount} 个环境，本地镜像 ${resultPayload.localMirroredProfileCount} 个环境，新增/覆盖 ${resultPayload.autoUploadedCount} 个环境，删除云端旧镜像 ${resultPayload.removedLocalMirrorCount} 个`,
     )
-    result.remoteProfileCount = resultPayload.remoteProfileCount
-    result.localProfileCount = resultPayload.localProfileCount
-    result.deletedRemoteCount = resultPayload.deletedRemoteCount
-    result.upsertedProfileCount = resultPayload.upsertedProfileCount
-    result.globalConfigChanged = resultPayload.globalConfigChanged
+    Object.assign(
+      result,
+      buildEnvironmentCountFields({
+        cloudProfileCount: resultPayload.cloudProfileCount,
+        localMirroredProfileCount: resultPayload.localMirroredProfileCount,
+        autoUploadedCount: resultPayload.autoUploadedCount,
+        removedLocalMirrorCount: resultPayload.removedLocalMirrorCount,
+        remoteProfileCount: resultPayload.cloudProfileCount,
+        localProfileCount: resultPayload.localMirroredProfileCount,
+        deletedRemoteCount: resultPayload.removedLocalMirrorCount,
+        upsertedProfileCount: resultPayload.autoUploadedCount,
+        globalConfigChanged: resultPayload.globalConfigChanged,
+      }),
+    )
     audit('config_push_manual_succeeded', { reason })
     return setLastConfigSyncResult(result)!
   } catch (error) {
@@ -894,10 +1018,113 @@ function scheduleProfileConfigAfterLocalMutation(
           ? '环境改动已保存到本地，等待上传到云端'
           : '环境副本已创建，等待上传到云端',
   })
+  scheduleSharedDataAutoPush(
+    action === 'create'
+      ? 'create-profile'
+      : action === 'update'
+        ? 'update-profile'
+        : 'clone-profile',
+    [profile.id],
+  )
 }
 
 function scheduleGlobalConfigMutation(message: string): void {
   markLocalConfigDirty(message)
+}
+
+function clearSharedDataAutoPushRetry(): void {
+  if (sharedDataAutoPushRetryTimer) {
+    clearTimeout(sharedDataAutoPushRetryTimer)
+    sharedDataAutoPushRetryTimer = null
+  }
+}
+
+function scheduleSharedDataAutoPushRetry(): void {
+  clearSharedDataAutoPushRetry()
+  sharedDataAutoPushRetryTimer = setTimeout(() => {
+    sharedDataAutoPushRetryTimer = null
+    void flushSharedDataAutoPush()
+  }, 10_000)
+}
+
+function scheduleSharedDataAutoPush(reason: string, profileIds: string[] = []): void {
+  sharedDataAutoPushReason = reason
+  for (const profileId of profileIds) {
+    if (profileId) {
+      sharedDataAutoPushProfileIds.add(profileId)
+    }
+  }
+  sharedDataAutoPushQueued = true
+  if (sharedDataAutoPushTimer) {
+    clearTimeout(sharedDataAutoPushTimer)
+  }
+  sharedDataAutoPushTimer = setTimeout(() => {
+    sharedDataAutoPushTimer = null
+    void flushSharedDataAutoPush()
+  }, 300)
+}
+
+async function flushSharedDataAutoPush(): Promise<void> {
+  if (!sharedDataAutoPushQueued || sharedDataAutoPushInFlight) {
+    return
+  }
+  if (!getDesktopAuthState().authenticated) {
+    return
+  }
+
+  sharedDataAutoPushInFlight = true
+  sharedDataAutoPushQueued = false
+  clearSharedDataAutoPushRetry()
+  const affectedProfileIds = Array.from(sharedDataAutoPushProfileIds)
+  sharedDataAutoPushProfileIds = new Set<string>()
+  setLastConfigSyncResult(buildConfigSyncInFlightResult('正在自动同步共享数据到云端'))
+
+  try {
+    const resultPayload = await pushFullConfigSnapshotToControlPlaneOrThrow('auto-push')
+    const result = buildConfigSyncPushSuccessResult(
+      `已自动同步共享数据：云端 ${resultPayload.cloudProfileCount} 个环境，本地镜像 ${resultPayload.localMirroredProfileCount} 个，自动上传 ${resultPayload.autoUploadedCount} 个，移除云端旧镜像 ${resultPayload.removedLocalMirrorCount} 个`,
+    )
+    Object.assign(
+      result,
+      buildEnvironmentCountFields({
+        cloudProfileCount: resultPayload.cloudProfileCount,
+        localMirroredProfileCount: resultPayload.localMirroredProfileCount,
+        autoUploadedCount: resultPayload.autoUploadedCount,
+        removedLocalMirrorCount: resultPayload.removedLocalMirrorCount,
+        globalConfigChanged: resultPayload.globalConfigChanged,
+      }),
+    )
+    setLastConfigSyncResult(result)
+    audit('shared_data_auto_push_succeeded', {
+      reason: sharedDataAutoPushReason,
+      cloudProfileCount: resultPayload.cloudProfileCount,
+      localMirroredProfileCount: resultPayload.localMirroredProfileCount,
+      autoUploadedCount: resultPayload.autoUploadedCount,
+      removedLocalMirrorCount: resultPayload.removedLocalMirrorCount,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    for (const profileId of affectedProfileIds) {
+      updateEnvironmentSyncMetadata(profileId, {
+        status: 'recovery',
+        message: buildEnvironmentSyncFailureMessage('auto-push', message, 'upload'),
+      })
+    }
+    setLastConfigSyncResult(
+      buildConfigSyncPushFailedResult(`共享数据自动上传失败：${message}`),
+    )
+    audit('shared_data_auto_push_failed', {
+      reason: sharedDataAutoPushReason,
+      err: message,
+      affectedProfileIds,
+    })
+    scheduleSharedDataAutoPushRetry()
+  } finally {
+    sharedDataAutoPushInFlight = false
+    if (sharedDataAutoPushQueued) {
+      void flushSharedDataAutoPush()
+    }
+  }
 }
 
 function hasPendingProfileConfigChanges(profileId: string): boolean {
@@ -906,11 +1133,6 @@ function hasPendingProfileConfigChanges(profileId: string): boolean {
     return false
   }
   return profile.fingerprintConfig.runtimeMetadata.lastEnvironmentSyncStatus === 'pending'
-}
-
-function hasUnsafeLocalProfileConfigState(profile: ProfileRecord): boolean {
-  const status = profile.fingerprintConfig.runtimeMetadata.lastEnvironmentSyncStatus
-  return status === 'pending' || status === 'conflict' || status === 'syncing'
 }
 
 function buildPortableProfileConfig(profile: ProfileRecord): ProfileRecord {
@@ -961,21 +1183,6 @@ function applyRemoteProfileIndexToLocalProfile(
     environmentPurpose: remoteProfile.environmentPurpose,
   })
   return { profile: persisted, changed: true }
-}
-
-function markProfileMissingFromCloudIndex(profile: ProfileRecord): void {
-  if (
-    profile.status === 'running' ||
-    runtimeContexts.has(profile.id) ||
-    isProfileLaunchInFlight(profile.id) ||
-    hasUnsafeLocalProfileConfigState(profile)
-  ) {
-    return
-  }
-  updateEnvironmentSyncMetadata(profile.id, {
-    status: 'recovery',
-    message: '云端环境清单中已不存在当前环境，本地环境已保留，请手动上传或从云端拉取后处理',
-  })
 }
 
 function clearMissingCloudIndexMarker(profile: ProfileRecord): void {
@@ -1135,7 +1342,7 @@ async function pushProfileConfigToControlPlane(profileId: string, reason: string
     const isConflict = /profile config sync version mismatch|版本冲突|sync version mismatch/i.test(message)
     const nextMessage = buildEnvironmentSyncFailureMessage(reason, message, 'upload')
     updateEnvironmentSyncMetadata(profileId, {
-      status: isConflict ? 'conflict' : 'error',
+      status: isManualProfileSyncReason(reason) ? (isConflict ? 'conflict' : 'error') : 'recovery',
       message: nextMessage,
     })
     return buildConfigSyncPushFailedResult(`当前环境同步失败：${nextMessage}`)
@@ -1158,10 +1365,6 @@ async function pullProfileConfigFromControlPlane(
   }
   if (force && (runtimeContexts.has(profileId) || isProfileLaunchInFlight(profileId) || localProfile.status === 'running')) {
     throw new Error('当前环境正在运行或启动中，请先停止环境后再从云端拉取')
-  }
-
-  if (force) {
-    await syncEnvironmentIndexFromControlPlane()
   }
 
   const payload = await requestControlPlane(`/api/config/profiles/${encodeURIComponent(profileId)}`)
@@ -1257,56 +1460,36 @@ function applyPulledProfileToLocalDatabase(
   return { profile: persisted, changed: true }
 }
 
-async function syncEnvironmentIndexFromControlPlane(): Promise<ConfigSyncResult> {
+async function reconcileEnvironmentMirrorFromControlPlane(
+  mode: EnvironmentMirrorSyncMode = 'auto-full-reconcile',
+): Promise<ConfigSyncResult> {
   if (!getDesktopAuthState().authenticated) {
-    return buildConfigSyncPendingResult('请先登录后再同步环境清单')
+    return buildConfigSyncPendingResult('请先登录后再同步共享环境')
   }
 
-  const payload = await requestControlPlane('/api/config/profiles')
-  const remoteProfiles = Array.isArray(payload.profiles) ? (payload.profiles as ProfileRecord[]) : []
-  const remoteProfileIds = new Set(
-    remoteProfiles.map((profile) => String(profile?.id || '').trim()).filter(Boolean),
-  )
-  let syncedCount = 0
-  let orphanCount = 0
-
-  for (const remoteProfile of remoteProfiles) {
-    if (!remoteProfile?.id) {
-      continue
-    }
-    const applied = applyPulledProfileToLocalDatabase(remoteProfile, { mode: 'index-only' })
-    if (applied.changed) {
-      syncedCount += 1
-    }
-  }
-
-  for (const localProfile of requireDatabase().listProfiles()) {
-    if (remoteProfileIds.has(localProfile.id)) {
-      continue
-    }
-    markProfileMissingFromCloudIndex(localProfile)
-    orphanCount += 1
-  }
-
-  const localCount = requireDatabase().listProfiles().length
-  const remoteCount = remoteProfiles.length
+  const result = await pullFullConfigSnapshotFromControlPlaneOrThrow(mode)
   return {
-    count: localCount,
-    source: 'account',
+    count: result.localMirroredProfileCount,
+    source: agentService?.getState().enabled ? 'agent' : 'account',
     usedLocalCache: false,
     message:
-      orphanCount === 0 && localCount === remoteCount
-        ? syncedCount > 0
-          ? `已从云端同步 ${syncedCount} 个环境，云端 ${remoteCount} 个 / 本地 ${localCount} 个，当前已对齐`
-          : `环境清单已与云端对齐：云端 ${remoteCount} 个 / 本地 ${localCount} 个`
-        : `已从云端更新环境清单：云端 ${remoteCount} 个 / 本地 ${localCount} 个 / 本地保留 ${orphanCount} 个未上云环境`,
+      mode === 'auto-full-reconcile'
+        ? `已自动从云端收敛共享数据：云端 ${result.cloudProfileCount} 个环境 / 本地镜像 ${result.localMirroredProfileCount} 个 / 拉取更新 ${result.autoPulledCount} 个 / 移除旧镜像 ${result.removedLocalMirrorCount} 个`
+        : `已从云端拉取共享数据：云端 ${result.cloudProfileCount} 个环境 / 本地镜像 ${result.localMirroredProfileCount} 个 / 拉取更新 ${result.autoPulledCount} 个 / 移除旧镜像 ${result.removedLocalMirrorCount} 个`,
     warningMessage: '',
-    remoteProfileCount: remoteCount,
-    localProfileCount: localCount,
-    orphanProfileCount: orphanCount,
+    ...buildEnvironmentCountFields({
+      cloudProfileCount: result.cloudProfileCount,
+      localMirroredProfileCount: result.localMirroredProfileCount,
+      autoPulledCount: result.autoPulledCount,
+      removedLocalMirrorCount: result.removedLocalMirrorCount,
+      globalConfigChanged: result.globalConfigChanged,
+      remoteProfileCount: result.cloudProfileCount,
+      localProfileCountAfterPull: result.localMirroredProfileCount,
+      removedLocalOrphanCount: result.removedLocalMirrorCount,
+      updatedProfileCount: result.autoPulledCount,
+    }),
   }
 }
-
 
 function audit(action: string, payload: Record<string, unknown> = {}) {
   try {
@@ -4829,43 +5012,6 @@ function updateEnvironmentSyncMetadataForProfiles(
   }
 }
 
-async function deleteProfileConfigFromControlPlane(profileId: string): Promise<void> {
-  if (!getDesktopAuthState().authenticated) {
-    return
-  }
-  try {
-    await requestControlPlane(`/api/config/profiles/${encodeURIComponent(profileId)}`, {
-      method: 'DELETE',
-    })
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    if (/profile not found|not found|404/i.test(message)) {
-      audit('profile_config_delete_missing', {
-        profileId,
-        err: message,
-      })
-      logEvent(
-        'warn',
-        'profile',
-        `Control plane profile config already missing for ${profileId}, continuing local delete`,
-        profileId,
-      )
-      return
-    }
-
-    audit('profile_config_delete_warning', {
-      profileId,
-      err: message,
-    })
-    logEvent(
-      'warn',
-      'profile',
-      `Control plane profile config delete failed for ${profileId}: ${message}. Continuing local delete`,
-      profileId,
-    )
-  }
-}
-
 function resolveProfileProxy(
   profile: Pick<ProfileRecord, 'id' | 'proxyId' | 'fingerprintConfig'> | UpdateProfileInput,
   database: DatabaseService,
@@ -5663,7 +5809,8 @@ async function performDesktopLogin(payload: {
       }
       saveDesktopAuth(apiBase, token, user)
       try {
-        await syncEnvironmentIndexFromControlPlane()
+        const result = await reconcileEnvironmentMirrorFromControlPlane('auto-full-reconcile')
+        setLastConfigSyncResult(result)
       } catch (syncError) {
         const message = syncError instanceof Error ? syncError.message : String(syncError)
         setLastConfigSyncResult({
@@ -5671,7 +5818,7 @@ async function performDesktopLogin(payload: {
           source: 'account',
           usedLocalCache: true,
           message: '',
-          warningMessage: `自动拉取环境清单失败，请手动从云端拉取最新环境：${message}`,
+          warningMessage: `自动拉取共享环境失败，请手动从云端拉取最新环境：${message}`,
         })
         audit('profile_index_pull_after_login_failed', {
           apiBase,
@@ -6225,22 +6372,28 @@ async function registerIpcHandlers(): Promise<void> {
     if (runtimeContexts.size > 0 || scheduler.getQueuedIds().length > 0 || scheduler.getStartingIds().length > 0) {
       throw new Error('当前存在运行中或启动中的环境，请先停止环境后再从云端拉取共享数据')
     }
-    const result = await pullFullConfigSnapshotFromControlPlaneOrThrow()
+    const result = await pullFullConfigSnapshotFromControlPlaneOrThrow('manual-force-pull')
     return setLastConfigSyncResult({
-      count: result.localProfileCountAfterPull,
+      count: result.localMirroredProfileCount,
       source: agentService?.getState().enabled ? 'agent' : 'account',
       usedLocalCache: false,
-      message: `已从云端拉取共享数据：云端 ${result.remoteProfileCount} 个环境，本地已收敛为 ${result.localProfileCountAfterPull} 个环境，移除本地旧 orphan ${result.removedLocalOrphanCount} 个`,
+      message: `已从云端拉取共享数据：云端 ${result.cloudProfileCount} 个环境，本地已收敛为 ${result.localMirroredProfileCount} 个环境，拉取更新 ${result.autoPulledCount} 个，移除本地旧镜像 ${result.removedLocalMirrorCount} 个`,
       warningMessage: '',
-      remoteProfileCount: result.remoteProfileCount,
-      localProfileCountAfterPull: result.localProfileCountAfterPull,
-      removedLocalOrphanCount: result.removedLocalOrphanCount,
-      updatedProfileCount: result.updatedProfileCount,
-      globalConfigChanged: result.globalConfigChanged,
+      ...buildEnvironmentCountFields({
+        cloudProfileCount: result.cloudProfileCount,
+        localMirroredProfileCount: result.localMirroredProfileCount,
+        autoPulledCount: result.autoPulledCount,
+        removedLocalMirrorCount: result.removedLocalMirrorCount,
+        remoteProfileCount: result.cloudProfileCount,
+        localProfileCountAfterPull: result.localMirroredProfileCount,
+        removedLocalOrphanCount: result.removedLocalMirrorCount,
+        updatedProfileCount: result.autoPulledCount,
+        globalConfigChanged: result.globalConfigChanged,
+      }),
     } satisfies ConfigSyncResult)!
   })
   ipcMain.handle('auth.syncProfiles', async () =>
-    syncEnvironmentIndexFromControlPlane(),
+    reconcileEnvironmentMirrorFromControlPlane('auto-full-reconcile'),
   )
 
   ipcMain.handle('meta.getInfo', async () => getDesktopRuntimeInfo())
@@ -6457,8 +6610,9 @@ async function registerIpcHandlers(): Promise<void> {
   ipcMain.handle('profiles.delete', async (_event, profileId: string) => {
     ensureWritable('profiles.delete')
     await stopRuntime(profileId)
-    await deleteProfileConfigFromControlPlane(profileId)
     requireDatabase().deleteProfile(profileId)
+    markLocalConfigDirty('环境已在本地删除，等待同步到云端')
+    scheduleSharedDataAutoPush('delete-profile')
     logEvent('warn', 'profile', `Deleted profile ${profileId}`, profileId)
   })
   ipcMain.handle('profiles.clone', async (_event, profileId: string) => {
@@ -6493,10 +6647,9 @@ async function registerIpcHandlers(): Promise<void> {
   ipcMain.handle('profiles.bulkDelete', async (_event, payload: ProfileBulkActionPayload) => {
     ensureWritable('profiles.bulkDelete')
     await stopMany(payload.profileIds)
-    for (const profileId of payload.profileIds) {
-      await deleteProfileConfigFromControlPlane(profileId)
-    }
     requireDatabase().bulkDeleteProfiles(payload.profileIds)
+    markLocalConfigDirty('批量环境已在本地删除，等待同步到云端')
+    scheduleSharedDataAutoPush('bulk-delete-profile')
     logEvent('warn', 'profile', `Deleted ${payload.profileIds.length} profiles`, null)
   })
   ipcMain.handle('profiles.bulkAssignGroup', async (_event, payload: ProfileBulkActionPayload) => {
