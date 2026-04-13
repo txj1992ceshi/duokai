@@ -5,6 +5,7 @@ import {
   listConfigProfilesForUser,
   normalizeConfigProfilePayload,
   resolveUserConfigStateId,
+  updateConfigProfileStorageStateStatusForUser,
   upsertConfigProfileForUser,
 } from '../lib/configProfiles.js';
 import { asyncHandler } from '../lib/http.js';
@@ -281,6 +282,81 @@ router.delete(
       message: 'Profile config deleted successfully',
     });
   })
+);
+
+router.post(
+  '/profiles/:id/storage-state-status',
+  requireUser,
+  asyncHandler(async (req, res) => {
+    await connectMongo();
+    const profileId = String(req.params.id || '').trim();
+    if (!profileId) {
+      res.status(400).json({ success: false, error: 'Profile id is required' });
+      return;
+    }
+
+    const status = String(req.body?.status || '').trim();
+    const message = String(req.body?.message || '').trim();
+    const updatedAt = String(req.body?.updatedAt || '').trim() || new Date().toISOString();
+    const versionRaw = req.body?.version;
+    const version =
+      versionRaw === undefined || versionRaw === null || versionRaw === ''
+        ? undefined
+        : Number(versionRaw);
+    const deviceId = String(req.body?.deviceId || '').trim();
+
+    if (!status) {
+      res.status(400).json({ success: false, error: 'status is required' });
+      return;
+    }
+    if (!updatedAt) {
+      res.status(400).json({ success: false, error: 'updatedAt is required' });
+      return;
+    }
+    if (version !== undefined && (!Number.isFinite(version) || version < 0)) {
+      res.status(400).json({ success: false, error: 'version must be a non-negative number' });
+      return;
+    }
+
+    const savedState = await updateConfigProfileStorageStateStatusForUser(
+      req.authUser!.userId,
+      profileId,
+      {
+        status,
+        message,
+        updatedAt,
+        ...(version !== undefined ? { version } : {}),
+        ...(deviceId ? { deviceId } : {}),
+      },
+    );
+
+    if (!savedState) {
+      logSyncRouteEvent('warn', 'config_profile_missing', {
+        route: 'POST /api/config/profiles/:id/storage-state-status',
+        profileId,
+        profileIdType: resolveProfileIdType(profileId),
+        profileSource: 'missing',
+      });
+      res.status(404).json({ success: false, error: 'Profile not found' });
+      return;
+    }
+
+    logSyncRouteEvent('info', 'config_profile_storage_state_status_updated', {
+      route: 'POST /api/config/profiles/:id/storage-state-status',
+      profileId,
+      profileIdType: resolveProfileIdType(profileId),
+      status,
+      updatedAt,
+      deviceId,
+      version: version ?? null,
+    });
+
+    res.json({
+      success: true,
+      status,
+      updatedAt,
+    });
+  }),
 );
 
 router.post(

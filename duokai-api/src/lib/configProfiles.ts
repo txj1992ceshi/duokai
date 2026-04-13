@@ -139,3 +139,41 @@ export async function deleteConfigProfileForUser(userId: string, profileId: stri
     { new: true }
   ).lean();
 }
+
+export async function updateConfigProfileStorageStateStatusForUser(
+  userId: string,
+  profileId: string,
+  payload: {
+    status: string;
+    message: string;
+    updatedAt: string;
+    version?: number;
+    deviceId?: string;
+  },
+) {
+  return await updateConfigProfileForUser(userId, profileId, (existing) => {
+    const fingerprintConfig =
+      existing.fingerprintConfig && typeof existing.fingerprintConfig === 'object'
+        ? (existing.fingerprintConfig as Record<string, unknown>)
+        : {};
+    const runtimeMetadata =
+      fingerprintConfig.runtimeMetadata && typeof fingerprintConfig.runtimeMetadata === 'object'
+        ? (fingerprintConfig.runtimeMetadata as Record<string, unknown>)
+        : {};
+
+    return {
+      ...existing,
+      fingerprintConfig: {
+        ...fingerprintConfig,
+        runtimeMetadata: {
+          ...runtimeMetadata,
+          lastStorageStateSyncStatus: payload.status,
+          lastStorageStateSyncMessage: payload.message,
+          lastStorageStateSyncedAt: payload.updatedAt,
+          ...(payload.version !== undefined ? { lastStorageStateVersion: payload.version } : {}),
+          ...(payload.deviceId !== undefined ? { lastStorageStateDeviceId: payload.deviceId } : {}),
+        },
+      },
+    };
+  });
+}

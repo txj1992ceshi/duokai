@@ -246,6 +246,40 @@ type RuntimeLockRecord = {
 
 type StorageStateDownloadReason = 'startup' | 'manual'
 
+async function syncStorageStateStatusToCanonicalProfile(
+  profileId: string,
+  payload: {
+    status: StorageStateSyncStatus
+    message: string
+    updatedAt: string
+    version?: number
+    deviceId?: string
+  },
+): Promise<void> {
+  if (!getDesktopAuthState().authenticated) {
+    return
+  }
+  try {
+    await requestControlPlane(`/api/config/profiles/${encodeURIComponent(profileId)}/storage-state-status`, {
+      method: 'POST',
+      body: JSON.stringify({
+        status: payload.status,
+        message: payload.message,
+        updatedAt: payload.updatedAt,
+        ...(payload.version !== undefined ? { version: payload.version } : {}),
+        ...(payload.deviceId ? { deviceId: payload.deviceId } : {}),
+      }),
+    })
+  } catch (error) {
+    audit('storage_state_status_sync_failed', {
+      profileId,
+      status: payload.status,
+      updatedAt: payload.updatedAt,
+      err: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
+
 function resolveAuditLogPath(): string {
   try {
     return path.join(app.getPath('userData'), process.env.RUNTIME_AUDIT_FILE || 'runtime-audit.log')
@@ -4153,26 +4187,42 @@ async function uploadProfileStorageStateToControlPlane(
     )
     const baseVersion = remoteState ? localVersion : 0
     if (remoteState && remoteState.stateHash && remoteState.stateHash === stateHash) {
+      const updatedAt = remoteState.updatedAt || new Date().toISOString()
       updateRuntimeMetadata(pendingProfile, {
         lastStorageStateVersion: remoteState.version,
-        lastStorageStateSyncedAt: remoteState.updatedAt || new Date().toISOString(),
+        lastStorageStateSyncedAt: updatedAt,
         lastStorageStateDeviceId: remoteState.deviceId || '',
         lastStorageStateSyncStatus: 'synced',
         lastStorageStateSyncMessage: '云端登录态已同步',
       })
+      await syncStorageStateStatusToCanonicalProfile(profileId, {
+        status: 'synced',
+        message: '云端登录态已同步',
+        updatedAt,
+        version: remoteState.version,
+        deviceId: remoteState.deviceId || '',
+      })
       return buildResult('synced', '云端登录态已同步', {
         version: remoteState.version,
-        updatedAt: remoteState.updatedAt || new Date().toISOString(),
+        updatedAt,
         cloudRecordExists: true,
       })
     }
     if (remoteState && remoteState.version > localVersion) {
+      const updatedAt = remoteState.updatedAt || new Date().toISOString()
       updateRuntimeMetadata(pendingProfile, {
         lastStorageStateVersion: remoteState.version,
-        lastStorageStateSyncedAt: remoteState.updatedAt || new Date().toISOString(),
+        lastStorageStateSyncedAt: updatedAt,
         lastStorageStateDeviceId: remoteState.deviceId || '',
         lastStorageStateSyncStatus: 'conflict',
         lastStorageStateSyncMessage: '云端登录态已更新，请重新启动环境以同步最新状态',
+      })
+      await syncStorageStateStatusToCanonicalProfile(profileId, {
+        status: 'conflict',
+        message: '云端登录态已更新，请重新启动环境以同步最新状态',
+        updatedAt,
+        version: remoteState.version,
+        deviceId: remoteState.deviceId || '',
       })
       audit('storage_state_conflict', {
         profileId,
@@ -4182,21 +4232,29 @@ async function uploadProfileStorageStateToControlPlane(
       })
       return buildResult('conflict', '云端登录态已更新，请重新启动环境以同步最新状态', {
         version: remoteState.version,
-        updatedAt: remoteState.updatedAt || new Date().toISOString(),
+        updatedAt,
         cloudRecordExists: true,
       })
     }
     if (remoteState && remoteState.version === localVersion && remoteState.stateHash && remoteState.stateHash === stateHash) {
+      const updatedAt = remoteState.updatedAt || new Date().toISOString()
       updateRuntimeMetadata(pendingProfile, {
         lastStorageStateVersion: remoteState.version,
-        lastStorageStateSyncedAt: remoteState.updatedAt || new Date().toISOString(),
+        lastStorageStateSyncedAt: updatedAt,
         lastStorageStateDeviceId: remoteState.deviceId || '',
         lastStorageStateSyncStatus: 'synced',
         lastStorageStateSyncMessage: '云端登录态已同步',
       })
+      await syncStorageStateStatusToCanonicalProfile(profileId, {
+        status: 'synced',
+        message: '云端登录态已同步',
+        updatedAt,
+        version: remoteState.version,
+        deviceId: remoteState.deviceId || '',
+      })
       return buildResult('synced', '云端登录态已同步', {
         version: remoteState.version,
-        updatedAt: remoteState.updatedAt || new Date().toISOString(),
+        updatedAt,
         cloudRecordExists: true,
       })
     }
@@ -4233,12 +4291,20 @@ async function uploadProfileStorageStateToControlPlane(
     const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>
     if (response.status === 409) {
       const conflict = (payload.conflict || {}) as Record<string, unknown>
+      const updatedAt = String(conflict.updatedAt || '')
       updateRuntimeMetadata(pendingProfile, {
         lastStorageStateVersion: Number(conflict.currentVersion || localVersion),
-        lastStorageStateSyncedAt: String(conflict.updatedAt || ''),
+        lastStorageStateSyncedAt: updatedAt,
         lastStorageStateDeviceId: String(conflict.deviceId || ''),
         lastStorageStateSyncStatus: 'conflict',
         lastStorageStateSyncMessage: '云端登录态已更新，请重新启动环境以同步最新状态',
+      })
+      await syncStorageStateStatusToCanonicalProfile(profileId, {
+        status: 'conflict',
+        message: '云端登录态已更新，请重新启动环境以同步最新状态',
+        updatedAt,
+        version: Number(conflict.currentVersion || 0),
+        deviceId: String(conflict.deviceId || ''),
       })
       audit('storage_state_conflict', {
         profileId,
@@ -4257,12 +4323,21 @@ async function uploadProfileStorageStateToControlPlane(
     }
 
     const storageState = (payload.storageState || {}) as Record<string, unknown>
+    const updatedAt = String(storageState.updatedAt || new Date().toISOString())
+    const deviceId = String(storageState.deviceId || getControlPlaneDeviceId())
     updateRuntimeMetadata(pendingProfile, {
       lastStorageStateVersion: Number(storageState.version || localVersion),
-      lastStorageStateSyncedAt: String(storageState.updatedAt || new Date().toISOString()),
-      lastStorageStateDeviceId: String(storageState.deviceId || getControlPlaneDeviceId()),
+      lastStorageStateSyncedAt: updatedAt,
+      lastStorageStateDeviceId: deviceId,
       lastStorageStateSyncStatus: 'synced',
       lastStorageStateSyncMessage: '云端登录态已同步',
+    })
+    await syncStorageStateStatusToCanonicalProfile(profileId, {
+      status: 'synced',
+      message: '云端登录态已同步',
+      updatedAt,
+      version: Number(storageState.version || localVersion),
+      deviceId,
     })
     audit('storage_state_uploaded', {
       profileId,
@@ -4271,7 +4346,7 @@ async function uploadProfileStorageStateToControlPlane(
     })
     return buildResult('synced', '云端登录态已同步', {
       version: Number(storageState.version || localVersion),
-      updatedAt: String(storageState.updatedAt || new Date().toISOString()),
+      updatedAt,
       cloudRecordExists: true,
     })
   } catch (error) {
@@ -4344,16 +4419,24 @@ async function downloadProfileStorageStateFromControlPlane(
       Number(profile.fingerprintConfig.runtimeMetadata.lastStorageStateVersion || 0),
     )
     if (!options.force && remoteState.version <= localVersion) {
+      const updatedAt = remoteState.updatedAt || new Date().toISOString()
       updateRuntimeMetadata(profile, {
         lastStorageStateVersion: remoteState.version,
-        lastStorageStateSyncedAt: remoteState.updatedAt || new Date().toISOString(),
+        lastStorageStateSyncedAt: updatedAt,
         lastStorageStateDeviceId: remoteState.deviceId || '',
         lastStorageStateSyncStatus: 'synced',
         lastStorageStateSyncMessage: '本地登录态已是最新版本',
       })
+      await syncStorageStateStatusToCanonicalProfile(profileId, {
+        status: 'synced',
+        message: '本地登录态已是最新版本',
+        updatedAt,
+        version: remoteState.version,
+        deviceId: remoteState.deviceId || '',
+      })
       return buildResult('synced', '本地登录态已是最新版本', {
         version: remoteState.version,
-        updatedAt: remoteState.updatedAt || new Date().toISOString(),
+        updatedAt,
         cloudRecordExists: true,
       })
     }
@@ -4375,12 +4458,20 @@ async function downloadProfileStorageStateFromControlPlane(
       options.reason === 'manual' && running
         ? '已下载云端登录态，重启环境后生效'
         : '已下载云端登录态'
+    const updatedAt = remoteState.updatedAt || new Date().toISOString()
     updateRuntimeMetadata(profile, {
       lastStorageStateVersion: remoteState.version,
-      lastStorageStateSyncedAt: remoteState.updatedAt || new Date().toISOString(),
+      lastStorageStateSyncedAt: updatedAt,
       lastStorageStateDeviceId: remoteState.deviceId || '',
       lastStorageStateSyncStatus: 'synced',
       lastStorageStateSyncMessage: baseMessage,
+    })
+    await syncStorageStateStatusToCanonicalProfile(profileId, {
+      status: 'synced',
+      message: baseMessage,
+      updatedAt,
+      version: remoteState.version,
+      deviceId: remoteState.deviceId || '',
     })
     audit('storage_state_downloaded', {
       profileId,
@@ -4389,7 +4480,7 @@ async function downloadProfileStorageStateFromControlPlane(
     })
     return buildResult('synced', baseMessage, {
       version: remoteState.version,
-      updatedAt: remoteState.updatedAt || new Date().toISOString(),
+      updatedAt,
       cloudRecordExists: true,
     })
   } catch (error) {
