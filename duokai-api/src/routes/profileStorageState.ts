@@ -12,6 +12,7 @@ import {
   resolveStorageStateJson,
   writeStorageStateArtifact,
 } from '../lib/storageArtifacts.js';
+import { normalizeArtifactProfileId } from '../lib/artifactProfileId.js';
 import { shouldIncludeArtifactContent } from '../lib/storageView.js';
 import { ProfileStorageStateModel } from '../models/ProfileStorageState.js';
 
@@ -77,7 +78,7 @@ router.get(
   asyncHandler(async (req, res) => {
     await connectMongo();
     const authUser = req.authUser!;
-    const profileId = String(req.params.profileId || '').trim();
+    const profileId = normalizeArtifactProfileId(req.params.profileId);
     const resolved = await resolveRuntimeProfileForUser(authUser.userId, profileId);
     if (!resolved) {
       logSyncRouteEvent('warn', 'profile_storage_state_profile_missing', {
@@ -92,7 +93,7 @@ router.get(
 
     const storageState = await ProfileStorageStateModel.findOne({
       userId: authUser.userId,
-      profileId: resolved.profileId,
+      profileId: normalizeArtifactProfileId(resolved.profileId),
     }).lean();
     const includeContent = shouldIncludeArtifactContent(req.query.includeContent);
 
@@ -111,7 +112,7 @@ router.put(
   asyncHandler(async (req, res) => {
     await connectMongo();
     const authUser = req.authUser!;
-    const profileId = String(req.params.profileId || '').trim();
+    const profileId = normalizeArtifactProfileId(req.params.profileId);
     const body = req.body || {};
     const resolved = await resolveRuntimeProfileForUser(authUser.userId, profileId);
     if (!resolved) {
@@ -143,7 +144,7 @@ router.put(
 
     const existing = await ProfileStorageStateModel.findOne({
       userId: authUser.userId,
-      profileId: resolved.profileId,
+      profileId: normalizeArtifactProfileId(resolved.profileId),
     }).lean();
 
     if ((existing?.version || 0) !== baseVersion) {
@@ -160,6 +161,7 @@ router.put(
       return;
     }
 
+    const normalizedResolvedProfileId = normalizeArtifactProfileId(resolved.profileId);
     const nextVersion = existing ? (existing.version || 0) + 1 : 1;
     let artifact = null;
     try {
@@ -167,7 +169,7 @@ router.put(
         normalized.inlineStateJson !== null
           ? await writeStorageStateArtifact({
               userId: String(authUser.userId),
-              profileId: resolved.profileId,
+              profileId: normalizedResolvedProfileId,
               version: nextVersion,
               stateJson: normalized.inlineStateJson,
               stateHash: normalized.stateHash,
@@ -179,7 +181,7 @@ router.put(
       logSyncRouteEvent('error', 'profile_storage_state_artifact_write_failed', {
         route: 'PUT /api/profile-storage-state/:profileId',
         profileId,
-        resolvedProfileId: resolved.profileId,
+        resolvedProfileId: normalizedResolvedProfileId,
         profileIdType: resolveProfileIdType(profileId),
         profileSource: resolved.source,
         version: nextVersion,
@@ -192,11 +194,11 @@ router.put(
     const storageState = await ProfileStorageStateModel.findOneAndUpdate(
       {
         userId: authUser.userId,
-        profileId: resolved.profileId,
+        profileId: normalizedResolvedProfileId,
       },
       {
         userId: authUser.userId,
-        profileId: resolved.profileId,
+        profileId: normalizedResolvedProfileId,
         stateJson: null,
         inlineStateJson: null,
         encrypted: normalized.encrypted,
@@ -221,7 +223,7 @@ router.put(
     logSyncRouteEvent('info', 'profile_storage_state_upserted', {
       route: 'PUT /api/profile-storage-state/:profileId',
       profileId,
-      resolvedProfileId: resolved.profileId,
+      resolvedProfileId: normalizedResolvedProfileId,
       profileIdType: resolveProfileIdType(profileId),
       profileSource: resolved.source,
       version: Number(serialized?.version || nextVersion),

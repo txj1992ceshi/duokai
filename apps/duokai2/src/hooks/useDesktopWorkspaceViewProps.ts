@@ -82,6 +82,8 @@ export function useDesktopWorkspaceViewProps({
   stopProfile,
   syncProfileConfig,
   pullProfileConfig,
+  syncProfileStorageState,
+  pullProfileStorageState,
   moveProfileToNurture,
   moveProfileToOperation,
   bulkStartProfiles,
@@ -240,6 +242,8 @@ export function useDesktopWorkspaceViewProps({
   stopProfile: (profileId: string) => void | Promise<void>
   syncProfileConfig: (profileId: string) => void | Promise<void>
   pullProfileConfig: (profileId: string) => void | Promise<void>
+  syncProfileStorageState: (profileId: string) => void | Promise<void>
+  pullProfileStorageState: (profileId: string) => void | Promise<void>
   moveProfileToNurture: (profileId: string) => void | Promise<void>
   moveProfileToOperation: (profileId: string) => void | Promise<void>
   bulkStartProfiles: () => void | Promise<void>
@@ -417,6 +421,8 @@ export function useDesktopWorkspaceViewProps({
     onStopProfile: (profileId) => void stopProfile(profileId),
     onUploadEnvironmentConfig: (profileId) => void syncProfileConfig(profileId),
     onPullEnvironmentConfig: (profileId) => void pullProfileConfig(profileId),
+    onUploadStorageState: (profileId) => void syncProfileStorageState(profileId),
+    onPullStorageState: (profileId) => void pullProfileStorageState(profileId),
     onMoveProfileToNurture: (profileId) => void moveProfileToNurture(profileId),
     onMoveProfileToOperation: (profileId) => void moveProfileToOperation(profileId),
     onBatchStart: () => void bulkStartProfiles(),

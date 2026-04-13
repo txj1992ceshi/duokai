@@ -4,6 +4,7 @@ import { asyncHandler } from '../lib/http.js';
 import { getForwardAuthHeaders, getRuntimeApiKey, getRuntimeUrl } from '../lib/runtime.js';
 import { resolveStorageStateJson } from '../lib/storageArtifacts.js';
 import { hasLegacyInlineStorageStatePayload } from '../lib/storageView.js';
+import { normalizeArtifactProfileId } from '../lib/artifactProfileId.js';
 import {
   classifyRuntimeProxyFailure,
   classifyStorageArtifactFailure,
@@ -154,7 +155,7 @@ router.post(
 
       const syncedStorageState = await ProfileStorageStateModel.findOne({
         userId: authUser.userId,
-        profileId: resolvedProfile.profileId,
+        profileId: normalizeArtifactProfileId(resolvedProfile.profileId),
       }).lean();
 
       if (syncedStorageState) {

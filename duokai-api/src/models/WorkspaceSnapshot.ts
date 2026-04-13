@@ -11,10 +11,11 @@ const WorkspaceSnapshotSchema = new Schema(
       index: true,
     },
     profileId: {
-      type: Schema.Types.ObjectId,
-      ref: 'Profile',
+      // Runtime/canonical profile identity. Supports UUID and legacy ObjectId strings.
+      type: String,
       required: true,
       index: true,
+      trim: true,
     },
     snapshotId: {
       type: String,

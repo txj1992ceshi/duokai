@@ -143,6 +143,8 @@ export function EnvironmentRow({
   onClone,
   onUploadConfig,
   onPullConfig,
+  onUploadStorageState,
+  onPullStorageState,
   onLaunch,
   onStop,
   onMoveToNurture,
@@ -157,6 +159,8 @@ export function EnvironmentRow({
   onClone: () => void
   onUploadConfig: () => void
   onPullConfig: () => void
+  onUploadStorageState: () => void
+  onPullStorageState: () => void
   onLaunch: () => void
   onStop: () => void
   onMoveToNurture: () => void
@@ -294,6 +298,24 @@ export function EnvironmentRow({
                 </DropdownMenuTrigger>
                 <AnimatePresence>
                   <DropdownMenuContent open={menuOpen}>
+                    <DropdownMenuItem
+                      onClick={() => {
+                        setMenuOpen(false)
+                        onUploadStorageState()
+                      }}
+                    >
+                      <ArrowRightLeft size={14} />
+                      <span className="ml-2">{t('environment.row.actions.uploadStorageState')}</span>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => {
+                        setMenuOpen(false)
+                        onPullStorageState()
+                      }}
+                    >
+                      <ArrowRightLeft size={14} />
+                      <span className="ml-2">{t('environment.row.actions.pullStorageState')}</span>
+                    </DropdownMenuItem>
                     <DropdownMenuItem
                       onClick={() => {
                         setMenuOpen(false)

@@ -32,6 +32,9 @@ type AdminProfile = {
   startupPlatform?: string;
   startupUrl?: string;
   storageStateSynced?: boolean;
+  storageStateCloudRecordExists?: boolean;
+  storageStateStatus?: string;
+  storageStateCloudUpdatedAt?: string;
 };
 
 type AdminUser = {
@@ -52,6 +55,29 @@ function getProfileSyncSummary(profile: AdminProfile): 'Ready' | 'Partial' | 'Em
   if (hasProxy && hasFingerprint && hasEnvironment) return 'Ready';
   if (hasProxy || hasFingerprint || hasEnvironment) return 'Partial';
   return 'Empty';
+}
+
+function formatDateTime(value?: string) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+}
+
+function getStorageStateLabel(profile: AdminProfile) {
+  const status = String(profile.storageStateStatus || '').trim();
+  if (status === 'conflict') return '冲突待处理';
+  if (status === 'error') return '上传失败';
+  if (status === 'pending' || status === 'syncing') return '同步中';
+  if (status === 'synced') return '已同步';
+  if (status === 'cloud-record') return '云端已有记录';
+  if (profile.storageStateCloudRecordExists) return '云端已有记录';
+  return '无云端记录';
 }
 
 export default function ProfilesPage() {
@@ -254,7 +280,12 @@ export default function ProfilesPage() {
                       ? '部分完成'
                       : '未配置'}
                   </td>
-                  <td className="px-4 py-3">{profile.storageStateSynced ? '已同步' : '未同步'}</td>
+                  <td className="px-4 py-3">
+                    <div>{getStorageStateLabel(profile)}</div>
+                    <div className="text-xs text-neutral-500">
+                      {formatDateTime(profile.storageStateCloudUpdatedAt) || '-'}
+                    </div>
+                  </td>
                   <td className="px-4 py-3">
                     {(profile.proxyType || 'direct') +
                       (profile.proxyHost ? ` | ${profile.proxyHost}` : '') +

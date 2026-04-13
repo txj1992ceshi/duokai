@@ -6,6 +6,7 @@ import { normalizeConfigProfilePayload, resolveUserConfigStateId } from '../lib/
 import { normalizeWorkspacePayload } from '../lib/serializers.js';
 import { collectStorageDiagnosticsSummary } from '../lib/storageDiagnostics.js';
 import { hasLegacyInlineStorageStatePayload } from '../lib/storageView.js';
+import { normalizeArtifactProfileId } from '../lib/artifactProfileId.js';
 import { requireAdmin } from '../middlewares/auth.js';
 import { AgentConfigStateModel } from '../models/AgentConfigState.js';
 import { ConfigSyncEventModel } from '../models/ConfigSyncEvent.js';
@@ -125,6 +126,20 @@ function getSyncProfileStatus(profile: {
   if (hasProxy && hasFingerprint && hasEnvironment) return 'ready';
   if (hasProxy || hasFingerprint || hasEnvironment) return 'partial';
   return 'empty';
+}
+
+function deriveAdminStorageStateStatus(input: {
+  cloudRecordExists: boolean;
+  lastStorageStateSyncStatus?: unknown;
+}) {
+  const rawStatus = String(input.lastStorageStateSyncStatus || '').trim();
+  if (!input.cloudRecordExists) {
+    return rawStatus === 'error' ? 'error' : 'no-record';
+  }
+  if (rawStatus) {
+    return rawStatus;
+  }
+  return 'cloud-record';
 }
 
 type AdminIssueCategory =
@@ -521,7 +536,9 @@ async function listCanonicalAdminProfiles() {
     })
       .select('agentId profiles updatedAt')
       .lean(),
-    ProfileStorageStateModel.find({}).select('profileId fileRef inlineStateJson stateJson').lean(),
+    ProfileStorageStateModel.find({})
+      .select('profileId fileRef inlineStateJson stateJson updatedAt version deviceId')
+      .lean(),
     WorkspaceSnapshotModel.find({}).select('profileId fileRef').lean(),
     UserModel.find({}).select('_id email name status').lean(),
     ConfigSyncEventModel.find({ scope: 'environment' })
@@ -530,8 +547,12 @@ async function listCanonicalAdminProfiles() {
       .lean(),
   ]);
 
-  const syncedProfileIds = new Set(storageStates.map((item) => String(item.profileId)));
-  const workspaceSnapshotProfileIds = new Set(workspaceSnapshots.map((item) => String(item.profileId)));
+  const storageStateMap = new Map(
+    storageStates.map((item) => [normalizeArtifactProfileId(item.profileId), item as Record<string, unknown>])
+  );
+  const workspaceSnapshotProfileIds = new Set(
+    workspaceSnapshots.map((item) => normalizeArtifactProfileId(item.profileId))
+  );
   const storageStateBackedByFile = storageStates.filter((item) => String(item.fileRef || '').trim()).length;
   const storageStateLegacyInlineCount = storageStates.filter(
     (item) => hasLegacyInlineStorageStatePayload(item as Record<string, unknown>)
@@ -596,13 +617,25 @@ async function listCanonicalAdminProfiles() {
       const latestErrorEvent =
         profileEvents.find((event) => String(event.status || '').includes('failed')) || null;
       const latestEvent = profileEvents[0] || null;
+      const storageStateRecord = storageStateMap.get(normalizeArtifactProfileId(normalized.id)) || null;
+      const storageStateCloudRecordExists = Boolean(storageStateRecord);
+      const storageStateStatus = deriveAdminStorageStateStatus({
+        cloudRecordExists: storageStateCloudRecordExists,
+        lastStorageStateSyncStatus: normalized.lastStorageStateSyncStatus,
+      });
       profiles.push({
         ...normalized,
         userId,
         ownerEmail: owner.ownerEmail,
         ownerName: owner.ownerName,
-        storageStateSynced: syncedProfileIds.has(String(normalized.id)),
-        workspaceSnapshotSynced: workspaceSnapshotProfileIds.has(String(normalized.id)),
+        storageStateSynced:
+          storageStateCloudRecordExists && storageStateStatus === 'synced',
+        storageStateCloudRecordExists,
+        storageStateStatus,
+        storageStateCloudUpdatedAt: String(storageStateRecord?.updatedAt || '').trim(),
+        storageStateCloudVersion: Number(storageStateRecord?.version || 0),
+        storageStateCloudDeviceId: String(storageStateRecord?.deviceId || '').trim(),
+        workspaceSnapshotSynced: workspaceSnapshotProfileIds.has(normalizeArtifactProfileId(normalized.id)),
         autoSyncTaskCount: userEventCountMap.get(userId) || 0,
         lastAutoPushAt: String(latestAutoPushEvent?.createdAt || '').trim(),
         lastAutoPullAt: String(latestAutoPullEvent?.createdAt || '').trim(),
@@ -905,7 +938,9 @@ router.patch(
       AgentConfigStateModel.find({ agentId: /^user:/ }).lean(),
       UserModel.findById(nextUserId).lean(),
       UserModel.find({}).select('_id email name').lean(),
-      ProfileStorageStateModel.findOne({ profileId }).select('_id').lean(),
+      ProfileStorageStateModel.findOne({ profileId: normalizeArtifactProfileId(profileId) })
+        .select('_id updatedAt version deviceId')
+        .lean(),
     ]);
 
     if (!targetUser) {
@@ -1015,6 +1050,12 @@ router.patch(
       },
     });
 
+    const storageStateCloudRecordExists = Boolean(storageState);
+    const storageStateStatus = deriveAdminStorageStateStatus({
+      cloudRecordExists: storageStateCloudRecordExists,
+      lastStorageStateSyncStatus: normalized?.lastStorageStateSyncStatus,
+    });
+
     res.json({
       success: true,
       profile: {
@@ -1022,7 +1063,12 @@ router.patch(
         userId: String(targetUser._id),
         ownerEmail: toOwner.ownerEmail,
         ownerName: toOwner.ownerName,
-        storageStateSynced: Boolean(storageState),
+        storageStateSynced: storageStateCloudRecordExists && storageStateStatus === 'synced',
+        storageStateCloudRecordExists,
+        storageStateStatus,
+        storageStateCloudUpdatedAt: String(storageState?.updatedAt || '').trim(),
+        storageStateCloudVersion: Number(storageState?.version || 0),
+        storageStateCloudDeviceId: String(storageState?.deviceId || '').trim(),
       },
     });
   })

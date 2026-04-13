@@ -127,6 +127,8 @@ import type {
   RemoteConfigSnapshot,
   RuntimeHostInfo,
   SettingsPayload,
+  StorageStateSyncResult,
+  StorageStateSyncStatus,
   StartupNavigationReasonCode,
   StartupNavigationResult,
   DesktopUpdateState,
@@ -241,6 +243,8 @@ type RuntimeLockRecord = {
   createdAt: string
   updatedAt: string
 }
+
+type StorageStateDownloadReason = 'startup' | 'manual'
 
 function resolveAuditLogPath(): string {
   try {
@@ -2540,7 +2544,7 @@ async function finalizeRuntimeShutdown(
       }
     }
 
-    if (context && profileConfigReadyForRuntimeArtifacts) {
+    if (context) {
       try {
         await uploadProfileStorageStateToControlPlane(profileId, {
           context,
@@ -4086,7 +4090,11 @@ function clearProfileStorageSyncTimer(profileId: string): void {
   void profileId
 }
 
-type StorageStateUploadReason = 'stop' | 'graceful-shutdown' | 'context-close'
+type StorageStateUploadReason =
+  | 'stop'
+  | 'graceful-shutdown'
+  | 'context-close'
+  | 'manual-upload'
 
 async function uploadProfileStorageStateToControlPlane(
   profileId: string,
@@ -4094,13 +4102,25 @@ async function uploadProfileStorageStateToControlPlane(
     context?: BrowserContext | null
     reason: StorageStateUploadReason
   },
-): Promise<void> {
+): Promise<StorageStateSyncResult> {
+  const buildResult = (
+    status: StorageStateSyncStatus,
+    message: string,
+    overrides: Partial<StorageStateSyncResult> = {},
+  ): StorageStateSyncResult => ({
+    status,
+    message,
+    version: 0,
+    updatedAt: '',
+    cloudRecordExists: false,
+    ...overrides,
+  })
   if (!getDesktopAuthState().authenticated) {
-    return
+    return buildResult('idle', '当前未登录账号，无法同步登录态')
   }
   const profile = requireDatabase().getProfileById(profileId)
   if (!profile) {
-    return
+    return buildResult('error', '环境不存在')
   }
 
   let stateJson: BrowserStorageState | null = null
@@ -4110,17 +4130,23 @@ async function uploadProfileStorageStateToControlPlane(
     stateJson = await readProfileStorageStateFromDisk(profileId)
   }
   if (!stateJson) {
-    return
+    updateRuntimeMetadata(profile, {
+      lastStorageStateSyncStatus: 'idle',
+      lastStorageStateSyncMessage: '本地没有可上传的登录态文件',
+    })
+    return buildResult('idle', '本地没有可上传的登录态文件')
   }
 
   const stateHash = hashStorageState(stateJson)
   const pendingProfile = updateRuntimeMetadata(profile, {
-    lastStorageStateSyncStatus: 'pending',
+    lastStorageStateSyncStatus: 'syncing',
     lastStorageStateSyncMessage: '正在同步云端登录态',
   })
+  let cloudRecordExists = false
 
   try {
     const remoteState = await fetchRemoteProfileStorageState(profileId)
+    cloudRecordExists = Boolean(remoteState)
     const localVersion = Math.max(
       0,
       Number(pendingProfile.fingerprintConfig.runtimeMetadata.lastStorageStateVersion || 0),
@@ -4134,7 +4160,11 @@ async function uploadProfileStorageStateToControlPlane(
         lastStorageStateSyncStatus: 'synced',
         lastStorageStateSyncMessage: '云端登录态已同步',
       })
-      return
+      return buildResult('synced', '云端登录态已同步', {
+        version: remoteState.version,
+        updatedAt: remoteState.updatedAt || new Date().toISOString(),
+        cloudRecordExists: true,
+      })
     }
     if (remoteState && remoteState.version > localVersion) {
       updateRuntimeMetadata(pendingProfile, {
@@ -4150,19 +4180,37 @@ async function uploadProfileStorageStateToControlPlane(
         localVersion,
         remoteVersion: remoteState.version,
       })
-      return
+      return buildResult('conflict', '云端登录态已更新，请重新启动环境以同步最新状态', {
+        version: remoteState.version,
+        updatedAt: remoteState.updatedAt || new Date().toISOString(),
+        cloudRecordExists: true,
+      })
     }
     if (remoteState && remoteState.version === localVersion && remoteState.stateHash && remoteState.stateHash === stateHash) {
       updateRuntimeMetadata(pendingProfile, {
+        lastStorageStateVersion: remoteState.version,
+        lastStorageStateSyncedAt: remoteState.updatedAt || new Date().toISOString(),
+        lastStorageStateDeviceId: remoteState.deviceId || '',
         lastStorageStateSyncStatus: 'synced',
         lastStorageStateSyncMessage: '云端登录态已同步',
       })
-      return
+      return buildResult('synced', '云端登录态已同步', {
+        version: remoteState.version,
+        updatedAt: remoteState.updatedAt || new Date().toISOString(),
+        cloudRecordExists: true,
+      })
     }
 
     const token = getStoredAuthToken()
     if (!token) {
-      return
+      updateRuntimeMetadata(pendingProfile, {
+        lastStorageStateSyncStatus: 'error',
+        lastStorageStateSyncMessage: '当前登录态凭证缺失，无法上传登录态',
+      })
+      return buildResult('error', '当前登录态凭证缺失，无法上传登录态', {
+        version: localVersion,
+        cloudRecordExists: Boolean(remoteState),
+      })
     }
     const response = await fetch(
       `${getControlPlaneApiBase()}/api/profile-storage-state/${encodeURIComponent(profileId)}`,
@@ -4198,7 +4246,11 @@ async function uploadProfileStorageStateToControlPlane(
         localVersion,
         remoteVersion: Number(conflict.currentVersion || 0),
       })
-      return
+      return buildResult('conflict', '云端登录态已更新，请重新启动环境以同步最新状态', {
+        version: Number(conflict.currentVersion || 0),
+        updatedAt: String(conflict.updatedAt || ''),
+        cloudRecordExists: true,
+      })
     }
     if (!response.ok || payload.success === false) {
       throw new Error(String(payload.error || `${response.status} ${response.statusText}`))
@@ -4217,79 +4269,149 @@ async function uploadProfileStorageStateToControlPlane(
       reason: options.reason,
       version: Number(storageState.version || 0),
     })
+    return buildResult('synced', '云端登录态已同步', {
+      version: Number(storageState.version || localVersion),
+      updatedAt: String(storageState.updatedAt || new Date().toISOString()),
+      cloudRecordExists: true,
+    })
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
     updateRuntimeMetadata(pendingProfile, {
       lastStorageStateSyncStatus: 'error',
-      lastStorageStateSyncMessage: error instanceof Error ? error.message : String(error),
+      lastStorageStateSyncMessage: message,
     })
     audit('storage_state_upload_failed', {
       profileId,
       reason: options.reason,
-      err: String(error),
+      err: message,
     })
     logEvent(
       'warn',
       'runtime',
-      `Failed syncing storage state for ${profile.name}: ${error instanceof Error ? error.message : String(error)}`,
+      `Failed syncing storage state for ${profile.name}: ${message}`,
       profileId,
     )
+    return buildResult('error', message, {
+      version: Number(pendingProfile.fingerprintConfig.runtimeMetadata.lastStorageStateVersion || 0),
+      cloudRecordExists,
+    })
   }
 }
 
-async function downloadProfileStorageStateFromControlPlane(profileId: string): Promise<boolean> {
+async function downloadProfileStorageStateFromControlPlane(
+  profileId: string,
+  options: {
+    force?: boolean
+    reason?: StorageStateDownloadReason
+  } = {},
+): Promise<StorageStateSyncResult> {
+  const buildResult = (
+    status: StorageStateSyncStatus,
+    message: string,
+    overrides: Partial<StorageStateSyncResult> = {},
+  ): StorageStateSyncResult => ({
+    status,
+    message,
+    version: 0,
+    updatedAt: '',
+    cloudRecordExists: false,
+    ...overrides,
+  })
   if (!getDesktopAuthState().authenticated) {
-    return false
+    return buildResult('idle', '当前未登录账号，无法拉取登录态')
   }
   const profile = requireDatabase().getProfileById(profileId)
   if (!profile) {
-    return false
+    return buildResult('error', '环境不存在')
   }
+  let cloudRecordExists = false
   try {
+    updateRuntimeMetadata(profile, {
+      lastStorageStateSyncStatus: 'syncing',
+      lastStorageStateSyncMessage: '正在拉取云端登录态',
+    })
     const remoteState = await fetchRemoteProfileStorageState(profileId)
     if (!remoteState) {
-      return false
+      updateRuntimeMetadata(profile, {
+        lastStorageStateSyncStatus: 'idle',
+        lastStorageStateSyncMessage: '云端暂无登录态记录',
+      })
+      return buildResult('idle', '云端暂无登录态记录')
     }
+    cloudRecordExists = true
     const localVersion = Math.max(
       0,
       Number(profile.fingerprintConfig.runtimeMetadata.lastStorageStateVersion || 0),
     )
-    if (remoteState.version <= localVersion) {
-      return false
+    if (!options.force && remoteState.version <= localVersion) {
+      updateRuntimeMetadata(profile, {
+        lastStorageStateVersion: remoteState.version,
+        lastStorageStateSyncedAt: remoteState.updatedAt || new Date().toISOString(),
+        lastStorageStateDeviceId: remoteState.deviceId || '',
+        lastStorageStateSyncStatus: 'synced',
+        lastStorageStateSyncMessage: '本地登录态已是最新版本',
+      })
+      return buildResult('synced', '本地登录态已是最新版本', {
+        version: remoteState.version,
+        updatedAt: remoteState.updatedAt || new Date().toISOString(),
+        cloudRecordExists: true,
+      })
     }
     const normalizedState = normalizeStorageState(remoteState.stateJson)
     if (!normalizedState) {
-      return false
+      updateRuntimeMetadata(profile, {
+        lastStorageStateSyncStatus: 'error',
+        lastStorageStateSyncMessage: '云端登录态内容为空或格式无效',
+      })
+      return buildResult('error', '云端登录态内容为空或格式无效', {
+        version: remoteState.version,
+        updatedAt: remoteState.updatedAt || '',
+        cloudRecordExists: true,
+      })
     }
     await writeProfileStorageStateToDisk(profileId, normalizedState)
+    const running = runtimeContexts.has(profileId)
+    const baseMessage =
+      options.reason === 'manual' && running
+        ? '已下载云端登录态，重启环境后生效'
+        : '已下载云端登录态'
     updateRuntimeMetadata(profile, {
       lastStorageStateVersion: remoteState.version,
       lastStorageStateSyncedAt: remoteState.updatedAt || new Date().toISOString(),
       lastStorageStateDeviceId: remoteState.deviceId || '',
       lastStorageStateSyncStatus: 'synced',
-      lastStorageStateSyncMessage: '已下载云端登录态',
+      lastStorageStateSyncMessage: baseMessage,
     })
     audit('storage_state_downloaded', {
       profileId,
       version: remoteState.version,
       deviceId: remoteState.deviceId,
     })
-    return true
+    return buildResult('synced', baseMessage, {
+      version: remoteState.version,
+      updatedAt: remoteState.updatedAt || new Date().toISOString(),
+      cloudRecordExists: true,
+    })
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
     updateRuntimeMetadata(profile, {
       lastStorageStateSyncStatus: 'error',
-      lastStorageStateSyncMessage: error instanceof Error ? error.message : String(error),
+      lastStorageStateSyncMessage: message,
     })
     audit('storage_state_download_failed', {
       profileId,
-      err: String(error),
+      err: message,
     })
     logEvent(
       'warn',
       'runtime',
-      `Failed downloading cloud storage state for ${profile.name}: ${error instanceof Error ? error.message : String(error)}`,
+      `Failed downloading cloud storage state for ${profile.name}: ${message}`,
       profileId,
     )
-    return false
+    return buildResult('error', message, {
+      version: Number(profile.fingerprintConfig.runtimeMetadata.lastStorageStateVersion || 0),
+      cloudRecordExists,
+    })
   }
 }
 
@@ -5610,7 +5732,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     const userDataDir = workspaceLaunch.userDataDir
     mkdirSync(userDataDir, { recursive: true })
     await runNonBlockingSyncSideEffect(profileId, 'storageState', async () => {
-      await downloadProfileStorageStateFromControlPlane(profileId)
+      await downloadProfileStorageStateFromControlPlane(profileId, { reason: 'startup' })
     })
     const runtimeHost = await runtimeHostManager.startEnvironment(profileId, userDataDir, getSettings())
     audit('runtime_host_ready', {
@@ -6819,6 +6941,20 @@ async function registerIpcHandlers(): Promise<void> {
   ipcMain.handle('profiles.pullConfig', async (_event, profileId: string) => {
     ensureWritable('profiles.pullConfig')
     return pullProfileConfigFromControlPlane(profileId, { force: true })
+  })
+  ipcMain.handle('profiles.syncStorageState', async (_event, profileId: string) => {
+    ensureWritable('profiles.syncStorageState')
+    return uploadProfileStorageStateToControlPlane(profileId, {
+      context: runtimeContexts.get(profileId) || null,
+      reason: 'manual-upload',
+    })
+  })
+  ipcMain.handle('profiles.pullStorageState', async (_event, profileId: string) => {
+    ensureWritable('profiles.pullStorageState')
+    return downloadProfileStorageStateFromControlPlane(profileId, {
+      force: true,
+      reason: 'manual',
+    })
   })
   ipcMain.handle('profiles.revealDirectory', async (_event, profileId: string) => {
     ensureWorkspaceLayoutForProfileId(profileId)

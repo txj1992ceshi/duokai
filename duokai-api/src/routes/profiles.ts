@@ -11,6 +11,7 @@ import { resolveRuntimeProfileForUser } from '../lib/runtimeProfiles.js';
 import { normalizeWorkspacePayload, serializeProfile } from '../lib/serializers.js';
 import { logSyncRouteEvent, resolveProfileIdType } from '../lib/syncRouteLogger.js';
 import { resolveDefaultIpUsageMode } from '../lib/platformPolicies.js';
+import { normalizeArtifactProfileId } from '../lib/artifactProfileId.js';
 import { requireUser } from '../middlewares/auth.js';
 import { ProfileModel } from '../models/Profile.js';
 import { ProfileStorageStateModel } from '../models/ProfileStorageState.js';
@@ -97,7 +98,7 @@ router.get(
     const storageStates = await ProfileStorageStateModel.find({ userId: authUser.userId })
       .select('profileId')
       .lean();
-    const syncedProfileIds = new Set(storageStates.map((item) => String(item.profileId)));
+    const syncedProfileIds = new Set(storageStates.map((item) => normalizeArtifactProfileId(item.profileId)));
 
     res.json({
       success: true,
@@ -214,7 +215,7 @@ router.get(
 
     const storageState = await ProfileStorageStateModel.findOne({
       userId: authUser.userId,
-      profileId: req.params.id,
+      profileId: normalizeArtifactProfileId(req.params.id),
     })
       .select('_id')
       .lean();
@@ -235,7 +236,7 @@ router.patch(
     await connectMongo();
     const authUser = req.authUser!;
     const body = req.body || {};
-    const profileId = String(req.params.id);
+    const profileId = normalizeArtifactProfileId(req.params.id);
     const updateData: Record<string, unknown> = {};
     const ignoredFields = Object.keys(body).filter((key) => !LEGACY_RUNTIME_PATCH_KEYS.has(key));
     const resolved = await resolveRuntimeProfileForUser(authUser.userId, profileId);
@@ -333,7 +334,7 @@ router.patch(
 
     const storageState = await ProfileStorageStateModel.findOne({
       userId: authUser.userId,
-      profileId,
+      profileId: normalizeArtifactProfileId(profileId),
     })
       .select('_id')
       .lean();

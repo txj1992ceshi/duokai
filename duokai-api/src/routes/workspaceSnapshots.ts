@@ -12,6 +12,7 @@ import {
   resolveWorkspaceSnapshotArtifact,
   writeWorkspaceSnapshotArtifact,
 } from '../lib/storageArtifacts.js';
+import { normalizeArtifactProfileId } from '../lib/artifactProfileId.js';
 import {
   compactWorkspaceSnapshotDocument,
   shouldIncludeArtifactContent,
@@ -115,7 +116,7 @@ router.get(
   asyncHandler(async (req, res) => {
     await connectMongo();
     const authUser = req.authUser!;
-    const profileId = String(req.params.profileId);
+    const profileId = normalizeArtifactProfileId(req.params.profileId);
     const resolved = await resolveRuntimeProfileForUser(authUser.userId, profileId);
     if (!resolved) {
       logSyncRouteEvent('warn', 'workspace_snapshot_profile_missing', {
@@ -130,7 +131,7 @@ router.get(
 
     const snapshots = await WorkspaceSnapshotModel.find({
       userId: authUser.userId,
-      profileId: resolved.profileId,
+      profileId: normalizeArtifactProfileId(resolved.profileId),
     })
       .sort({ updatedAt: -1 })
       .lean();
@@ -152,7 +153,7 @@ router.get(
   asyncHandler(async (req, res) => {
     await connectMongo();
     const authUser = req.authUser!;
-    const profileId = String(req.params.profileId);
+    const profileId = normalizeArtifactProfileId(req.params.profileId);
     const snapshotId = String(req.params.snapshotId);
     const resolved = await resolveRuntimeProfileForUser(authUser.userId, profileId);
     if (!resolved) {
@@ -169,7 +170,7 @@ router.get(
 
     const snapshot = await WorkspaceSnapshotModel.findOne({
       userId: authUser.userId,
-      profileId: resolved.profileId,
+      profileId: normalizeArtifactProfileId(resolved.profileId),
       snapshotId,
     }).lean();
     const includeContent = shouldIncludeArtifactContent(req.query.includeContent);
@@ -191,7 +192,7 @@ router.put(
   asyncHandler(async (req, res) => {
     await connectMongo();
     const authUser = req.authUser!;
-    const profileId = String(req.params.profileId);
+    const profileId = normalizeArtifactProfileId(req.params.profileId);
     const snapshotId = String(req.params.snapshotId);
     const body = req.body || {};
     const resolved = await resolveRuntimeProfileForUser(authUser.userId, profileId);
@@ -207,17 +208,18 @@ router.put(
       return;
     }
 
-    const payload = normalizeWorkspaceSnapshotPayload(resolved.profileId, snapshotId, body);
+    const normalizedResolvedProfileId = normalizeArtifactProfileId(resolved.profileId);
+    const payload = normalizeWorkspaceSnapshotPayload(normalizedResolvedProfileId, snapshotId, body);
 
     let artifact;
     try {
       artifact = await writeWorkspaceSnapshotArtifact({
         userId: String(authUser.userId),
-        profileId: resolved.profileId,
+        profileId: normalizedResolvedProfileId,
         snapshotId: payload.snapshotId,
         payload: {
           snapshotId: payload.snapshotId,
-          profileId: resolved.profileId,
+          profileId: normalizedResolvedProfileId,
           templateRevision: payload.templateRevision,
           templateFingerprintHash: payload.templateFingerprintHash,
           manifest: payload.manifest,
@@ -235,7 +237,7 @@ router.put(
       logSyncRouteEvent('error', 'workspace_snapshot_artifact_write_failed', {
         route: 'PUT /api/workspace-snapshots/:profileId/:snapshotId',
         profileId,
-        resolvedProfileId: resolved.profileId,
+        resolvedProfileId: normalizedResolvedProfileId,
         snapshotId: payload.snapshotId,
         profileIdType: resolveProfileIdType(profileId),
         profileSource: resolved.source,
@@ -248,12 +250,12 @@ router.put(
     const snapshot = await WorkspaceSnapshotModel.findOneAndUpdate(
       {
         userId: authUser.userId,
-        profileId: resolved.profileId,
+        profileId: normalizedResolvedProfileId,
         snapshotId: payload.snapshotId,
       },
       {
         userId: authUser.userId,
-        profileId: resolved.profileId,
+        profileId: normalizedResolvedProfileId,
         snapshotId: payload.snapshotId,
         templateRevision: payload.templateRevision,
         templateFingerprintHash: payload.templateFingerprintHash,
@@ -290,7 +292,7 @@ router.put(
     logSyncRouteEvent('info', 'workspace_snapshot_upserted', {
       route: 'PUT /api/workspace-snapshots/:profileId/:snapshotId',
       profileId,
-      resolvedProfileId: resolved.profileId,
+      resolvedProfileId: normalizedResolvedProfileId,
       snapshotId: payload.snapshotId,
       profileIdType: resolveProfileIdType(profileId),
       profileSource: resolved.source,

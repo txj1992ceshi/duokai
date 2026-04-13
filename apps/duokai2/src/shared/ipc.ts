@@ -26,6 +26,7 @@ import type {
   RuntimeStatus,
   RuntimeHostInfo,
   SettingsPayload,
+  StorageStateSyncResult,
   TemplateRecord,
   UpdateCloudPhoneInput,
   UpdateProfileInput,
@@ -120,6 +121,8 @@ export interface DesktopApi {
     clone: (id: string) => Promise<ProfileRecord>
     syncConfig: (id: string) => Promise<ConfigSyncResult>
     pullConfig: (id: string) => Promise<ConfigSyncResult>
+    syncStorageState: (id: string) => Promise<StorageStateSyncResult>
+    pullStorageState: (id: string) => Promise<StorageStateSyncResult>
     revealDirectory: (id: string) => Promise<void>
     getDirectoryInfo: () => Promise<ProfileDirectoryInfo>
     bulkStart: (payload: ProfileBulkActionPayload) => Promise<void>

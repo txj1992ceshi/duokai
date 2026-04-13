@@ -9,6 +9,7 @@ import {
   hasLegacyInlineStorageStatePayload,
   hasLegacyWorkspaceSnapshotPayload,
 } from './storageView.js';
+import { normalizeArtifactProfileId } from './artifactProfileId.js';
 import { ProfileStorageStateModel } from '../models/ProfileStorageState.js';
 import { WorkspaceSnapshotModel } from '../models/WorkspaceSnapshot.js';
 
@@ -130,7 +131,7 @@ export async function backfillStorageArtifacts(
         if (!options.dryRun) {
           artifact = await writeStorageStateArtifact({
             userId: String(record.userId || ''),
-            profileId: String(record.profileId || ''),
+            profileId: normalizeArtifactProfileId(record.profileId),
             version,
             stateJson: resolvedStateJson,
             stateHash: String(record.stateHash || ''),
@@ -198,7 +199,7 @@ export async function backfillStorageArtifacts(
         if (!options.dryRun) {
           artifact = await writeWorkspaceSnapshotArtifact({
             userId: String(record.userId || ''),
-            profileId: String(record.profileId || ''),
+            profileId: normalizeArtifactProfileId(record.profileId),
             snapshotId: String(record.snapshotId || ''),
             payload: buildSnapshotArtifactPayload(record),
           });

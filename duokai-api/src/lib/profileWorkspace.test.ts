@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { normalizeWorkspacePayload, serializeProfile } from './serializers.js';
+import { ProfileStorageStateModel } from '../models/ProfileStorageState.js';
 import { WorkspaceSnapshotModel } from '../models/WorkspaceSnapshot.js';
 
 test('normalizeWorkspacePayload pins workspace identity to profile id', () => {
@@ -96,6 +97,7 @@ test('serializeProfile includes ip usage defaults and last launch block details'
 });
 
 test('workspace snapshot schema keeps profile identity and unique snapshot key', () => {
+  assert.equal(WorkspaceSnapshotModel.schema.path('profileId')?.instance, 'String');
   const indexes = WorkspaceSnapshotModel.schema.indexes();
   assert.equal(
     indexes.some(
@@ -106,6 +108,18 @@ test('workspace snapshot schema keeps profile identity and unique snapshot key',
         options?.unique === true
     ),
     true
+  );
+});
+
+test('profile storage state schema keeps profile identity as string with unique user/profile index', () => {
+  assert.equal(ProfileStorageStateModel.schema.path('profileId')?.instance, 'String');
+  const indexes = ProfileStorageStateModel.schema.indexes();
+  assert.equal(
+    indexes.some(
+      ([fields, options]: [Record<string, number>, { unique?: boolean }]) =>
+        fields.userId === 1 && fields.profileId === 1 && options?.unique === true,
+    ),
+    true,
   );
 });
 

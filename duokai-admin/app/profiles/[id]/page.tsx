@@ -30,6 +30,11 @@ type ProfileDetail = {
   startupPlatform?: string;
   startupUrl?: string;
   storageStateSynced?: boolean;
+  storageStateCloudRecordExists?: boolean;
+  storageStateStatus?: string;
+  storageStateCloudUpdatedAt?: string;
+  storageStateCloudVersion?: number;
+  storageStateCloudDeviceId?: string;
   ownerEmail?: string;
   ownerName?: string;
   createdAt?: string;
@@ -43,6 +48,7 @@ type ProfileDetail = {
   lastAutoPullAt?: string;
   lastAutoSyncError?: string;
   lastWriterDeviceId?: string;
+  lastStorageStateSyncAt?: string;
   lastStorageStateSyncStatus?: string;
   lastStorageStateSyncMessage?: string;
   lastWorkspaceSummarySyncStatus?: string;
@@ -97,6 +103,17 @@ function getSyncProfile(profile: ProfileDetail): 'Ready' | 'Partial' | 'Empty' {
   if (hasProxy && hasFingerprint && hasEnvironment) return 'Ready';
   if (hasProxy || hasFingerprint || hasEnvironment) return 'Partial';
   return 'Empty';
+}
+
+function getStorageStateLabel(profile: ProfileDetail) {
+  const status = String(profile.storageStateStatus || '').trim();
+  if (status === 'conflict') return '冲突待处理';
+  if (status === 'error') return '上传失败';
+  if (status === 'pending' || status === 'syncing') return '同步中';
+  if (status === 'synced') return '已同步';
+  if (status === 'cloud-record') return '云端已有记录';
+  if (profile.storageStateCloudRecordExists) return '云端已有记录';
+  return '无云端记录';
 }
 
 export default function ProfileDetailPage() {
@@ -276,7 +293,11 @@ export default function ProfileDetailPage() {
                 ? '部分完成'
                 : '未配置'}
             </div>
-            <div>storageStateSynced：{profile.storageStateSynced ? '已同步' : '未同步'}</div>
+            <div>storageState：{getStorageStateLabel(profile)}</div>
+            <div>storageStateCloudRecordExists：{profile.storageStateCloudRecordExists ? 'true' : 'false'}</div>
+            <div>storageStateCloudUpdatedAt：{formatDateTime(profile.storageStateCloudUpdatedAt)}</div>
+            <div>storageStateCloudVersion：{profile.storageStateCloudVersion ?? 0}</div>
+            <div>storageStateCloudDeviceId：{profile.storageStateCloudDeviceId || '-'}</div>
             <div>canonicalSyncVersion：{profile.canonicalSyncVersion ?? 0}</div>
             <div>lastEnvironmentSyncStatus：{profile.lastEnvironmentSyncStatus || '-'}</div>
             <div>lastEnvironmentSyncVersion：{profile.lastEnvironmentSyncVersion ?? 0}</div>
@@ -287,6 +308,7 @@ export default function ProfileDetailPage() {
             <div>autoSyncTaskCount：{profile.autoSyncTaskCount ?? 0}</div>
             <div>lastAutoSyncError：{profile.lastAutoSyncError || '-'}</div>
             <div>lastStorageStateSyncStatus：{profile.lastStorageStateSyncStatus || '-'}</div>
+            <div>lastStorageStateSyncAt：{formatDateTime(profile.lastStorageStateSyncAt)}</div>
             <div>lastStorageStateSyncMessage：{profile.lastStorageStateSyncMessage || '-'}</div>
             <div>lastWorkspaceSummarySyncStatus：{profile.lastWorkspaceSummarySyncStatus || '-'}</div>
             <div>lastWorkspaceSummarySyncMessage：{profile.lastWorkspaceSummarySyncMessage || '-'}</div>

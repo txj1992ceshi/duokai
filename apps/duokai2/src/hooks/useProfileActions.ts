@@ -95,6 +95,10 @@ export function useProfileActions({
           pullingProfileConfig: '正在从云端拉取当前环境配置...',
           profileConfigSynced: '当前环境已同步到云端。',
           profileConfigPulled: '已从云端拉取当前环境配置。',
+          syncingStorageState: '正在上传当前环境登录态...',
+          pullingStorageState: '正在从云端拉取当前环境登录态...',
+          storageStateSynced: '当前环境登录态已上传到云端。',
+          storageStatePulled: '已从云端拉取当前环境登录态。',
           relabelingTo: (label: string) => `正在更新用途为${label}...`,
           relabeledTo: (label: string) => `环境用途已更新为${label}。`,
           templateDeleted: '模板已删除。',
@@ -121,6 +125,10 @@ export function useProfileActions({
           pullingProfileConfig: 'Pulling the current environment from cloud...',
           profileConfigSynced: 'Current environment synced to cloud.',
           profileConfigPulled: 'Current environment pulled from cloud.',
+          syncingStorageState: 'Uploading the current login state...',
+          pullingStorageState: 'Pulling the current login state from cloud...',
+          storageStateSynced: 'Current login state uploaded to cloud.',
+          storageStatePulled: 'Current login state pulled from cloud.',
           relabelingTo: (label: string) => `Updating purpose to ${label}...`,
           relabeledTo: (label: string) => `Profile purpose updated to ${label}.`,
           templateDeleted: 'Template deleted.',
@@ -335,6 +343,24 @@ export function useProfileActions({
     })
   }
 
+  async function syncProfileStorageState(profileId: string) {
+    await withBusy(copy.syncingStorageState, async () => {
+      const api = requireDesktopApi(['profiles.syncStorageState'])
+      const result = await api.profiles.syncStorageState(profileId)
+      setNoticeMessage(result.message || copy.storageStateSynced)
+      await refreshAll()
+    })
+  }
+
+  async function pullProfileStorageState(profileId: string) {
+    await withBusy(copy.pullingStorageState, async () => {
+      const api = requireDesktopApi(['profiles.pullStorageState'])
+      const result = await api.profiles.pullStorageState(profileId)
+      setNoticeMessage(result.message || copy.storageStatePulled)
+      await refreshAll()
+    })
+  }
+
   async function transitionProfilePurpose(profile: ProfileRecord, targetPurpose: EnvironmentPurpose) {
     if (profile.environmentPurpose === targetPurpose) {
       return
@@ -463,6 +489,8 @@ export function useProfileActions({
     stopProfile,
     syncProfileConfig,
     pullProfileConfig,
+    syncProfileStorageState,
+    pullProfileStorageState,
     transitionProfilePurpose,
     moveProfileToNurture: (profileId: string) => moveProfileToPurpose(profileId, 'nurture'),
     moveProfileToOperation: (profileId: string) => moveProfileToPurpose(profileId, 'operation'),

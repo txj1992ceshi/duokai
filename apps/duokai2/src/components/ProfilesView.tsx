@@ -81,6 +81,8 @@ export function ProfilesView({
   onOpenCreateProfile,
   onUploadEnvironmentConfig,
   onPullEnvironmentConfig,
+  onUploadStorageState,
+  onPullStorageState,
   onEditProfile,
   onCloneProfile,
   onLaunchProfile,
@@ -145,6 +147,8 @@ export function ProfilesView({
   onOpenCreateProfile: () => void
   onUploadEnvironmentConfig: (profileId: string) => void | Promise<void>
   onPullEnvironmentConfig: (profileId: string) => void | Promise<void>
+  onUploadStorageState: (profileId: string) => void | Promise<void>
+  onPullStorageState: (profileId: string) => void | Promise<void>
   onEditProfile: (profileId: string) => void
   onCloneProfile: (profileId: string) => void
   onLaunchProfile: (profileId: string) => void
@@ -354,6 +358,8 @@ export function ProfilesView({
                 onCreate={onOpenCreateProfile}
                 onUploadConfig={onUploadEnvironmentConfig}
                 onPullConfig={onPullEnvironmentConfig}
+                onUploadStorageState={onUploadStorageState}
+                onPullStorageState={onPullStorageState}
                 onEdit={onEditProfile}
                 onClone={onCloneProfile}
                 onLaunch={onLaunchProfile}

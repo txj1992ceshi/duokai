@@ -12,6 +12,8 @@ export function EnvironmentList({
   onCreate,
   onUploadConfig,
   onPullConfig,
+  onUploadStorageState,
+  onPullStorageState,
   onEdit,
   onClone,
   onLaunch,
@@ -25,6 +27,8 @@ export function EnvironmentList({
   onCreate: () => void
   onUploadConfig: (profileId: string) => void
   onPullConfig: (profileId: string) => void
+  onUploadStorageState: (profileId: string) => void
+  onPullStorageState: (profileId: string) => void
   onEdit: (profileId: string) => void
   onClone: (profileId: string) => void
   onLaunch: (profileId: string) => void
@@ -72,6 +76,8 @@ export function EnvironmentList({
                   onClone={() => onClone(item.id)}
                   onUploadConfig={() => onUploadConfig(item.id)}
                   onPullConfig={() => onPullConfig(item.id)}
+                  onUploadStorageState={() => onUploadStorageState(item.id)}
+                  onPullStorageState={() => onPullStorageState(item.id)}
                   onLaunch={() => onLaunch(item.id)}
                   onStop={() => onStop(item.id)}
                   onMoveToNurture={() => onMoveToNurture(item.id)}

@@ -6,6 +6,7 @@ import {
   hasLegacyInlineStorageStatePayload,
   hasLegacyWorkspaceSnapshotPayload,
 } from './storageView.js';
+import { normalizeArtifactProfileId } from './artifactProfileId.js';
 import { ProfileStorageStateModel } from '../models/ProfileStorageState.js';
 import { WorkspaceSnapshotModel } from '../models/WorkspaceSnapshot.js';
 

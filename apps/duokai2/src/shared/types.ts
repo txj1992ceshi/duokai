@@ -230,6 +230,22 @@ export interface WorkspaceGateResult {
   workspace: WorkspaceDescriptor
 }
 
+export type StorageStateSyncStatus =
+  | 'idle'
+  | 'pending'
+  | 'syncing'
+  | 'synced'
+  | 'conflict'
+  | 'error'
+
+export interface StorageStateSyncResult {
+  status: StorageStateSyncStatus
+  message: string
+  version: number
+  updatedAt: string
+  cloudRecordExists: boolean
+}
+
 export interface ProfileBasicSettings {
   platform: string
   customPlatformName: string
@@ -347,7 +363,7 @@ export interface ProfileRuntimeMetadata {
   lastStorageStateVersion: number
   lastStorageStateSyncedAt: string
   lastStorageStateDeviceId: string
-  lastStorageStateSyncStatus: 'idle' | 'synced' | 'syncing' | 'pending' | 'conflict' | 'error'
+  lastStorageStateSyncStatus: StorageStateSyncStatus
   lastStorageStateSyncMessage: string
   lastWorkspaceSummarySyncAt: string
   lastWorkspaceSummarySyncStatus: 'idle' | 'synced' | 'syncing' | 'error'

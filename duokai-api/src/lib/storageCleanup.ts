@@ -1,6 +1,7 @@
 import { connectMongo } from './mongodb.js';
 import { buildStorageRetentionPlan } from './storageRetention.js';
 import { deleteArtifactFile, listArtifactFiles } from './fileRepository.js';
+import { normalizeArtifactProfileId } from './artifactProfileId.js';
 import { ProfileStorageStateModel } from '../models/ProfileStorageState.js';
 import { WorkspaceSnapshotModel } from '../models/WorkspaceSnapshot.js';
 
@@ -31,13 +32,13 @@ export async function cleanupStorageArtifacts(options: { dryRun?: boolean } = {}
   const plan = buildStorageRetentionPlan({
     storageStates: storageStates.map((item) => ({
       userId: String(item.userId || ''),
-      profileId: String(item.profileId || ''),
+      profileId: normalizeArtifactProfileId(item.profileId),
       fileRef: String(item.fileRef || ''),
     })),
     workspaceSnapshots: workspaceSnapshots.map((item) => ({
       id: String(item._id || ''),
       userId: String(item.userId || ''),
-      profileId: String(item.profileId || ''),
+      profileId: normalizeArtifactProfileId(item.profileId),
       snapshotId: String(item.snapshotId || ''),
       fileRef: String(item.fileRef || ''),
       updatedAt: item.updatedAt || null,
