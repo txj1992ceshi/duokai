@@ -229,6 +229,7 @@ function App() {
     cloudPhoneProviders,
     cloudPhoneProviderHealth,
     agentState,
+    runtimeHostInfo,
     runtimeStatus,
     pendingProfileLaunches,
   })

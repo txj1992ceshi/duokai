@@ -66,11 +66,15 @@ export function DashboardView({
     locale === 'zh-CN'
       ? {
           hostNetwork: '\u4e3b\u673a\u7f51\u7edc',
+          controlPlane: '\u63a7\u5236\u9762',
           runtimeHost: '\u8fd0\u884c\u5bbf\u4e3b',
           environmentEgress: '\u73af\u5883\u51fa\u53e3\u68c0\u67e5',
           fallback: '\u964d\u7ea7',
           running: '\u8fd0\u884c\u4e2d',
           queued: '\u6392\u961f',
+          offline: '\u79bb\u7ebf',
+          degraded: '\u964d\u7ea7',
+          pendingSync: '\u5f85\u8865\u4f20',
           failed: '\u5931\u8d25',
           ready: '\u6b63\u5e38',
           warning: '\u8b66\u544a',
@@ -82,11 +86,15 @@ export function DashboardView({
         }
       : {
           hostNetwork: 'Host network',
+          controlPlane: 'Control plane',
           runtimeHost: 'Runtime host',
           environmentEgress: 'Environment egress',
           fallback: 'Fallback',
           running: 'Running',
           queued: 'Queued',
+          offline: 'Offline',
+          degraded: 'Degraded',
+          pendingSync: 'Pending sync',
           failed: 'Failed',
           ready: 'Ready',
           warning: 'Warning',
@@ -151,6 +159,20 @@ export function DashboardView({
         ? copy.warning
         : copy.ready
 
+  const controlPlaneTone =
+    runtimeHostInfo?.controlPlaneStatus === 'offline'
+      ? 'danger'
+      : runtimeHostInfo?.controlPlaneStatus === 'degraded'
+        ? 'warning'
+        : 'success'
+
+  const controlPlaneLabel =
+    runtimeHostInfo?.controlPlaneStatus === 'offline'
+      ? copy.offline
+      : runtimeHostInfo?.controlPlaneStatus === 'degraded'
+        ? copy.degraded
+        : copy.ready
+
   return (
     <section className="space-y-6">
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -186,10 +208,22 @@ export function DashboardView({
                 <Badge tone="primary">
                   {copy.queued} {runtimeStatus?.queuedProfileIds.length ?? 0}
                 </Badge>
+                <Badge tone={controlPlaneTone}>
+                  {copy.controlPlane} {controlPlaneLabel}
+                </Badge>
+                {(runtimeHostInfo?.controlPlanePendingSyncCount ?? 0) > 0 ? (
+                  <Badge tone="warning">
+                    {copy.pendingSync} {runtimeHostInfo?.controlPlanePendingSyncCount ?? 0}
+                  </Badge>
+                ) : null}
               </div>
             </div>
             <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">
-              {runtimeHostInfo?.networkDiagnostics
+              {runtimeHostInfo?.controlPlaneStatus && runtimeHostInfo.controlPlaneStatus !== 'online'
+                ? `${runtimeHostInfo.controlPlaneLastError || runtimeHostInfo.reason} / ${
+                    runtimeHostInfo.controlPlanePendingSyncCount ?? 0
+                  } ${copy.pendingSync}`
+                : runtimeHostInfo?.networkDiagnostics
                 ? `${runtimeHostInfo.networkDiagnostics.message || runtimeHostInfo.reason} / ${
                     runtimeHostInfo.networkDiagnostics.egressIp || copy.unresolved
                   } / ${
