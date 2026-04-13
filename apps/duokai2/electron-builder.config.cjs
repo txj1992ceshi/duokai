@@ -55,6 +55,14 @@ module.exports = {
     bundleShortVersion: normalizedVersion.bundleShortVersion,
     bundleVersion: normalizedVersion.buildVersion,
   },
+  win: {
+    ...(baseBuild.win ?? {}),
+    artifactName: '${productName}-${version}-win.${ext}',
+  },
+  nsis: {
+    ...(baseBuild.nsis ?? {}),
+    artifactName: '${productName}.Setup.${version}.${ext}',
+  },
   dmg: {
     ...((baseBuild.dmg ?? {})),
     artifactName: '${productName}-${version}-${arch}.${ext}',

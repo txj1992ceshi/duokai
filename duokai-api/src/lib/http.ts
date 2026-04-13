@@ -2,10 +2,12 @@ import type { NextFunction, Request, Response } from 'express';
 
 export class HttpError extends Error {
   statusCode: number;
+  exposeMessage: boolean;
 
-  constructor(statusCode: number, message: string) {
+  constructor(statusCode: number, message: string, options: { exposeMessage?: boolean } = {}) {
     super(message);
     this.statusCode = statusCode;
+    this.exposeMessage = options.exposeMessage ?? statusCode < 500;
   }
 }
 

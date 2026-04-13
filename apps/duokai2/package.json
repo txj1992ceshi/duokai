@@ -56,7 +56,7 @@
   },
   "build": {
     "appId": "com.jj.duokai2",
-    "productName": "Duokai2",
+    "productName": "Duokai",
     "npmRebuild": false,
     "directories": {
       "output": "release"

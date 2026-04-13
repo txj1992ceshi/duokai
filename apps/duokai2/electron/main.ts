@@ -2005,6 +2005,39 @@ function normalizeStorageState(stateJson: unknown): BrowserStorageState | null {
   return stateJson as BrowserStorageState
 }
 
+function isValidStorageStateCookie(input: unknown): input is Record<string, unknown> {
+  return Boolean(input) && typeof input === 'object' && typeof (input as { name?: unknown }).name === 'string'
+}
+
+type BrowserStorageStateOrigin = NonNullable<BrowserStorageState['origins']>[number]
+
+function isValidStorageStateOrigin(input: unknown): input is BrowserStorageStateOrigin {
+  if (!input || typeof input !== 'object') {
+    return false
+  }
+  const origin = input as {
+    origin?: unknown
+    localStorage?: unknown
+  }
+  if (typeof origin.origin !== 'string' || !origin.origin.trim()) {
+    return false
+  }
+  if (origin.localStorage === undefined) {
+    return true
+  }
+  return Array.isArray(origin.localStorage)
+}
+
+function hasUsableStorageState(stateJson: unknown): stateJson is BrowserStorageState {
+  const normalized = normalizeStorageState(stateJson)
+  if (!normalized) {
+    return false
+  }
+  const cookies = Array.isArray(normalized.cookies) ? normalized.cookies.filter(isValidStorageStateCookie) : []
+  const origins = Array.isArray(normalized.origins) ? normalized.origins.filter(isValidStorageStateOrigin) : []
+  return cookies.length > 0 || origins.length > 0
+}
+
 function hashStorageState(stateJson: unknown): string {
   return createHash('sha256').update(JSON.stringify(stateJson)).digest('hex')
 }
@@ -2013,7 +2046,8 @@ async function readProfileStorageStateFromDisk(profileId: string): Promise<Brows
   try {
     ensureWorkspaceLayoutForProfileId(profileId)
     const content = await readFile(getProfileStorageStatePath(profileId), 'utf8')
-    return normalizeStorageState(JSON.parse(content))
+    const normalized = normalizeStorageState(JSON.parse(content))
+    return hasUsableStorageState(normalized) ? normalized : null
   } catch {
     return null
   }
@@ -2031,6 +2065,9 @@ async function saveProfileStorageStateToDisk(
   context: BrowserContext,
 ): Promise<BrowserStorageState> {
   const stateJson = (await context.storageState()) as BrowserStorageState
+  if (!hasUsableStorageState(stateJson)) {
+    throw new Error('当前登录态文件为空或格式无效')
+  }
   await writeProfileStorageStateToDisk(profileId, stateJson)
   return stateJson
 }
@@ -2129,14 +2166,17 @@ async function syncWorkspaceSummaryToControlPlane(
     lastWorkspaceSummarySyncMessage: '正在同步环境摘要到云端',
   })
   try {
-    await requestControlPlane(`/api/profiles/${encodeURIComponent(profile.id)}`, {
-      method: 'PATCH',
+    await requestControlPlane(`/api/config/profiles/${encodeURIComponent(profile.id)}/workspace-summary`, {
+      method: 'POST',
       body: JSON.stringify({
         workspace: createPortableWorkspaceDescriptor(
           profile.workspace,
           profile.id,
           profile.fingerprintConfig,
         ),
+        status: 'synced',
+        message: '环境摘要已同步到云端',
+        updatedAt: new Date().toISOString(),
       }),
     })
     const latestProfile = requireDatabase().getProfileById(profile.id)
@@ -4165,10 +4205,10 @@ async function uploadProfileStorageStateToControlPlane(
   }
   if (!stateJson) {
     updateRuntimeMetadata(profile, {
-      lastStorageStateSyncStatus: 'idle',
-      lastStorageStateSyncMessage: '本地没有可上传的登录态文件',
+      lastStorageStateSyncStatus: 'error',
+      lastStorageStateSyncMessage: '本地没有可上传的有效登录态文件',
     })
-    return buildResult('idle', '本地没有可上传的登录态文件')
+    return buildResult('error', '本地没有可上传的有效登录态文件')
   }
 
   const stateHash = hashStorageState(stateJson)
@@ -4418,7 +4458,9 @@ async function downloadProfileStorageStateFromControlPlane(
       0,
       Number(profile.fingerprintConfig.runtimeMetadata.lastStorageStateVersion || 0),
     )
-    if (!options.force && remoteState.version <= localVersion) {
+    const localStorageState = await readProfileStorageStateFromDisk(profileId)
+    const hasLocalStorageState = hasUsableStorageState(localStorageState)
+    if (!options.force && remoteState.version <= localVersion && hasLocalStorageState) {
       const updatedAt = remoteState.updatedAt || new Date().toISOString()
       updateRuntimeMetadata(profile, {
         lastStorageStateVersion: remoteState.version,
@@ -4441,7 +4483,7 @@ async function downloadProfileStorageStateFromControlPlane(
       })
     }
     const normalizedState = normalizeStorageState(remoteState.stateJson)
-    if (!normalizedState) {
+    if (!hasUsableStorageState(normalizedState)) {
       updateRuntimeMetadata(profile, {
         lastStorageStateSyncStatus: 'error',
         lastStorageStateSyncMessage: '云端登录态内容为空或格式无效',

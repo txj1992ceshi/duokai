@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { HttpError } from '../lib/http.js';
 import { connectMongo } from '../lib/mongodb.js';
 import { asyncHandler } from '../lib/http.js';
 import { requireUser } from '../middlewares/auth.js';
@@ -111,6 +112,10 @@ async function serializeWorkspaceSnapshot(
   };
 }
 
+function buildSnapshotRouteError(message: string) {
+  return new HttpError(500, message, { exposeMessage: true });
+}
+
 router.get(
   '/:profileId',
   asyncHandler(async (req, res) => {
@@ -129,20 +134,33 @@ router.get(
       return;
     }
 
-    const snapshots = await WorkspaceSnapshotModel.find({
-      userId: authUser.userId,
-      profileId: normalizeArtifactProfileId(resolved.profileId),
-    })
-      .sort({ updatedAt: -1 })
-      .lean();
+    let snapshots;
+    try {
+      snapshots = await WorkspaceSnapshotModel.find({
+        userId: authUser.userId,
+        profileId: normalizeArtifactProfileId(resolved.profileId),
+      })
+        .sort({ updatedAt: -1 })
+        .lean();
+    } catch (error) {
+      throw buildSnapshotRouteError(
+        `Failed to read workspace snapshots for profile ${profileId}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
     const includeContent = shouldIncludeArtifactContent(req.query.includeContent);
 
     res.json({
       success: true,
       snapshots: await Promise.all(
-        snapshots.map((snapshot) =>
-          serializeWorkspaceSnapshot(snapshot as Record<string, unknown>, includeContent)
-        )
+        snapshots.map(async (snapshot) => {
+          try {
+            return await serializeWorkspaceSnapshot(snapshot as Record<string, unknown>, includeContent);
+          } catch (error) {
+            throw buildSnapshotRouteError(
+              `Failed to serialize workspace snapshot for profile ${profileId}: ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
+        })
       ),
     });
   })
@@ -168,11 +186,18 @@ router.get(
       return;
     }
 
-    const snapshot = await WorkspaceSnapshotModel.findOne({
-      userId: authUser.userId,
-      profileId: normalizeArtifactProfileId(resolved.profileId),
-      snapshotId,
-    }).lean();
+    let snapshot;
+    try {
+      snapshot = await WorkspaceSnapshotModel.findOne({
+        userId: authUser.userId,
+        profileId: normalizeArtifactProfileId(resolved.profileId),
+        snapshotId,
+      }).lean();
+    } catch (error) {
+      throw buildSnapshotRouteError(
+        `Failed to read workspace snapshot ${snapshotId}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
     const includeContent = shouldIncludeArtifactContent(req.query.includeContent);
 
     if (!snapshot) {
@@ -182,7 +207,11 @@ router.get(
 
     res.json({
       success: true,
-      snapshot: await serializeWorkspaceSnapshot(snapshot as Record<string, unknown>, includeContent),
+      snapshot: await serializeWorkspaceSnapshot(snapshot as Record<string, unknown>, includeContent).catch((error) => {
+        throw buildSnapshotRouteError(
+          `Failed to serialize workspace snapshot ${snapshotId}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }),
     });
   })
 );
@@ -244,46 +273,55 @@ router.put(
         errorMessage: error instanceof Error ? error.message : String(error),
         ...buildArtifactContext(),
       });
-      throw error;
+      throw buildSnapshotRouteError(
+        `Failed to write workspace snapshot artifact for profile ${profileId}: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
 
-    const snapshot = await WorkspaceSnapshotModel.findOneAndUpdate(
-      {
-        userId: authUser.userId,
-        profileId: normalizedResolvedProfileId,
-        snapshotId: payload.snapshotId,
-      },
-      {
-        userId: authUser.userId,
-        profileId: normalizedResolvedProfileId,
-        snapshotId: payload.snapshotId,
-        templateRevision: payload.templateRevision,
-        templateFingerprintHash: payload.templateFingerprintHash,
-        ...compactWorkspaceSnapshotDocument({
-          manifest: payload.manifest,
-          workspaceMetadata: payload.workspaceMetadata,
-          storageState: payload.storageState,
-          directoryManifest: payload.directoryManifest,
-          healthSummary: payload.healthSummary,
-          consistencySummary: payload.consistencySummary,
-        }),
-        workspaceManifestRef: payload.workspaceManifestRef,
-        storageStateRef: payload.storageStateRef,
-        validatedStartAt: payload.validatedStartAt,
-        fileRef: artifact.fileRef || payload.fileRef,
-        checksum: artifact.checksum || payload.checksum,
-        size: artifact.size || payload.size,
-        contentType: artifact.contentType || payload.contentType,
-        retentionPolicy: artifact.retentionPolicy || payload.retentionPolicy,
-        createdAt: payload.createdAt || undefined,
-        updatedAt: payload.updatedAt || undefined,
-      },
-      {
-        upsert: true,
-        new: true,
-        setDefaultsOnInsert: true,
-      }
-    ).lean();
+    let snapshot;
+    try {
+      snapshot = await WorkspaceSnapshotModel.findOneAndUpdate(
+        {
+          userId: authUser.userId,
+          profileId: normalizedResolvedProfileId,
+          snapshotId: payload.snapshotId,
+        },
+        {
+          userId: authUser.userId,
+          profileId: normalizedResolvedProfileId,
+          snapshotId: payload.snapshotId,
+          templateRevision: payload.templateRevision,
+          templateFingerprintHash: payload.templateFingerprintHash,
+          ...compactWorkspaceSnapshotDocument({
+            manifest: payload.manifest,
+            workspaceMetadata: payload.workspaceMetadata,
+            storageState: payload.storageState,
+            directoryManifest: payload.directoryManifest,
+            healthSummary: payload.healthSummary,
+            consistencySummary: payload.consistencySummary,
+          }),
+          workspaceManifestRef: payload.workspaceManifestRef,
+          storageStateRef: payload.storageStateRef,
+          validatedStartAt: payload.validatedStartAt,
+          fileRef: artifact.fileRef || payload.fileRef,
+          checksum: artifact.checksum || payload.checksum,
+          size: artifact.size || payload.size,
+          contentType: artifact.contentType || payload.contentType,
+          retentionPolicy: artifact.retentionPolicy || payload.retentionPolicy,
+          createdAt: payload.createdAt || undefined,
+          updatedAt: payload.updatedAt || undefined,
+        },
+        {
+          upsert: true,
+          new: true,
+          setDefaultsOnInsert: true,
+        }
+      ).lean();
+    } catch (error) {
+      throw buildSnapshotRouteError(
+        `Failed to persist workspace snapshot ${payload.snapshotId}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
 
     res.json({
       success: true,

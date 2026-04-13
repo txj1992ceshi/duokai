@@ -1,14 +1,15 @@
 import type { NextFunction, Request, Response } from 'express';
 
 export function errorMiddleware(
-  error: Error & { statusCode?: number },
+  error: Error & { statusCode?: number; status?: number; exposeMessage?: boolean; type?: string },
   req: Request,
   res: Response,
   _next: NextFunction
 ) {
-  const statusCode = error.statusCode || 500;
+  const statusCode = error.statusCode || error.status || 500;
+  const exposeMessage = error.exposeMessage === true || statusCode < 500 || error.type === 'entity.too.large';
   const message =
-    statusCode === 500 ? 'Internal Server Error' : error.message || 'Request failed';
+    exposeMessage ? error.message || 'Request failed' : 'Internal Server Error';
 
   if (statusCode >= 500) {
     console.error('[duokai-api]', {

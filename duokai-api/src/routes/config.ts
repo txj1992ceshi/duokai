@@ -6,6 +6,7 @@ import {
   normalizeConfigProfilePayload,
   resolveUserConfigStateId,
   updateConfigProfileStorageStateStatusForUser,
+  updateConfigProfileWorkspaceSummaryForUser,
   upsertConfigProfileForUser,
 } from '../lib/configProfiles.js';
 import { asyncHandler } from '../lib/http.js';
@@ -282,6 +283,56 @@ router.delete(
       message: 'Profile config deleted successfully',
     });
   })
+);
+
+router.post(
+  '/profiles/:id/workspace-summary',
+  requireUser,
+  asyncHandler(async (req, res) => {
+    await connectMongo();
+    const profileId = String(req.params.id || '').trim();
+    if (!profileId) {
+      res.status(400).json({ success: false, error: 'Profile id is required' });
+      return;
+    }
+
+    const workspace = normalizeWorkspacePayload(profileId, req.body?.workspace);
+    const status = String(req.body?.status || '').trim() || 'synced';
+    const message = String(req.body?.message || '').trim() || '环境摘要已同步到云端';
+    const updatedAt = String(req.body?.updatedAt || '').trim() || new Date().toISOString();
+
+    const savedState = await updateConfigProfileWorkspaceSummaryForUser(req.authUser!.userId, profileId, {
+      workspace,
+      status,
+      message,
+      updatedAt,
+    });
+
+    if (!savedState) {
+      logSyncRouteEvent('warn', 'config_profile_missing', {
+        route: 'POST /api/config/profiles/:id/workspace-summary',
+        profileId,
+        profileIdType: resolveProfileIdType(profileId),
+        profileSource: 'missing',
+      });
+      res.status(404).json({ success: false, error: 'Profile not found' });
+      return;
+    }
+
+    logSyncRouteEvent('info', 'config_profile_workspace_summary_updated', {
+      route: 'POST /api/config/profiles/:id/workspace-summary',
+      profileId,
+      profileIdType: resolveProfileIdType(profileId),
+      status,
+      updatedAt,
+    });
+
+    res.json({
+      success: true,
+      status,
+      updatedAt,
+    });
+  }),
 );
 
 router.post(

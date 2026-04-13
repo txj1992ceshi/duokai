@@ -177,3 +177,39 @@ export async function updateConfigProfileStorageStateStatusForUser(
     };
   });
 }
+
+export async function updateConfigProfileWorkspaceSummaryForUser(
+  userId: string,
+  profileId: string,
+  payload: {
+    workspace: Record<string, unknown>;
+    status: string;
+    message: string;
+    updatedAt: string;
+  },
+) {
+  return await updateConfigProfileForUser(userId, profileId, (existing) => {
+    const fingerprintConfig =
+      existing.fingerprintConfig && typeof existing.fingerprintConfig === 'object'
+        ? (existing.fingerprintConfig as Record<string, unknown>)
+        : {};
+    const runtimeMetadata =
+      fingerprintConfig.runtimeMetadata && typeof fingerprintConfig.runtimeMetadata === 'object'
+        ? (fingerprintConfig.runtimeMetadata as Record<string, unknown>)
+        : {};
+
+    return {
+      ...existing,
+      workspace: payload.workspace,
+      fingerprintConfig: {
+        ...fingerprintConfig,
+        runtimeMetadata: {
+          ...runtimeMetadata,
+          lastWorkspaceSummarySyncStatus: payload.status,
+          lastWorkspaceSummarySyncMessage: payload.message,
+          lastWorkspaceSummarySyncAt: payload.updatedAt,
+        },
+      },
+    };
+  });
+}

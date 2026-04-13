@@ -50,7 +50,7 @@ app.use(
   })
 );
 app.use(helmet());
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '25mb' }));
 
 app.get('/health', (_req, res) => {
   res.json({ success: true, status: 'ok' });
