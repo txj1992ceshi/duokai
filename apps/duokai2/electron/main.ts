@@ -86,7 +86,7 @@ import { buildFingerprintInitScript } from './services/fingerprint'
 import { applyNetworkDerivedFingerprint } from './services/networkProfileResolver'
 import { resolveLaunchProxy } from './services/proxyBridge'
 import { RuntimeScheduler } from './services/runtimeScheduler'
-import { AgentService } from './services/agentService'
+import { AgentNetworkError, AgentService } from './services/agentService'
 import { evaluateTrustedSnapshotReuse } from './services/trustedLaunch'
 import {
   assignStableHardwareFingerprint,
@@ -428,6 +428,9 @@ function getAgentStateSnapshot() {
       protocolVersion: '1' as const,
       lastHeartbeatAt: null,
       lastError: '',
+      lastErrorCode: '',
+      lastErrorKind: 'unknown' as const,
+      lastRecoverableFailureAt: null,
       consecutiveFailures: 0,
       lastTaskId: null,
       lastTaskStatus: null,
@@ -440,6 +443,40 @@ function ensureWritable(action: string): void {
   const state = getAgentStateSnapshot()
   if (state.enabled && !state.writable) {
     throw new Error(`Agent offline, write blocked: ${action}`)
+  }
+}
+
+function isRecoverableAgentNetworkError(error: unknown): error is AgentNetworkError {
+  return error instanceof AgentNetworkError
+}
+
+function readGlobalErrorCode(error: unknown): string {
+  if (error && typeof error === 'object') {
+    if ('code' in error && typeof error.code === 'string') {
+      return error.code
+    }
+    if (
+      'cause' in error &&
+      error.cause &&
+      typeof error.cause === 'object' &&
+      'code' in error.cause &&
+      typeof error.cause.code === 'string'
+    ) {
+      return error.cause.code
+    }
+  }
+  return ''
+}
+
+function buildGlobalErrorDiagnostics(error: unknown): Record<string, unknown> {
+  const asError = error instanceof Error ? error : new Error(String(error))
+  return {
+    name: asError.name || '',
+    message: asError.message || String(error),
+    code: readGlobalErrorCode(error),
+    stack: asError.stack || '',
+    isRecoverableControlPlaneError: isRecoverableControlPlaneError(error),
+    isRecoverableAgentNetworkError: isRecoverableAgentNetworkError(error),
   }
 }
 
@@ -1040,6 +1077,7 @@ let controlPlaneSyncPollTimer: NodeJS.Timeout | null = null
 let controlPlaneSyncInFlight = false
 let controlPlaneSyncTasksLoaded = false
 let controlPlaneSyncTasks: ControlPlaneSyncTask[] = []
+let lastLoggedAgentRecoverableFailureAt = ''
 let controlPlaneConnectivityState: ControlPlaneConnectivityState = {
   status: 'online',
   lastError: '',
@@ -2824,10 +2862,9 @@ process.on('SIGTERM', () => {
 })
 process.on('uncaughtException', (error) => {
   console.error('uncaughtException', error)
-  traceStartup('uncaught_exception', {
-    message: error instanceof Error ? error.message : String(error),
-    stack: error instanceof Error ? error.stack || '' : '',
-  })
+  const diagnostics = buildGlobalErrorDiagnostics(error)
+  traceStartup('uncaught_exception', diagnostics)
+  audit('global_uncaught_exception_detail', diagnostics)
   if (isRecoverableControlPlaneError(error)) {
     audit('global_shutdown_skipped_recoverable_network_error', {
       source: 'uncaughtException',
@@ -2838,13 +2875,25 @@ process.on('uncaughtException', (error) => {
     })
     return
   }
+  if (isRecoverableAgentNetworkError(error)) {
+    audit('agent_network_global_shutdown_skipped', {
+      source: 'uncaughtException',
+      code: error.code,
+      method: error.method,
+      path: error.path,
+      err: error.message,
+    })
+    return
+  }
   void gracefulShutdownHandler(error)
 })
 process.on('unhandledRejection', (reason) => {
   console.error('unhandledRejection', reason)
-  traceStartup('unhandled_rejection', {
-    message: reason instanceof Error ? reason.message : String(reason),
-    stack: reason instanceof Error ? reason.stack || '' : '',
+  const diagnostics = buildGlobalErrorDiagnostics(reason)
+  traceStartup('unhandled_rejection', diagnostics)
+  audit('global_uncaught_exception_detail', {
+    source: 'unhandledRejection',
+    ...diagnostics,
   })
   if (isRecoverableControlPlaneError(reason)) {
     audit('global_shutdown_skipped_recoverable_network_error', {
@@ -2852,6 +2901,16 @@ process.on('unhandledRejection', (reason) => {
       code: reason.code,
       method: reason.method,
       input: reason.input,
+      err: reason.message,
+    })
+    return
+  }
+  if (isRecoverableAgentNetworkError(reason)) {
+    audit('agent_network_global_shutdown_skipped', {
+      source: 'unhandledRejection',
+      code: reason.code,
+      method: reason.method,
+      path: reason.path,
       err: reason.message,
     })
     return
@@ -7853,6 +7912,32 @@ function initAgentService() {
     getHostInfo: () => getRuntimeHostInfo(),
     getRuntimeStatus: () => getAgentRuntimeState(),
     onStateChange: (state) => {
+      if (
+        state.lastErrorKind === 'network' &&
+        state.lastRecoverableFailureAt &&
+        state.lastRecoverableFailureAt !== lastLoggedAgentRecoverableFailureAt
+      ) {
+        lastLoggedAgentRecoverableFailureAt = state.lastRecoverableFailureAt
+        audit('agent_network_recoverable_error', {
+          agentId: state.agentId,
+          err: state.lastError,
+          code: state.lastErrorCode || '',
+          consecutiveFailures: state.consecutiveFailures,
+          at: state.lastRecoverableFailureAt,
+        })
+        traceStartup('agent_network_recoverable_error', {
+          agentId: state.agentId,
+          err: state.lastError,
+          code: state.lastErrorCode || '',
+          consecutiveFailures: state.consecutiveFailures,
+        })
+        audit('agent_network_reconnect_scheduled', {
+          agentId: state.agentId,
+          err: state.lastError,
+          code: state.lastErrorCode || '',
+          consecutiveFailures: state.consecutiveFailures,
+        })
+      }
       if (state.lastError) {
         logEvent('warn', 'system', `Agent channel warning: ${state.lastError}`, null)
       }

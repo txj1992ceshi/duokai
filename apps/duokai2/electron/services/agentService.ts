@@ -24,6 +24,9 @@ export type AgentServiceState = {
   protocolVersion: '1';
   lastHeartbeatAt: string | null;
   lastError: string;
+  lastErrorCode?: string;
+  lastErrorKind?: 'network' | 'auth' | 'task' | 'unknown';
+  lastRecoverableFailureAt?: string | null;
   consecutiveFailures: number;
   lastTaskId: string | null;
   lastTaskStatus: AgentTaskStatus | null;
@@ -113,6 +116,28 @@ function classifyExecutionFailure(error: unknown): Pick<TaskExecutionResult, 'er
 
 const DEFAULT_TASK_TIMEOUT_MS = Math.max(5_000, Number(process.env.AGENT_TASK_TIMEOUT_MS || 120_000));
 const ACK_MAX_RETRIES = Math.max(1, Number(process.env.AGENT_ACK_MAX_RETRIES || 3));
+const DEFAULT_REQUEST_TIMEOUT_MS = Math.max(5_000, Number(process.env.AGENT_REQUEST_TIMEOUT_MS || 20_000));
+
+function readErrorCode(error: unknown): string {
+  if (error && typeof error === 'object') {
+    if ('code' in error && typeof error.code === 'string' && error.code.trim()) {
+      return error.code.trim();
+    }
+    if ('cause' in error && error.cause && typeof error.cause === 'object' && 'code' in error.cause && typeof error.cause.code === 'string' && error.cause.code.trim()) {
+      return error.cause.code.trim();
+    }
+  }
+  return '';
+}
+
+function isRecoverableAgentNetworkFailure(input: { message: string; code?: string; status?: number | null }): boolean {
+  if (typeof input.status === 'number' && input.status >= 500) {
+    return true;
+  }
+  return /(ECONNRESET|ECONNABORTED|ETIMEDOUT|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|socket hang up|Request timeout)/i.test(
+    `${input.code || ''} ${input.message}`
+  );
+}
 
 class AgentRequestError extends Error {
   readonly status: number;
@@ -123,6 +148,28 @@ class AgentRequestError extends Error {
     this.name = 'AgentRequestError';
     this.status = status;
     this.payload = payload;
+  }
+}
+
+export class AgentNetworkError extends Error {
+  readonly code: string;
+  readonly status: number | null;
+  readonly path: string;
+  readonly method: string;
+  readonly recoverable = true;
+
+  constructor(
+    path: string,
+    method: string,
+    message: string,
+    options: { code?: string; status?: number | null } = {}
+  ) {
+    super(message);
+    this.name = 'AgentNetworkError';
+    this.path = path;
+    this.method = method;
+    this.code = String(options.code || '').trim() || 'AGENT_NETWORK_ERROR';
+    this.status = options.status ?? null;
   }
 }
 
@@ -205,14 +252,64 @@ export class AgentService {
     if (this.accessToken) {
       headers.set('Authorization', `Bearer ${this.accessToken}`);
     }
-
-    const response = await fetch(`${this.apiBase}${path}`, { ...init, headers });
-    const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-    if (!response.ok || payload.success === false) {
-      const message = String(payload.error || `${response.status} ${response.statusText}`).trim();
-      throw new AgentRequestError(response.status, payload, message || 'Agent request failed');
+    const method = String(init.method || 'GET').toUpperCase();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(new Error('Request timeout')), DEFAULT_REQUEST_TIMEOUT_MS);
+    try {
+      const response = await fetch(`${this.apiBase}${path}`, { ...init, headers, signal: controller.signal });
+      const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+      if (!response.ok || payload.success === false) {
+        const message = String(payload.error || `${response.status} ${response.statusText}`).trim() || 'Agent request failed';
+        if (response.status === 401) {
+          throw new AgentRequestError(response.status, payload, message);
+        }
+        if (
+          response.status >= 500 ||
+          isRecoverableAgentNetworkFailure({ message, status: response.status })
+        ) {
+          throw new AgentNetworkError(path, method, message, { status: response.status, code: `HTTP_${response.status}` });
+        }
+        throw new AgentRequestError(response.status, payload, message);
+      }
+      return payload;
+    } catch (error) {
+      if (error instanceof AgentRequestError || error instanceof AgentNetworkError) {
+        throw error;
+      }
+      const message = readErrorMessage(error).trim() || 'Agent request failed';
+      const code = readErrorCode(error);
+      if (isRecoverableAgentNetworkFailure({ message, code })) {
+        throw new AgentNetworkError(path, method, message, { code });
+      }
+      throw error instanceof Error ? error : new Error(String(error));
+    } finally {
+      clearTimeout(timeout);
     }
-    return payload;
+  }
+
+  private markRecoverableNetworkFailure(error: AgentNetworkError) {
+    this.setState({
+      connected: false,
+      writable: false,
+      lastError: error.message,
+      lastErrorCode: error.code,
+      lastErrorKind: 'network',
+      lastRecoverableFailureAt: new Date().toISOString(),
+      consecutiveFailures: this.state.consecutiveFailures + 1,
+    });
+  }
+
+  private markRecovered() {
+    this.setState({
+      connected: true,
+      writable: true,
+      lastHeartbeatAt: new Date().toISOString(),
+      lastError: '',
+      lastErrorCode: '',
+      lastErrorKind: 'unknown',
+      lastRecoverableFailureAt: this.state.lastRecoverableFailureAt ?? null,
+      consecutiveFailures: 0,
+    });
   }
 
   private async refreshAccessToken() {
@@ -251,13 +348,7 @@ export class AgentService {
         timestamp: new Date().toISOString(),
       }),
     });
-    this.setState({
-      connected: true,
-      writable: true,
-      lastHeartbeatAt: new Date().toISOString(),
-      lastError: '',
-      consecutiveFailures: 0,
-    });
+    this.markRecovered();
   }
 
   private async ack(task: AgentTask, status: AgentTaskStatus, detail: Partial<TaskExecutionResult> = {}) {
@@ -363,12 +454,21 @@ export class AgentService {
         this.backoffMs = 1000;
       } catch (error) {
         const message = readErrorMessage(error);
-        this.setState({
-          connected: false,
-          writable: false,
-          lastError: message,
-          consecutiveFailures: this.state.consecutiveFailures + 1,
-        });
+        if (error instanceof AgentNetworkError) {
+          this.markRecoverableNetworkFailure(error);
+        } else {
+          this.setState({
+            connected: false,
+            writable: false,
+            lastError: message,
+            lastErrorCode: readErrorCode(error),
+            lastErrorKind:
+              error instanceof AgentRequestError && error.status === 401
+                ? 'auth'
+                : 'unknown',
+            consecutiveFailures: this.state.consecutiveFailures + 1,
+          });
+        }
         if (
           (error instanceof AgentRequestError && error.status === 401) ||
           /refresh|token|unauthorized|401/i.test(message)
@@ -388,9 +488,17 @@ export class AgentService {
     if (!this.accessToken) {
       await this.refreshAccessToken();
     }
-    const payload = await this.request('/api/agent/v1/config/snapshot', {
-      method: 'GET',
-    });
+    let payload: Record<string, unknown>;
+    try {
+      payload = await this.request('/api/agent/v1/config/snapshot', {
+        method: 'GET',
+      });
+    } catch (error) {
+      if (error instanceof AgentNetworkError) {
+        this.markRecoverableNetworkFailure(error);
+      }
+      throw error;
+    }
     const snapshot = (payload.snapshot || null) as RemoteConfigSnapshot | null;
     if (snapshot) {
       this.syncVersion = Number(snapshot.syncVersion || 0);
@@ -427,6 +535,9 @@ export class AgentService {
       this.syncVersion = Number(payload.syncVersion || this.syncVersion);
       return this.syncVersion;
     } catch (error) {
+      if (error instanceof AgentNetworkError) {
+        this.markRecoverableNetworkFailure(error);
+      }
       if (error instanceof AgentRequestError && error.status === 409) {
         const remote = (error.payload.snapshot || null) as { syncVersion?: unknown } | null;
         const remoteVersion = Number(remote?.syncVersion || 0);

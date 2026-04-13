@@ -75,6 +75,9 @@ export interface DesktopApi {
       protocolVersion: '1'
       lastHeartbeatAt: string | null
       lastError: string
+      lastErrorCode?: string
+      lastErrorKind?: 'network' | 'auth' | 'task' | 'unknown'
+      lastRecoverableFailureAt?: string | null
       consecutiveFailures: number
       lastTaskId: string | null
       lastTaskStatus: 'RECEIVED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | null
