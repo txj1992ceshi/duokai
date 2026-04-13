@@ -16,6 +16,7 @@ import type {
   CloudPhoneProviderSummary,
   DesktopUpdateState,
   ProfileRecord,
+  RuntimeHostInfo,
   RuntimeStatus,
 } from '../shared/types'
 
@@ -31,6 +32,7 @@ export function useDesktopDerivedState({
   cloudPhoneProviders,
   cloudPhoneProviderHealth,
   agentState,
+  runtimeHostInfo,
   runtimeStatus,
   pendingProfileLaunches,
 }: {
@@ -42,6 +44,7 @@ export function useDesktopDerivedState({
   cloudPhoneProviders: CloudPhoneProviderSummary[]
   cloudPhoneProviderHealth: CloudPhoneProviderHealth[]
   agentState: AgentState | null
+  runtimeHostInfo: RuntimeHostInfo | null
   runtimeStatus: RuntimeStatus | null
   pendingProfileLaunches: PendingLaunchState
 }) {
@@ -92,6 +95,27 @@ export function useDesktopDerivedState({
   }, [profiles])
 
   const agentReadOnlyMessage = useMemo(() => {
+    if (runtimeHostInfo?.controlPlaneStatus === 'offline') {
+      const errorDetail = runtimeHostInfo.controlPlaneLastError
+        ? isZh
+          ? `（${runtimeHostInfo.controlPlaneLastError}）`
+          : ` (${runtimeHostInfo.controlPlaneLastError})`
+        : ''
+      const pendingInfo =
+        (runtimeHostInfo.controlPlanePendingSyncCount ?? 0) > 0
+          ? isZh
+            ? `，待补传：${runtimeHostInfo.controlPlanePendingSyncCount}`
+            : `. Pending sync: ${runtimeHostInfo.controlPlanePendingSyncCount}`
+          : ''
+      const recoveredAt = runtimeHostInfo.controlPlaneLastSuccessAt
+        ? isZh
+          ? `，最近成功：${formatLocalizedDate(runtimeHostInfo.controlPlaneLastSuccessAt, locale, t.common.never)}`
+          : `. Last success: ${formatLocalizedDate(runtimeHostInfo.controlPlaneLastSuccessAt, locale, t.common.never)}`
+        : ''
+      return isZh
+        ? `当前为离线只读模式：配置写操作已暂停，等待与控制面恢复连接${errorDetail}${pendingInfo}${recoveredAt}`
+        : `Offline read-only mode: config writes are paused until control plane reconnects${errorDetail}${pendingInfo}${recoveredAt}`
+    }
     if (!agentState?.enabled || agentState.writable) {
       return ''
     }
@@ -119,7 +143,7 @@ export function useDesktopDerivedState({
     return isZh
       ? `当前为离线只读模式：配置写操作已暂停，等待与控制面恢复连接${reason}${taskInfo}${failInfo}`
       : `Offline read-only mode: config writes are paused until control plane reconnects${reason}${taskInfo}${failInfo}`
-  }, [agentState, isZh])
+  }, [agentState, isZh, locale, runtimeHostInfo, t.common.never])
 
   const cloudPhoneProviderMap = useMemo(
     () => new Map(cloudPhoneProviders.map((item) => [item.key, item])),

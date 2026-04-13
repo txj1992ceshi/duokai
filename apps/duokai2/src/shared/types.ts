@@ -238,6 +238,14 @@ export type StorageStateSyncStatus =
   | 'conflict'
   | 'error'
 
+export type ControlPlaneStatus = 'online' | 'degraded' | 'offline'
+export type PendingSyncKind =
+  | 'workspace-summary'
+  | 'workspace-snapshot'
+  | 'storage-state-status'
+  | 'storage-state-upload'
+  | 'sync-event'
+
 export interface StorageStateSyncResult {
   status: StorageStateSyncStatus
   message: string
@@ -375,6 +383,10 @@ export interface ProfileRuntimeMetadata {
   lastEnvironmentSyncStatus: 'idle' | 'synced' | 'pending' | 'syncing' | 'conflict' | 'error' | 'recovery'
   lastEnvironmentSyncMessage: string
   lastEnvironmentSyncVersion: number
+  lastControlPlaneError: string
+  lastControlPlaneErrorAt: string
+  pendingSyncKinds: PendingSyncKind[]
+  lastCriticalRuntimeFault: string
   hardwareProfileId: string
   hardwareProfileVersion: string
   hardwareSeed: string
@@ -648,6 +660,12 @@ export interface RuntimeHostInfo {
   degraded?: boolean
   degradeReason?: string
   lockState?: 'unlocked' | 'locked' | 'stale-lock'
+  controlPlaneStatus?: ControlPlaneStatus
+  controlPlaneLastError?: string
+  controlPlaneLastErrorAt?: string
+  controlPlanePendingSyncCount?: number
+  controlPlaneConsecutiveFailures?: number
+  controlPlaneLastSuccessAt?: string
 }
 
 export interface ProxyTestResult {
@@ -1021,6 +1039,9 @@ export interface DesktopRuntimeInfo {
   buildMarker: string
   capabilities: string[]
   windowFrame?: DesktopWindowFrameMetrics
+  controlPlaneStatus?: ControlPlaneStatus
+  controlPlaneLastError?: string
+  pendingSyncCount?: number
 }
 
 export interface DesktopWindowFrameMetrics {

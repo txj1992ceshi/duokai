@@ -110,6 +110,7 @@ import type {
   CloudPhoneBulkActionPayload,
   CloudPhoneRecord,
   ConfigSyncResult,
+  ControlPlaneStatus,
   CreateCloudPhoneInput,
   CreateProfileInput,
   CreateProxyInput,
@@ -129,6 +130,7 @@ import type {
   SettingsPayload,
   StorageStateSyncResult,
   StorageStateSyncStatus,
+  PendingSyncKind,
   StartupNavigationReasonCode,
   StartupNavigationResult,
   DesktopUpdateState,
@@ -178,6 +180,44 @@ const CONTROL_PLANE_AUTH_REMEMBER_KEY = 'controlPlaneAuthRemember'
 const CONTROL_PLANE_REMEMBER_CREDENTIALS_KEY = 'controlPlaneRememberCredentials'
 const CONTROL_PLANE_AUTH_IDENTIFIER_KEY = 'controlPlaneAuthIdentifier'
 const CONTROL_PLANE_AUTH_PASSWORD_KEY = 'controlPlaneAuthPassword'
+const CONTROL_PLANE_SYNC_QUEUE_FILE = 'control-plane-sync-queue.json'
+const CONTROL_PLANE_SYNC_RETRY_BASE_MS = 5_000
+const CONTROL_PLANE_SYNC_RETRY_MAX_MS = 60_000
+const CONTROL_PLANE_SYNC_POLL_INTERVAL_MS = 30_000
+const CONTROL_PLANE_OFFLINE_FAILURE_THRESHOLD = 3
+
+type ControlPlaneRequestError = Error & {
+  name: 'ControlPlaneRequestError'
+  recoverable: boolean
+  code: string
+  status?: number
+  method: string
+  input: string
+  responseBody?: string
+}
+
+type ControlPlaneSyncTask = {
+  id: string
+  kind: PendingSyncKind
+  dedupeKey: string
+  profileId: string
+  method: string
+  pathName: string
+  body: string
+  createdAt: string
+  updatedAt: string
+  lastTriedAt: string
+  retryCount: number
+  lastError: string
+}
+
+type ControlPlaneConnectivityState = {
+  status: ControlPlaneStatus
+  lastError: string
+  lastErrorAt: string
+  lastSuccessAt: string
+  consecutiveFailures: number
+}
 const SMOKE_TEST_ENABLED = process.env.SMOKE_TEST === '1'
 const SMOKE_RESULT_FILE = 'smoke-result.json'
 const SMOKE_AUDIT_FILE = 'runtime-audit.log'
@@ -271,6 +311,23 @@ async function syncStorageStateStatusToCanonicalProfile(
       }),
     })
   } catch (error) {
+    enqueueRecoverableControlPlaneSyncTask(
+      {
+        kind: 'storage-state-status',
+        dedupeKey: `storage-state-status:${profileId}`,
+        profileId,
+        method: 'POST',
+        pathName: `/api/config/profiles/${encodeURIComponent(profileId)}/storage-state-status`,
+        body: JSON.stringify({
+          status: payload.status,
+          message: payload.message,
+          updatedAt: payload.updatedAt,
+          ...(payload.version !== undefined ? { version: payload.version } : {}),
+          ...(payload.deviceId ? { deviceId: payload.deviceId } : {}),
+        }),
+      },
+      error,
+    )
     audit('storage_state_status_sync_failed', {
       profileId,
       status: payload.status,
@@ -383,6 +440,15 @@ function ensureWritable(action: string): void {
   const state = getAgentStateSnapshot()
   if (state.enabled && !state.writable) {
     throw new Error(`Agent offline, write blocked: ${action}`)
+  }
+}
+
+function ensureControlPlaneConfigWritable(action: string): void {
+  if (!getDesktopAuthState().authenticated) {
+    return
+  }
+  if (controlPlaneConnectivityState.status === 'offline') {
+    throw new Error(`Control plane offline, write blocked: ${action}`)
   }
 }
 
@@ -969,6 +1035,18 @@ let sharedDataAutoPushTimer: NodeJS.Timeout | null = null
 let sharedDataAutoPushRetryTimer: NodeJS.Timeout | null = null
 let sharedDataAutoPushInFlight = false
 let sharedDataAutoPushQueued = false
+let controlPlaneSyncRetryTimer: NodeJS.Timeout | null = null
+let controlPlaneSyncPollTimer: NodeJS.Timeout | null = null
+let controlPlaneSyncInFlight = false
+let controlPlaneSyncTasksLoaded = false
+let controlPlaneSyncTasks: ControlPlaneSyncTask[] = []
+let controlPlaneConnectivityState: ControlPlaneConnectivityState = {
+  status: 'online',
+  lastError: '',
+  lastErrorAt: '',
+  lastSuccessAt: '',
+  consecutiveFailures: 0,
+}
 
 type EnvironmentMirrorSyncMode =
   | 'auto-full-reconcile'
@@ -2114,13 +2192,12 @@ async function syncWorkspaceSnapshotToControlPlane(
     })
   }
   try {
-    await requestControlPlane(
-      `/api/workspace-snapshots/${encodeURIComponent(snapshot.profileId)}/${encodeURIComponent(snapshot.snapshotId)}`,
-      {
-        method: 'PUT',
-        body: JSON.stringify(snapshot),
-      },
-    )
+    const pathName = `/api/workspace-snapshots/${encodeURIComponent(snapshot.profileId)}/${encodeURIComponent(snapshot.snapshotId)}`
+    const body = JSON.stringify(snapshot)
+    await requestControlPlane(pathName, {
+      method: 'PUT',
+      body,
+    })
     const latestProfile = requireDatabase().getProfileById(snapshot.profileId)
     if (latestProfile) {
       updateRuntimeMetadata(latestProfile, {
@@ -2136,8 +2213,21 @@ async function syncWorkspaceSnapshotToControlPlane(
         lastWorkspaceSnapshotSyncStatus: 'error',
         lastWorkspaceSnapshotSyncMessage:
           error instanceof Error ? error.message : String(error),
+        lastControlPlaneError: error instanceof Error ? error.message : String(error),
+        lastControlPlaneErrorAt: new Date().toISOString(),
       })
     }
+    enqueueRecoverableControlPlaneSyncTask(
+      {
+        kind: 'workspace-snapshot',
+        dedupeKey: `workspace-snapshot:${snapshot.profileId}:${snapshot.snapshotId}`,
+        profileId: snapshot.profileId,
+        method: 'PUT',
+        pathName: `/api/workspace-snapshots/${encodeURIComponent(snapshot.profileId)}/${encodeURIComponent(snapshot.snapshotId)}`,
+        body: JSON.stringify(snapshot),
+      },
+      error,
+    )
     throw error
   }
 }
@@ -2166,18 +2256,20 @@ async function syncWorkspaceSummaryToControlPlane(
     lastWorkspaceSummarySyncMessage: '正在同步环境摘要到云端',
   })
   try {
-    await requestControlPlane(`/api/config/profiles/${encodeURIComponent(profile.id)}/workspace-summary`, {
+    const pathName = `/api/config/profiles/${encodeURIComponent(profile.id)}/workspace-summary`
+    const body = JSON.stringify({
+      workspace: createPortableWorkspaceDescriptor(
+        profile.workspace,
+        profile.id,
+        profile.fingerprintConfig,
+      ),
+      status: 'synced',
+      message: '环境摘要已同步到云端',
+      updatedAt: new Date().toISOString(),
+    })
+    await requestControlPlane(pathName, {
       method: 'POST',
-      body: JSON.stringify({
-        workspace: createPortableWorkspaceDescriptor(
-          profile.workspace,
-          profile.id,
-          profile.fingerprintConfig,
-        ),
-        status: 'synced',
-        message: '环境摘要已同步到云端',
-        updatedAt: new Date().toISOString(),
-      }),
+      body,
     })
     const latestProfile = requireDatabase().getProfileById(profile.id)
     if (latestProfile) {
@@ -2194,8 +2286,30 @@ async function syncWorkspaceSummaryToControlPlane(
         lastWorkspaceSummarySyncStatus: 'error',
         lastWorkspaceSummarySyncMessage:
           error instanceof Error ? error.message : String(error),
+        lastControlPlaneError: error instanceof Error ? error.message : String(error),
+        lastControlPlaneErrorAt: new Date().toISOString(),
       })
     }
+    enqueueRecoverableControlPlaneSyncTask(
+      {
+        kind: 'workspace-summary',
+        dedupeKey: `workspace-summary:${profile.id}`,
+        profileId: profile.id,
+        method: 'POST',
+        pathName: `/api/config/profiles/${encodeURIComponent(profile.id)}/workspace-summary`,
+        body: JSON.stringify({
+          workspace: createPortableWorkspaceDescriptor(
+            profile.workspace,
+            profile.id,
+            profile.fingerprintConfig,
+          ),
+          status: 'synced',
+          message: '环境摘要已同步到云端',
+          updatedAt: new Date().toISOString(),
+        }),
+      },
+      error,
+    )
     throw error
   }
 }
@@ -2714,6 +2828,16 @@ process.on('uncaughtException', (error) => {
     message: error instanceof Error ? error.message : String(error),
     stack: error instanceof Error ? error.stack || '' : '',
   })
+  if (isRecoverableControlPlaneError(error)) {
+    audit('global_shutdown_skipped_recoverable_network_error', {
+      source: 'uncaughtException',
+      code: error.code,
+      method: error.method,
+      input: error.input,
+      err: error.message,
+    })
+    return
+  }
   void gracefulShutdownHandler(error)
 })
 process.on('unhandledRejection', (reason) => {
@@ -2722,6 +2846,16 @@ process.on('unhandledRejection', (reason) => {
     message: reason instanceof Error ? reason.message : String(reason),
     stack: reason instanceof Error ? reason.stack || '' : '',
   })
+  if (isRecoverableControlPlaneError(reason)) {
+    audit('global_shutdown_skipped_recoverable_network_error', {
+      source: 'unhandledRejection',
+      code: reason.code,
+      method: reason.method,
+      input: reason.input,
+      err: reason.message,
+    })
+    return
+  }
   void gracefulShutdownHandler(reason)
 })
 
@@ -3251,6 +3385,350 @@ function getDesktopAuthState(): DesktopAuthState {
   }
 }
 
+function resolveControlPlaneSyncQueuePath(): string {
+  return path.join(app.getPath('userData'), CONTROL_PLANE_SYNC_QUEUE_FILE)
+}
+
+function isControlPlaneNetworkErrorMessage(message: string): boolean {
+  return /(ECONNRESET|ECONNABORTED|ETIMEDOUT|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|socket hang up|Request timeout)/i.test(
+    message,
+  )
+}
+
+function createControlPlaneRequestError(
+  input: string,
+  method: string,
+  error: unknown,
+  status?: number,
+  responseBody?: string,
+): ControlPlaneRequestError {
+  const originalMessage = error instanceof Error ? error.message : String(error)
+  const normalizedCode =
+    (error instanceof Error && 'code' in error && typeof error.code === 'string' && error.code) ||
+    (status && status >= 500 ? `HTTP_${status}` : 'CONTROL_PLANE_REQUEST_FAILED')
+  const requestError = new Error(originalMessage) as ControlPlaneRequestError
+  requestError.name = 'ControlPlaneRequestError'
+  requestError.input = input
+  requestError.method = method
+  requestError.status = status
+  requestError.code = normalizedCode
+  requestError.responseBody = responseBody
+  requestError.recoverable =
+    (typeof status === 'number' && status >= 500) || isControlPlaneNetworkErrorMessage(originalMessage)
+  return requestError
+}
+
+function isRecoverableControlPlaneError(error: unknown): error is ControlPlaneRequestError {
+  return Boolean(
+    error &&
+      typeof error === 'object' &&
+      'name' in error &&
+      (error as { name?: string }).name === 'ControlPlaneRequestError' &&
+      'recoverable' in error &&
+      (error as { recoverable?: boolean }).recoverable === true,
+  )
+}
+
+function refreshProfilesPendingSyncKinds(): void {
+  const pendingKindsByProfile = new Map<string, Set<PendingSyncKind>>()
+  for (const task of controlPlaneSyncTasks) {
+    if (!task.profileId) {
+      continue
+    }
+    const kinds = pendingKindsByProfile.get(task.profileId) ?? new Set<PendingSyncKind>()
+    kinds.add(task.kind)
+    pendingKindsByProfile.set(task.profileId, kinds)
+  }
+  for (const profile of requireDatabase().listProfiles()) {
+    const nextKinds = [...(pendingKindsByProfile.get(profile.id) ?? new Set<PendingSyncKind>())]
+    const currentKinds = profile.fingerprintConfig.runtimeMetadata.pendingSyncKinds ?? []
+    if (JSON.stringify(currentKinds) === JSON.stringify(nextKinds)) {
+      continue
+    }
+    updateRuntimeMetadata(profile, {
+      pendingSyncKinds: nextKinds,
+    })
+  }
+}
+
+function persistControlPlaneSyncTasks(): void {
+  if (!controlPlaneSyncTasksLoaded) {
+    return
+  }
+  try {
+    writeFileSync(
+      resolveControlPlaneSyncQueuePath(),
+      JSON.stringify(controlPlaneSyncTasks, null, 2),
+      'utf8',
+    )
+  } catch (error) {
+    audit('control_plane_sync_queue_persist_failed', {
+      err: error instanceof Error ? error.message : String(error),
+    })
+  }
+  refreshProfilesPendingSyncKinds()
+  emitConfigChanged()
+}
+
+function loadControlPlaneSyncTasks(): void {
+  if (controlPlaneSyncTasksLoaded) {
+    return
+  }
+  controlPlaneSyncTasksLoaded = true
+  try {
+    const queuePath = resolveControlPlaneSyncQueuePath()
+    if (!existsSync(queuePath)) {
+      controlPlaneSyncTasks = []
+      refreshProfilesPendingSyncKinds()
+      return
+    }
+    const raw = readFileSync(queuePath, 'utf8')
+    const parsed = JSON.parse(raw) as ControlPlaneSyncTask[]
+    controlPlaneSyncTasks = Array.isArray(parsed)
+      ? parsed.filter((item) =>
+          item &&
+          typeof item === 'object' &&
+          typeof item.kind === 'string' &&
+          typeof item.dedupeKey === 'string' &&
+          typeof item.method === 'string' &&
+          typeof item.pathName === 'string' &&
+          typeof item.body === 'string',
+        )
+      : []
+  } catch (error) {
+    controlPlaneSyncTasks = []
+    audit('control_plane_sync_queue_load_failed', {
+      err: error instanceof Error ? error.message : String(error),
+    })
+  }
+  if (controlPlaneSyncTasks.length > 0 && controlPlaneConnectivityState.status === 'online') {
+    controlPlaneConnectivityState = {
+      ...controlPlaneConnectivityState,
+      status: 'degraded',
+    }
+  }
+  refreshProfilesPendingSyncKinds()
+}
+
+function getControlPlanePendingSyncCount(): number {
+  loadControlPlaneSyncTasks()
+  return controlPlaneSyncTasks.length
+}
+
+function markControlPlaneRecoverableFailure(error: ControlPlaneRequestError): void {
+  const previousStatus = controlPlaneConnectivityState.status
+  const nextFailures = controlPlaneConnectivityState.consecutiveFailures + 1
+  const now = new Date().toISOString()
+  controlPlaneConnectivityState = {
+    status: nextFailures >= CONTROL_PLANE_OFFLINE_FAILURE_THRESHOLD ? 'offline' : 'degraded',
+    lastError: error.message,
+    lastErrorAt: now,
+    lastSuccessAt: controlPlaneConnectivityState.lastSuccessAt,
+    consecutiveFailures: nextFailures,
+  }
+  audit('control_plane_request_recoverable_error', {
+    code: error.code,
+    method: error.method,
+    input: error.input,
+    status: error.status ?? 0,
+    err: error.message,
+    consecutiveFailures: nextFailures,
+  })
+  if (previousStatus !== controlPlaneConnectivityState.status) {
+    emitConfigChanged()
+  }
+}
+
+function markControlPlaneSuccess(): void {
+  loadControlPlaneSyncTasks()
+  const wasRecovering = controlPlaneConnectivityState.status !== 'online'
+  controlPlaneConnectivityState = {
+    status: getControlPlanePendingSyncCount() > 0 ? 'degraded' : 'online',
+    lastError: controlPlaneConnectivityState.lastError,
+    lastErrorAt: controlPlaneConnectivityState.lastErrorAt,
+    lastSuccessAt: new Date().toISOString(),
+    consecutiveFailures: 0,
+  }
+  if (wasRecovering) {
+    audit('control_plane_sync_recovered', {
+      pendingSyncCount: getControlPlanePendingSyncCount(),
+      lastError: controlPlaneConnectivityState.lastError,
+    })
+    emitConfigChanged()
+  }
+}
+
+function scheduleControlPlaneSyncRetry(delayMs = CONTROL_PLANE_SYNC_RETRY_BASE_MS): void {
+  if (controlPlaneSyncRetryTimer) {
+    clearTimeout(controlPlaneSyncRetryTimer)
+  }
+  controlPlaneSyncRetryTimer = setTimeout(() => {
+    controlPlaneSyncRetryTimer = null
+    void flushPendingControlPlaneSyncTasks()
+  }, delayMs)
+}
+
+function upsertControlPlaneSyncTask(
+  task: Omit<ControlPlaneSyncTask, 'id' | 'createdAt' | 'updatedAt' | 'lastTriedAt' | 'retryCount' | 'lastError'>,
+  error: ControlPlaneRequestError,
+): void {
+  loadControlPlaneSyncTasks()
+  const now = new Date().toISOString()
+  const existingIndex = controlPlaneSyncTasks.findIndex((item) => item.dedupeKey === task.dedupeKey)
+  const nextTask: ControlPlaneSyncTask = {
+    id: existingIndex >= 0 ? controlPlaneSyncTasks[existingIndex].id : randomUUID(),
+    createdAt: existingIndex >= 0 ? controlPlaneSyncTasks[existingIndex].createdAt : now,
+    updatedAt: now,
+    lastTriedAt: '',
+    retryCount: existingIndex >= 0 ? controlPlaneSyncTasks[existingIndex].retryCount : 0,
+    lastError: error.message,
+    ...task,
+  }
+  if (existingIndex >= 0) {
+    controlPlaneSyncTasks.splice(existingIndex, 1, nextTask)
+  } else {
+    controlPlaneSyncTasks.push(nextTask)
+  }
+  audit('control_plane_sync_enqueued', {
+    kind: task.kind,
+    profileId: task.profileId,
+    pathName: task.pathName,
+    dedupeKey: task.dedupeKey,
+    err: error.message,
+    pendingSyncCount: controlPlaneSyncTasks.length,
+  })
+  persistControlPlaneSyncTasks()
+  scheduleControlPlaneSyncRetry()
+}
+
+function enqueueRecoverableControlPlaneSyncTask(
+  task: Omit<ControlPlaneSyncTask, 'id' | 'createdAt' | 'updatedAt' | 'lastTriedAt' | 'retryCount' | 'lastError'>,
+  error: unknown,
+): boolean {
+  if (!isRecoverableControlPlaneError(error)) {
+    return false
+  }
+  upsertControlPlaneSyncTask(task, error)
+  const profile = task.profileId ? requireDatabase().getProfileById(task.profileId) : null
+  if (profile) {
+    updateRuntimeMetadata(profile, {
+      lastControlPlaneError: error.message,
+      lastControlPlaneErrorAt: new Date().toISOString(),
+    })
+  }
+  return true
+}
+
+function completeControlPlaneSyncTask(taskId: string): void {
+  loadControlPlaneSyncTasks()
+  const nextTasks = controlPlaneSyncTasks.filter((item) => item.id !== taskId)
+  if (nextTasks.length === controlPlaneSyncTasks.length) {
+    return
+  }
+  controlPlaneSyncTasks = nextTasks
+  persistControlPlaneSyncTasks()
+}
+
+async function requestControlPlaneRaw(
+  pathName: string,
+  init: JsonRequestInit,
+  includeAuth = true,
+): Promise<JsonResponse> {
+  const headers = new Headers(init.headers || {})
+  if (includeAuth) {
+    const token = getStoredAuthToken()
+    if (!token) {
+      throw new Error('请先登录桌面端')
+    }
+    headers.set('Authorization', `Bearer ${token}`)
+  }
+  if (init.body != null && init.body !== '' && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
+  const method = String(init.method || 'GET').toUpperCase()
+  try {
+    const response = await requestJsonWithRetry(`${getControlPlaneApiBase()}${pathName}`, {
+      ...init,
+      method,
+      headers,
+    }, method === 'GET' ? 2 : 1)
+    if (response.status >= 500) {
+      throw createControlPlaneRequestError(pathName, method, `${response.status} ${response.statusText}`, response.status, response.text)
+    }
+    markControlPlaneSuccess()
+    if (getControlPlanePendingSyncCount() > 0) {
+      scheduleControlPlaneSyncRetry(500)
+    }
+    return response
+  } catch (error) {
+    const requestError =
+      error instanceof Error && error.name === 'ControlPlaneRequestError'
+        ? (error as ControlPlaneRequestError)
+        : createControlPlaneRequestError(pathName, method, error)
+    if (requestError.recoverable) {
+      markControlPlaneRecoverableFailure(requestError)
+    }
+    throw requestError
+  }
+}
+
+async function flushPendingControlPlaneSyncTasks(): Promise<void> {
+  loadControlPlaneSyncTasks()
+  if (controlPlaneSyncInFlight || controlPlaneSyncTasks.length === 0 || !getDesktopAuthState().authenticated) {
+    return
+  }
+  controlPlaneSyncInFlight = true
+  try {
+    for (const task of [...controlPlaneSyncTasks]) {
+      try {
+        await requestControlPlaneRaw(task.pathName, {
+          method: task.method,
+          body: task.body,
+        })
+        completeControlPlaneSyncTask(task.id)
+      } catch (error) {
+        if (!isRecoverableControlPlaneError(error)) {
+          break
+        }
+        const updatedTask: ControlPlaneSyncTask = {
+          ...task,
+          retryCount: task.retryCount + 1,
+          lastError: error.message,
+          lastTriedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }
+        controlPlaneSyncTasks = controlPlaneSyncTasks.map((item) => item.id === task.id ? updatedTask : item)
+        persistControlPlaneSyncTasks()
+        const delayMs = Math.min(
+          CONTROL_PLANE_SYNC_RETRY_BASE_MS * Math.max(1, 2 ** Math.min(updatedTask.retryCount, 4)),
+          CONTROL_PLANE_SYNC_RETRY_MAX_MS,
+        )
+        audit('control_plane_sync_retry_scheduled', {
+          kind: task.kind,
+          profileId: task.profileId,
+          pathName: task.pathName,
+          retryCount: updatedTask.retryCount,
+          delayMs,
+          err: error.message,
+        })
+        scheduleControlPlaneSyncRetry(delayMs)
+        break
+      }
+    }
+  } finally {
+    controlPlaneSyncInFlight = false
+  }
+}
+
+function beginControlPlaneSyncPolling(): void {
+  if (controlPlaneSyncPollTimer) {
+    clearInterval(controlPlaneSyncPollTimer)
+  }
+  controlPlaneSyncPollTimer = setInterval(() => {
+    void flushPendingControlPlaneSyncTasks()
+  }, CONTROL_PLANE_SYNC_POLL_INTERVAL_MS)
+}
+
 function saveDesktopAuth(apiBase: string, token: string, user: AuthUser): DesktopAuthState {
   sessionAuthApiBase = apiBase.replace(/\/$/, '')
   sessionAuthToken = token
@@ -3262,6 +3740,8 @@ function saveDesktopAuth(apiBase: string, token: string, user: AuthUser): Deskto
     [CONTROL_PLANE_AUTH_USER_KEY]: '',
     [CONTROL_PLANE_AUTH_REMEMBER_KEY]: '0',
   })
+  markControlPlaneSuccess()
+  void flushPendingControlPlaneSyncTasks()
   return getDesktopAuthState()
 }
 
@@ -3270,6 +3750,13 @@ function clearDesktopAuth(): DesktopAuthState {
   sessionAuthToken = ''
   sessionAuthUser = null
   lastUserConfigSyncVersion = 0
+  controlPlaneConnectivityState = {
+    status: 'online',
+    lastError: '',
+    lastErrorAt: '',
+    lastSuccessAt: '',
+    consecutiveFailures: 0,
+  }
   setLastConfigSyncResult(null)
   requireDatabase().setSettings({
     ...getSettings(),
@@ -3325,28 +3812,21 @@ async function requestControlPlane(
   init: RequestInit = {},
   includeAuth = true,
 ): Promise<Record<string, unknown>> {
-  const headers = new Headers(init.headers || {})
-  if (!(init.body instanceof FormData) && !headers.has('Content-Type')) {
-    headers.set('Content-Type', 'application/json')
-  }
-  if (includeAuth) {
-    const token = getStoredAuthToken()
-    if (!token) {
-      throw new Error('请先登录桌面端')
-    }
-    headers.set('Authorization', `Bearer ${token}`)
-  }
   const method = String(init.method || 'GET').toUpperCase()
-  const response = await requestJsonWithRetry(`${getControlPlaneApiBase()}${pathName}`, {
-    method,
-    headers,
-    body:
-      typeof init.body === 'string'
-        ? init.body
-        : init.body == null
-          ? undefined
-          : String(init.body),
-  }, method === 'GET' ? 1 : 0)
+  const response = await requestControlPlaneRaw(
+    pathName,
+    {
+      method,
+      headers: init.headers as JsonRequestInit['headers'],
+      body:
+        typeof init.body === 'string'
+          ? init.body
+          : init.body == null
+            ? undefined
+            : String(init.body),
+    },
+    includeAuth,
+  )
   const payload = response.json
   if (!response.ok || payload.success === false) {
     const message = String(payload.error || `${response.status} ${response.statusText}` || 'Control plane request failed')
@@ -3372,22 +3852,45 @@ async function reportEnvironmentSyncEvent(payload: {
     return
   }
   try {
+    const body = JSON.stringify({
+      scope: 'environment',
+      direction: payload.direction,
+      mode: payload.mode,
+      status: payload.status,
+      profileIds: payload.profileIds ?? [],
+      reason: payload.reason || '',
+      errorMessage: payload.errorMessage || '',
+      cloudProfileCount: payload.cloudProfileCount || 0,
+      localMirroredProfileCount: payload.localMirroredProfileCount || requireDatabase().listProfiles().length,
+      deviceId: getControlPlaneDeviceId(),
+    })
     await requestControlPlane('/api/config/sync-events', {
       method: 'POST',
-      body: JSON.stringify({
-        scope: 'environment',
-        direction: payload.direction,
-        mode: payload.mode,
-        status: payload.status,
-        profileIds: payload.profileIds ?? [],
-        reason: payload.reason || '',
-        errorMessage: payload.errorMessage || '',
-        cloudProfileCount: payload.cloudProfileCount || 0,
-        localMirroredProfileCount: payload.localMirroredProfileCount || requireDatabase().listProfiles().length,
-        deviceId: getControlPlaneDeviceId(),
-      }),
+      body,
     })
   } catch (error) {
+    enqueueRecoverableControlPlaneSyncTask(
+      {
+        kind: 'sync-event',
+        dedupeKey: `sync-event:${payload.direction}:${payload.mode}:${payload.reason || 'none'}`,
+        profileId: '',
+        method: 'POST',
+        pathName: '/api/config/sync-events',
+        body: JSON.stringify({
+          scope: 'environment',
+          direction: payload.direction,
+          mode: payload.mode,
+          status: payload.status,
+          profileIds: payload.profileIds ?? [],
+          reason: payload.reason || '',
+          errorMessage: payload.errorMessage || '',
+          cloudProfileCount: payload.cloudProfileCount || 0,
+          localMirroredProfileCount: payload.localMirroredProfileCount || requireDatabase().listProfiles().length,
+          deviceId: getControlPlaneDeviceId(),
+        }),
+      },
+      error,
+    )
     audit('environment_sync_event_report_failed', {
       direction: payload.direction,
       mode: payload.mode,
@@ -3637,7 +4140,9 @@ async function requestJsonWithRetry(input: string, init: JsonRequestInit, retrie
       if (attempt >= retries) {
         throw lastError
       }
-      await new Promise((resolve) => setTimeout(resolve, CONTROL_PLANE_FETCH_RETRY_MS))
+      const baseDelay = CONTROL_PLANE_FETCH_RETRY_MS * Math.max(1, 2 ** attempt)
+      const jitter = Math.floor(Math.random() * 300)
+      await new Promise((resolve) => setTimeout(resolve, baseDelay + jitter))
     }
   }
   throw lastError instanceof Error ? lastError : new Error('Control plane JSON request failed')
@@ -4217,6 +4722,7 @@ async function uploadProfileStorageStateToControlPlane(
     lastStorageStateSyncMessage: '正在同步云端登录态',
   })
   let cloudRecordExists = false
+  let baseVersion = 0
 
   try {
     const remoteState = await fetchRemoteProfileStorageState(profileId)
@@ -4225,7 +4731,7 @@ async function uploadProfileStorageStateToControlPlane(
       0,
       Number(pendingProfile.fingerprintConfig.runtimeMetadata.lastStorageStateVersion || 0),
     )
-    const baseVersion = remoteState ? localVersion : 0
+    baseVersion = remoteState ? localVersion : 0
     if (remoteState && remoteState.stateHash && remoteState.stateHash === stateHash) {
       const updatedAt = remoteState.updatedAt || new Date().toISOString()
       updateRuntimeMetadata(pendingProfile, {
@@ -4310,25 +4816,28 @@ async function uploadProfileStorageStateToControlPlane(
         cloudRecordExists: Boolean(remoteState),
       })
     }
-    const response = await fetch(
-      `${getControlPlaneApiBase()}/api/profile-storage-state/${encodeURIComponent(profileId)}`,
+    const pathName = `/api/profile-storage-state/${encodeURIComponent(profileId)}`
+    const body = JSON.stringify({
+      stateJson,
+      encrypted: false,
+      baseVersion,
+      deviceId: getControlPlaneDeviceId(),
+      source: 'desktop',
+      stateHash,
+    })
+    const response = await requestControlPlaneRaw(
+      pathName,
       {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({
-          stateJson,
-          encrypted: false,
-          baseVersion,
-          deviceId: getControlPlaneDeviceId(),
-          source: 'desktop',
-          stateHash,
-        }),
+        body,
       },
+      false,
     )
-    const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>
+    const payload = response.json
     if (response.status === 409) {
       const conflict = (payload.conflict || {}) as Record<string, unknown>
       const updatedAt = String(conflict.updatedAt || '')
@@ -4394,7 +4903,30 @@ async function uploadProfileStorageStateToControlPlane(
     updateRuntimeMetadata(pendingProfile, {
       lastStorageStateSyncStatus: 'error',
       lastStorageStateSyncMessage: message,
+      lastControlPlaneError: message,
+      lastControlPlaneErrorAt: new Date().toISOString(),
     })
+    enqueueRecoverableControlPlaneSyncTask(
+      {
+        kind: 'storage-state-upload',
+        dedupeKey: `storage-state-upload:${profileId}:${stateHash}:${Math.max(
+          0,
+          Number(pendingProfile.fingerprintConfig.runtimeMetadata.lastStorageStateVersion || 0),
+        )}`,
+        profileId,
+        method: 'PUT',
+        pathName: `/api/profile-storage-state/${encodeURIComponent(profileId)}`,
+        body: JSON.stringify({
+          stateJson,
+          encrypted: false,
+          baseVersion,
+          deviceId: getControlPlaneDeviceId(),
+          source: 'desktop',
+          stateHash,
+        }),
+      },
+      error,
+    )
     audit('storage_state_upload_failed', {
       profileId,
       reason: options.reason,
@@ -4647,6 +5179,9 @@ function getDesktopRuntimeInfo(): DesktopRuntimeInfo {
     buildMarker: BUILD_MARKER,
     capabilities: CAPABILITIES,
     windowFrame: getWindowFrameMetrics(),
+    controlPlaneStatus: controlPlaneConnectivityState.status,
+    controlPlaneLastError: controlPlaneConnectivityState.lastError,
+    pendingSyncCount: getControlPlanePendingSyncCount(),
   }
 }
 
@@ -5342,6 +5877,12 @@ function getRuntimeHostInfo() {
             scheduler.getQueuedIds().length > 0
           ? 'locked'
           : 'unlocked',
+    controlPlaneStatus: controlPlaneConnectivityState.status,
+    controlPlaneLastError: controlPlaneConnectivityState.lastError,
+    controlPlaneLastErrorAt: controlPlaneConnectivityState.lastErrorAt,
+    controlPlanePendingSyncCount: getControlPlanePendingSyncCount(),
+    controlPlaneConsecutiveFailures: controlPlaneConnectivityState.consecutiveFailures,
+    controlPlaneLastSuccessAt: controlPlaneConnectivityState.lastSuccessAt,
   }
 }
 
@@ -6783,19 +7324,23 @@ async function registerIpcHandlers(): Promise<void> {
     return saveDesktopAuth(getControlPlaneApiBase(), getStoredAuthToken(), user)
   })
   ipcMain.handle('auth.logout', async () => clearDesktopAuth())
-  ipcMain.handle('auth.syncGlobalConfig', async () =>
-    pushGlobalConfigToControlPlaneManually('auth.manual-upload-global-config'),
-  )
+  ipcMain.handle('auth.syncGlobalConfig', async () => {
+    ensureControlPlaneConfigWritable('auth.syncGlobalConfig')
+    return pushGlobalConfigToControlPlaneManually('auth.manual-upload-global-config')
+  })
   ipcMain.handle('auth.pullGlobalConfig', async () => {
+    ensureControlPlaneConfigWritable('auth.pullGlobalConfig')
     const result = await syncConfigFromControlPlane()
     result.scope = 'global-config'
     result.updatedAt = new Date().toISOString()
     return setLastConfigSyncResult(result)!
   })
-  ipcMain.handle('auth.syncProfiles', async () =>
-    pushEnvironmentProfilesToControlPlaneManually('auth.manual-upload-profiles'),
-  )
+  ipcMain.handle('auth.syncProfiles', async () => {
+    ensureControlPlaneConfigWritable('auth.syncProfiles')
+    return pushEnvironmentProfilesToControlPlaneManually('auth.manual-upload-profiles')
+  })
   ipcMain.handle('auth.pullProfiles', async () => {
+    ensureControlPlaneConfigWritable('auth.pullProfiles')
     if (runtimeContexts.size > 0 || scheduler.getQueuedIds().length > 0 || scheduler.getStartingIds().length > 0) {
       throw new Error('当前存在运行中或启动中的环境，请先停止环境后再从云端拉取环境')
     }
@@ -6863,6 +7408,7 @@ async function registerIpcHandlers(): Promise<void> {
   )
   ipcMain.handle('cloudPhones.create', async (_event, input: CreateCloudPhoneInput) => {
     ensureWritable('cloudPhones.create')
+    ensureControlPlaneConfigWritable('cloudPhones.create')
     const providerKey = input.providerKey || resolveDefaultCloudPhoneProviderKey()
     const resolvedProxy = resolveCloudPhoneProxyConfig(input)
     const payload = createCloudPhonePayload(
@@ -6887,6 +7433,7 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('cloudPhones.update', async (_event, input: UpdateCloudPhoneInput) => {
     ensureWritable('cloudPhones.update')
+    ensureControlPlaneConfigWritable('cloudPhones.update')
     const resolvedProxy = resolveCloudPhoneProxyConfig(input)
     const payload = createCloudPhonePayload({ ...input, ...resolvedProxy }, input.providerKey)
     const record = requireDatabase().updateCloudPhone(payload)
@@ -6898,6 +7445,7 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('cloudPhones.delete', async (_event, cloudPhoneId: string) => {
     ensureWritable('cloudPhones.delete')
+    ensureControlPlaneConfigWritable('cloudPhones.delete')
     const record = requireDatabase().getCloudPhoneById(cloudPhoneId)
     if (record) {
       const provider = resolveCloudPhoneProvider(record)
@@ -7002,6 +7550,7 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('cloudPhones.bulkDelete', async (_event, payload: CloudPhoneBulkActionPayload) => {
     ensureWritable('cloudPhones.bulkDelete')
+    ensureControlPlaneConfigWritable('cloudPhones.bulkDelete')
     for (const cloudPhoneId of payload.cloudPhoneIds) {
       const record = requireDatabase().getCloudPhoneById(cloudPhoneId)
       if (record) {
@@ -7015,6 +7564,7 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('cloudPhones.bulkAssignGroup', async (_event, payload: CloudPhoneBulkActionPayload) => {
     ensureWritable('cloudPhones.bulkAssignGroup')
+    ensureControlPlaneConfigWritable('cloudPhones.bulkAssignGroup')
     requireDatabase().bulkAssignCloudPhoneGroup(payload.cloudPhoneIds, payload.groupName ?? '')
     scheduleGlobalConfigMutation('云手机分组已在本地更新，等待上传到云端')
     logEvent('info', 'cloud-phone', `Updated group for ${payload.cloudPhoneIds.length} cloud phones`, null)
@@ -7023,6 +7573,7 @@ async function registerIpcHandlers(): Promise<void> {
   ipcMain.handle('profiles.list', async () => requireDatabase().listProfiles())
   ipcMain.handle('profiles.create', async (_event, input: CreateProfileInput) => {
     ensureWritable('profiles.create')
+    ensureControlPlaneConfigWritable('profiles.create')
     const payload = await applyResolvedNetworkProfileToPayload(
       createProfilePayload(input, createDefaultFingerprint),
       requireDatabase(),
@@ -7035,6 +7586,7 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('profiles.update', async (_event, input: UpdateProfileInput) => {
     ensureWritable('profiles.update')
+    ensureControlPlaneConfigWritable('profiles.update')
     const existingProfile = requireDatabase().getProfileById(input.id)
     const payload = applyPurposeTransitionMetadata(
       await applyResolvedNetworkProfileToPayload(
@@ -7054,6 +7606,7 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('profiles.delete', async (_event, profileId: string) => {
     ensureWritable('profiles.delete')
+    ensureControlPlaneConfigWritable('profiles.delete')
     await stopRuntime(profileId)
     requireDatabase().deleteProfile(profileId)
     setLastConfigSyncResult(buildEnvironmentSyncPendingResult('环境已在本地删除，等待同步到云端'))
@@ -7062,6 +7615,7 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('profiles.clone', async (_event, profileId: string) => {
     ensureWritable('profiles.clone')
+    ensureControlPlaneConfigWritable('profiles.clone')
     const profile = requireDatabase().cloneProfile(profileId)
     scheduleProfileConfigAfterLocalMutation('clone', profile)
     logEvent('info', 'profile', `Cloned profile "${profile.name}"`, profile.id)
@@ -7069,14 +7623,17 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('profiles.syncConfig', async (_event, profileId: string) => {
     ensureWritable('profiles.syncConfig')
+    ensureControlPlaneConfigWritable('profiles.syncConfig')
     return pushProfileConfigToControlPlane(profileId, 'profiles.manual-upload')
   })
   ipcMain.handle('profiles.pullConfig', async (_event, profileId: string) => {
     ensureWritable('profiles.pullConfig')
+    ensureControlPlaneConfigWritable('profiles.pullConfig')
     return pullProfileConfigFromControlPlane(profileId, { force: true })
   })
   ipcMain.handle('profiles.syncStorageState', async (_event, profileId: string) => {
     ensureWritable('profiles.syncStorageState')
+    ensureControlPlaneConfigWritable('profiles.syncStorageState')
     return uploadProfileStorageStateToControlPlane(profileId, {
       context: runtimeContexts.get(profileId) || null,
       reason: 'manual-upload',
@@ -7084,6 +7641,7 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('profiles.pullStorageState', async (_event, profileId: string) => {
     ensureWritable('profiles.pullStorageState')
+    ensureControlPlaneConfigWritable('profiles.pullStorageState')
     return downloadProfileStorageStateFromControlPlane(profileId, {
       force: true,
       reason: 'manual',
@@ -7105,6 +7663,7 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('profiles.bulkDelete', async (_event, payload: ProfileBulkActionPayload) => {
     ensureWritable('profiles.bulkDelete')
+    ensureControlPlaneConfigWritable('profiles.bulkDelete')
     await stopMany(payload.profileIds)
     requireDatabase().bulkDeleteProfiles(payload.profileIds)
     setLastConfigSyncResult(buildEnvironmentSyncPendingResult('批量环境已在本地删除，等待同步到云端'))
@@ -7113,6 +7672,7 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('profiles.bulkAssignGroup', async (_event, payload: ProfileBulkActionPayload) => {
     ensureWritable('profiles.bulkAssignGroup')
+    ensureControlPlaneConfigWritable('profiles.bulkAssignGroup')
     requireDatabase().bulkAssignGroup(payload.profileIds, payload.groupName ?? '')
     setLastConfigSyncResult(buildEnvironmentSyncPendingResult('环境分组已在本地更新，等待上传到云端'))
     updateEnvironmentSyncMetadataForProfiles(payload.profileIds, {
@@ -7126,6 +7686,7 @@ async function registerIpcHandlers(): Promise<void> {
   ipcMain.handle('templates.list', async () => requireDatabase().listTemplates())
   ipcMain.handle('templates.create', async (_event, input: CreateTemplateInput) => {
     ensureWritable('templates.create')
+    ensureControlPlaneConfigWritable('templates.create')
     const template = requireDatabase().createTemplate(
       createTemplatePayload(input, createDefaultFingerprint),
     )
@@ -7135,6 +7696,7 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('templates.update', async (_event, input: UpdateTemplateInput) => {
     ensureWritable('templates.update')
+    ensureControlPlaneConfigWritable('templates.update')
     const template = requireDatabase().updateTemplate(
       createTemplatePayload(input, createDefaultFingerprint),
     )
@@ -7144,12 +7706,14 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('templates.delete', async (_event, templateId: string) => {
     ensureWritable('templates.delete')
+    ensureControlPlaneConfigWritable('templates.delete')
     requireDatabase().deleteTemplate(templateId)
     scheduleGlobalConfigMutation('模板已在本地删除，等待上传到云端')
     logEvent('warn', 'profile', `Deleted template ${templateId}`, null)
   })
   ipcMain.handle('templates.createFromProfile', async (_event, profileId: string) => {
     ensureWritable('templates.createFromProfile')
+    ensureControlPlaneConfigWritable('templates.createFromProfile')
     const template = requireDatabase().createTemplateFromProfile(profileId)
     scheduleGlobalConfigMutation('模板已从环境生成，等待上传到云端')
     logEvent('info', 'profile', `Created template from profile "${template.name}"`, null)
@@ -7159,6 +7723,7 @@ async function registerIpcHandlers(): Promise<void> {
   ipcMain.handle('proxies.list', async () => requireDatabase().listProxies())
   ipcMain.handle('proxies.create', async (_event, input: CreateProxyInput) => {
     ensureWritable('proxies.create')
+    ensureControlPlaneConfigWritable('proxies.create')
     const payload = createProxyPayload(input)
     const proxy = requireDatabase().createProxy(payload)
     scheduleGlobalConfigMutation('代理已在本地创建，等待上传到云端')
@@ -7167,6 +7732,7 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('proxies.update', async (_event, input: UpdateProxyInput) => {
     ensureWritable('proxies.update')
+    ensureControlPlaneConfigWritable('proxies.update')
     const payload = createProxyPayload(input)
     const proxy = requireDatabase().updateProxy(payload)
     scheduleGlobalConfigMutation('代理已在本地更新，等待上传到云端')
@@ -7175,6 +7741,7 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('proxies.delete', async (_event, proxyId: string) => {
     ensureWritable('proxies.delete')
+    ensureControlPlaneConfigWritable('proxies.delete')
     requireDatabase().deleteProxy(proxyId)
     scheduleGlobalConfigMutation('代理已在本地删除，等待上传到云端')
     logEvent('warn', 'proxy', `Deleted proxy ${proxyId}`, null)
@@ -7201,10 +7768,12 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('workspace.snapshots.restore', async (_event, profileId: string, snapshotId: string) => {
     ensureWritable('workspace.snapshots.restore')
+    ensureControlPlaneConfigWritable('workspace.snapshots.restore')
     return restoreWorkspaceSnapshotForProfile(profileId, snapshotId)
   })
   ipcMain.handle('workspace.snapshots.rollback', async (_event, profileId: string) => {
     ensureWritable('workspace.snapshots.rollback')
+    ensureControlPlaneConfigWritable('workspace.snapshots.rollback')
     return rollbackWorkspaceSnapshotForProfile(profileId)
   })
 
@@ -7214,6 +7783,7 @@ async function registerIpcHandlers(): Promise<void> {
   ipcMain.handle('settings.get', async () => requireDatabase().getSettings())
   ipcMain.handle('settings.set', async (_event, payload: SettingsPayload) => {
     ensureWritable('settings.set')
+    ensureControlPlaneConfigWritable('settings.set')
     const data = requireDatabase().setSettings(payload)
     syncTheme()
     scheduleGlobalConfigMutation('应用设置已在本地更新，等待上传到云端')
@@ -7244,6 +7814,7 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('data.importBundle', async () => {
     ensureWritable('data.importBundle')
+    ensureControlPlaneConfigWritable('data.importBundle')
     const win = BrowserWindow.getFocusedWindow() ?? mainWindow
     const selected = win
       ? await dialog.showOpenDialog(win, {
@@ -7414,6 +7985,11 @@ async function bootstrap(): Promise<void> {
   traceStartup('profiles_reset_on_startup')
   cleanupRuntimeLocksOnStartup()
   traceStartup('runtime_locks_cleaned')
+  loadControlPlaneSyncTasks()
+  beginControlPlaneSyncPolling()
+  traceStartup('control_plane_sync_queue_ready', {
+    pendingSyncCount: getControlPlanePendingSyncCount(),
+  })
   initAutoUpdater()
   traceStartup('auto_updater_initialized', { supported: supportsAutoUpdate() })
   await registerIpcHandlers()
@@ -7429,6 +8005,7 @@ async function bootstrap(): Promise<void> {
   await createMainWindow()
   traceStartup('create_main_window_succeeded')
   traceStartup('control_plane_sync_deferred_manual')
+  void flushPendingControlPlaneSyncTasks()
   if (supportsAutoUpdate()) {
     setTimeout(() => {
       void checkForDesktopUpdates({ silent: true })
