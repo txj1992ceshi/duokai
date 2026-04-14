@@ -1,4 +1,5 @@
 import { setTimeout as sleep } from 'node:timers/promises';
+import { isRecoverableNetworkFailure } from './networkErrorRecovery';
 
 type AgentTaskStatus = 'RECEIVED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
 type AgentTaskType =
@@ -26,6 +27,7 @@ export type AgentServiceState = {
   lastError: string;
   lastErrorCode?: string;
   lastErrorKind?: 'network' | 'auth' | 'task' | 'unknown';
+  lastRecoverableFailureSource?: 'request' | 'global-network' | 'unknown';
   lastRecoverableFailureAt?: string | null;
   consecutiveFailures: number;
   lastTaskId: string | null;
@@ -131,12 +133,7 @@ function readErrorCode(error: unknown): string {
 }
 
 function isRecoverableAgentNetworkFailure(input: { message: string; code?: string; status?: number | null }): boolean {
-  if (typeof input.status === 'number' && input.status >= 500) {
-    return true;
-  }
-  return /(ECONNRESET|ECONNABORTED|ETIMEDOUT|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|socket hang up|Request timeout)/i.test(
-    `${input.code || ''} ${input.message}`
-  );
+  return isRecoverableNetworkFailure(input);
 }
 
 class AgentRequestError extends Error {
@@ -294,7 +291,22 @@ export class AgentService {
       lastError: error.message,
       lastErrorCode: error.code,
       lastErrorKind: 'network',
+      lastRecoverableFailureSource: 'request',
       lastRecoverableFailureAt: new Date().toISOString(),
+      consecutiveFailures: this.state.consecutiveFailures + 1,
+    });
+  }
+
+  handleGlobalRecoverableNetworkError(details: { message: string; code?: string }) {
+    const nextTimestamp = new Date().toISOString();
+    this.setState({
+      connected: false,
+      writable: false,
+      lastError: details.message,
+      lastErrorCode: String(details.code || '').trim(),
+      lastErrorKind: 'network',
+      lastRecoverableFailureSource: 'global-network',
+      lastRecoverableFailureAt: nextTimestamp,
       consecutiveFailures: this.state.consecutiveFailures + 1,
     });
   }
@@ -307,6 +319,7 @@ export class AgentService {
       lastError: '',
       lastErrorCode: '',
       lastErrorKind: 'unknown',
+      lastRecoverableFailureSource: 'unknown',
       lastRecoverableFailureAt: this.state.lastRecoverableFailureAt ?? null,
       consecutiveFailures: 0,
     });
@@ -466,6 +479,7 @@ export class AgentService {
               error instanceof AgentRequestError && error.status === 401
                 ? 'auth'
                 : 'unknown',
+            lastRecoverableFailureSource: 'unknown',
             consecutiveFailures: this.state.consecutiveFailures + 1,
           });
         }

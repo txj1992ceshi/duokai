@@ -87,6 +87,11 @@ import { applyNetworkDerivedFingerprint } from './services/networkProfileResolve
 import { resolveLaunchProxy } from './services/proxyBridge'
 import { RuntimeScheduler } from './services/runtimeScheduler'
 import { AgentNetworkError, AgentService } from './services/agentService'
+import {
+  classifyRecoverableGlobalNetworkError,
+  isRecoverableNetworkFailure,
+  type RecoverableGlobalNetworkErrorClassification,
+} from './services/networkErrorRecovery'
 import { evaluateTrustedSnapshotReuse } from './services/trustedLaunch'
 import {
   assignStableHardwareFingerprint,
@@ -185,6 +190,8 @@ const CONTROL_PLANE_SYNC_RETRY_BASE_MS = 5_000
 const CONTROL_PLANE_SYNC_RETRY_MAX_MS = 60_000
 const CONTROL_PLANE_SYNC_POLL_INTERVAL_MS = 30_000
 const CONTROL_PLANE_OFFLINE_FAILURE_THRESHOLD = 3
+const GLOBAL_NETWORK_RECOVERY_MERGE_WINDOW_MS = 8_000
+const GLOBAL_NETWORK_RECOVERY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 20_000, 60_000] as const
 
 type ControlPlaneRequestError = Error & {
   name: 'ControlPlaneRequestError'
@@ -217,6 +224,18 @@ type ControlPlaneConnectivityState = {
   lastErrorAt: string
   lastSuccessAt: string
   consecutiveFailures: number
+}
+
+type GlobalRecoverySource = 'uncaughtException' | 'unhandledRejection' | 'recoveryTimer'
+
+type GlobalNetworkRecoveryState = {
+  lastSignature: string
+  lastSeenAt: string
+  consecutiveFailures: number
+  nextRetryDelayMs: number
+  nextRetryAt: string
+  recoveryState: NonNullable<RuntimeHostInfo['controlPlaneRecoveryState']>
+  timer: NodeJS.Timeout | null
 }
 const SMOKE_TEST_ENABLED = process.env.SMOKE_TEST === '1'
 const SMOKE_RESULT_FILE = 'smoke-result.json'
@@ -430,6 +449,7 @@ function getAgentStateSnapshot() {
       lastError: '',
       lastErrorCode: '',
       lastErrorKind: 'unknown' as const,
+      lastRecoverableFailureSource: 'unknown' as const,
       lastRecoverableFailureAt: null,
       consecutiveFailures: 0,
       lastTaskId: null,
@@ -450,31 +470,46 @@ function isRecoverableAgentNetworkError(error: unknown): error is AgentNetworkEr
   return error instanceof AgentNetworkError
 }
 
-function readGlobalErrorCode(error: unknown): string {
-  if (error && typeof error === 'object') {
-    if ('code' in error && typeof error.code === 'string') {
-      return error.code
-    }
-    if (
-      'cause' in error &&
-      error.cause &&
-      typeof error.cause === 'object' &&
-      'code' in error.cause &&
-      typeof error.cause.code === 'string'
-    ) {
-      return error.cause.code
-    }
-  }
-  return ''
+function getGlobalNetworkRecoveryDelay(consecutiveFailures: number): number {
+  const normalizedFailures = Math.max(1, consecutiveFailures)
+  return GLOBAL_NETWORK_RECOVERY_DELAYS_MS[Math.min(normalizedFailures - 1, GLOBAL_NETWORK_RECOVERY_DELAYS_MS.length - 1)]
 }
 
-function buildGlobalErrorDiagnostics(error: unknown): Record<string, unknown> {
-  const asError = error instanceof Error ? error : new Error(String(error))
+function resetGlobalNetworkRecoveryState(): void {
+  if (globalNetworkRecoveryState.timer) {
+    clearTimeout(globalNetworkRecoveryState.timer)
+  }
+  globalNetworkRecoveryState = {
+    lastSignature: '',
+    lastSeenAt: '',
+    consecutiveFailures: 0,
+    nextRetryDelayMs: 0,
+    nextRetryAt: '',
+    recoveryState: 'idle',
+    timer: null,
+  }
+  if (controlPlaneRecoveryState !== 'idle' || controlPlaneNextRetryAt) {
+    controlPlaneRecoveryState = 'idle'
+    controlPlaneNextRetryAt = ''
+    emitConfigChanged()
+  }
+}
+
+function buildGlobalErrorDiagnostics(
+  error: unknown,
+  classification: RecoverableGlobalNetworkErrorClassification,
+): Record<string, unknown> {
   return {
-    name: asError.name || '',
-    message: asError.message || String(error),
-    code: readGlobalErrorCode(error),
-    stack: asError.stack || '',
+    name: classification.name,
+    message: classification.message || String(error),
+    code: classification.code,
+    causeCode: classification.causeCode,
+    stack: classification.stack,
+    isRecoverableGlobalNetworkError: classification.recoverable,
+    globalNetworkMatchedBy: classification.matchedBy,
+    globalNetworkFatalDomainDeniedBy: classification.fatalDomainDeniedBy,
+    globalNetworkStackHint: classification.stackHint,
+    globalNetworkSignature: classification.signature,
     isRecoverableControlPlaneError: isRecoverableControlPlaneError(error),
     isRecoverableAgentNetworkError: isRecoverableAgentNetworkError(error),
   }
@@ -1084,6 +1119,17 @@ let controlPlaneConnectivityState: ControlPlaneConnectivityState = {
   lastErrorAt: '',
   lastSuccessAt: '',
   consecutiveFailures: 0,
+}
+let controlPlaneRecoveryState: NonNullable<RuntimeHostInfo['controlPlaneRecoveryState']> = 'idle'
+let controlPlaneNextRetryAt = ''
+let globalNetworkRecoveryState: GlobalNetworkRecoveryState = {
+  lastSignature: '',
+  lastSeenAt: '',
+  consecutiveFailures: 0,
+  nextRetryDelayMs: 0,
+  nextRetryAt: '',
+  recoveryState: 'idle',
+  timer: null,
 }
 
 type EnvironmentMirrorSyncMode =
@@ -2862,7 +2908,8 @@ process.on('SIGTERM', () => {
 })
 process.on('uncaughtException', (error) => {
   console.error('uncaughtException', error)
-  const diagnostics = buildGlobalErrorDiagnostics(error)
+  const classification = classifyRecoverableGlobalNetworkError(error)
+  const diagnostics = buildGlobalErrorDiagnostics(error, classification)
   traceStartup('uncaught_exception', diagnostics)
   audit('global_uncaught_exception_detail', diagnostics)
   if (isRecoverableControlPlaneError(error)) {
@@ -2885,11 +2932,16 @@ process.on('uncaughtException', (error) => {
     })
     return
   }
+  if (classification.recoverable) {
+    handleRecoverableGlobalNetworkError(error, 'uncaughtException', classification)
+    return
+  }
   void gracefulShutdownHandler(error)
 })
 process.on('unhandledRejection', (reason) => {
   console.error('unhandledRejection', reason)
-  const diagnostics = buildGlobalErrorDiagnostics(reason)
+  const classification = classifyRecoverableGlobalNetworkError(reason)
+  const diagnostics = buildGlobalErrorDiagnostics(reason, classification)
   traceStartup('unhandled_rejection', diagnostics)
   audit('global_uncaught_exception_detail', {
     source: 'unhandledRejection',
@@ -2913,6 +2965,10 @@ process.on('unhandledRejection', (reason) => {
       path: reason.path,
       err: reason.message,
     })
+    return
+  }
+  if (classification.recoverable) {
+    handleRecoverableGlobalNetworkError(reason, 'unhandledRejection', classification)
     return
   }
   void gracefulShutdownHandler(reason)
@@ -3449,9 +3505,7 @@ function resolveControlPlaneSyncQueuePath(): string {
 }
 
 function isControlPlaneNetworkErrorMessage(message: string): boolean {
-  return /(ECONNRESET|ECONNABORTED|ETIMEDOUT|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|socket hang up|Request timeout)/i.test(
-    message,
-  )
+  return isRecoverableNetworkFailure({ message })
 }
 
 function createControlPlaneRequestError(
@@ -3574,6 +3628,36 @@ function getControlPlanePendingSyncCount(): number {
   return controlPlaneSyncTasks.length
 }
 
+function updateControlPlaneRecoveryUiState(
+  recoveryState: NonNullable<RuntimeHostInfo['controlPlaneRecoveryState']>,
+  nextRetryAt = '',
+): void {
+  const changed = controlPlaneRecoveryState !== recoveryState || controlPlaneNextRetryAt !== nextRetryAt
+  controlPlaneRecoveryState = recoveryState
+  controlPlaneNextRetryAt = nextRetryAt
+  if (changed) {
+    emitConfigChanged()
+  }
+}
+
+function markControlPlaneGlobalNetworkDegraded(
+  classification: RecoverableGlobalNetworkErrorClassification,
+): void {
+  const previousStatus = controlPlaneConnectivityState.status
+  const nextFailures = controlPlaneConnectivityState.consecutiveFailures + 1
+  const now = new Date().toISOString()
+  controlPlaneConnectivityState = {
+    status: nextFailures >= CONTROL_PLANE_OFFLINE_FAILURE_THRESHOLD ? 'offline' : 'degraded',
+    lastError: classification.message,
+    lastErrorAt: now,
+    lastSuccessAt: controlPlaneConnectivityState.lastSuccessAt,
+    consecutiveFailures: nextFailures,
+  }
+  if (previousStatus !== controlPlaneConnectivityState.status) {
+    emitConfigChanged()
+  }
+}
+
 function markControlPlaneRecoverableFailure(error: ControlPlaneRequestError): void {
   const previousStatus = controlPlaneConnectivityState.status
   const nextFailures = controlPlaneConnectivityState.consecutiveFailures + 1
@@ -3608,6 +3692,14 @@ function markControlPlaneSuccess(): void {
     lastSuccessAt: new Date().toISOString(),
     consecutiveFailures: 0,
   }
+  if (globalNetworkRecoveryState.recoveryState !== 'idle') {
+    audit('global_network_recovery_succeeded', {
+      target: 'control-plane',
+      consecutiveFailures: globalNetworkRecoveryState.consecutiveFailures,
+      lastSignature: globalNetworkRecoveryState.lastSignature,
+    })
+    resetGlobalNetworkRecoveryState()
+  }
   if (wasRecovering) {
     audit('control_plane_sync_recovered', {
       pendingSyncCount: getControlPlanePendingSyncCount(),
@@ -3623,8 +3715,205 @@ function scheduleControlPlaneSyncRetry(delayMs = CONTROL_PLANE_SYNC_RETRY_BASE_M
   }
   controlPlaneSyncRetryTimer = setTimeout(() => {
     controlPlaneSyncRetryTimer = null
+    if (globalNetworkRecoveryState.recoveryState !== 'idle') {
+      updateControlPlaneRecoveryUiState('reconnecting')
+    }
     void flushPendingControlPlaneSyncTasks()
   }, delayMs)
+}
+
+async function probeControlPlaneRecovery(): Promise<void> {
+  if (!getDesktopAuthState().authenticated) {
+    return
+  }
+  if (getControlPlanePendingSyncCount() > 0) {
+    await flushPendingControlPlaneSyncTasks()
+    return
+  }
+  await requestControlPlane('/api/auth/me', {
+    method: 'GET',
+  })
+}
+
+function scheduleGlobalNetworkRecovery(
+  classification: RecoverableGlobalNetworkErrorClassification,
+  source: GlobalRecoverySource,
+): void {
+  const nowMs = Date.now()
+  const lastSeenMs = globalNetworkRecoveryState.lastSeenAt
+    ? new Date(globalNetworkRecoveryState.lastSeenAt).getTime()
+    : 0
+  const isDuplicateWithinWindow =
+    globalNetworkRecoveryState.lastSignature === classification.signature &&
+    lastSeenMs > 0 &&
+    nowMs - lastSeenMs <= GLOBAL_NETWORK_RECOVERY_MERGE_WINDOW_MS
+  const nextFailures =
+    globalNetworkRecoveryState.lastSignature === classification.signature
+      ? globalNetworkRecoveryState.consecutiveFailures + 1
+      : 1
+  if (isDuplicateWithinWindow) {
+    globalNetworkRecoveryState = {
+      ...globalNetworkRecoveryState,
+      lastSeenAt: new Date(nowMs).toISOString(),
+      consecutiveFailures: nextFailures,
+    }
+    audit('global_network_recovery_suppressed', {
+      source,
+      signature: classification.signature,
+      code: classification.code,
+      causeCode: classification.causeCode,
+      message: classification.message,
+      consecutiveFailures: nextFailures,
+      nextRetryAt: globalNetworkRecoveryState.nextRetryAt,
+    })
+    return
+  }
+
+  const delayMs = getGlobalNetworkRecoveryDelay(nextFailures)
+  const nextRetryAt = new Date(nowMs + delayMs).toISOString()
+  const existingNextRetryMs = globalNetworkRecoveryState.nextRetryAt
+    ? new Date(globalNetworkRecoveryState.nextRetryAt).getTime()
+    : Number.POSITIVE_INFINITY
+  const keepExistingEarlierTimer =
+    globalNetworkRecoveryState.timer !== null && existingNextRetryMs <= nowMs + delayMs
+
+  globalNetworkRecoveryState = {
+    ...globalNetworkRecoveryState,
+    lastSignature: classification.signature,
+    lastSeenAt: new Date(nowMs).toISOString(),
+    consecutiveFailures: nextFailures,
+    nextRetryDelayMs: keepExistingEarlierTimer
+      ? globalNetworkRecoveryState.nextRetryDelayMs
+      : delayMs,
+    nextRetryAt: keepExistingEarlierTimer ? globalNetworkRecoveryState.nextRetryAt : nextRetryAt,
+    recoveryState: 'scheduled',
+  }
+  updateControlPlaneRecoveryUiState(
+    'scheduled',
+    keepExistingEarlierTimer ? globalNetworkRecoveryState.nextRetryAt : nextRetryAt,
+  )
+  if (keepExistingEarlierTimer) {
+    audit('global_network_recovery_suppressed', {
+      source,
+      signature: classification.signature,
+      code: classification.code,
+      causeCode: classification.causeCode,
+      message: classification.message,
+      consecutiveFailures: nextFailures,
+      nextRetryAt: globalNetworkRecoveryState.nextRetryAt,
+      reason: 'existing-earlier-timer',
+    })
+    return
+  }
+
+  if (globalNetworkRecoveryState.timer) {
+    clearTimeout(globalNetworkRecoveryState.timer)
+  }
+  globalNetworkRecoveryState.timer = setTimeout(() => {
+    globalNetworkRecoveryState = {
+      ...globalNetworkRecoveryState,
+      timer: null,
+      recoveryState: 'reconnecting',
+    }
+    updateControlPlaneRecoveryUiState('reconnecting')
+    void (async () => {
+      try {
+        await probeControlPlaneRecovery()
+        if (!getDesktopAuthState().authenticated) {
+          audit('global_network_recovery_succeeded', {
+            target: 'agent-only',
+            consecutiveFailures: globalNetworkRecoveryState.consecutiveFailures,
+            lastSignature: globalNetworkRecoveryState.lastSignature,
+          })
+          resetGlobalNetworkRecoveryState()
+        }
+      } catch (error) {
+        if (isRecoverableControlPlaneError(error)) {
+          scheduleGlobalNetworkRecovery(
+            classifyRecoverableGlobalNetworkError(error),
+            'recoveryTimer',
+          )
+          return
+        }
+        audit('global_network_recovery_suppressed', {
+          source: 'recoveryTimer',
+          signature: classification.signature,
+          code:
+            error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+              ? error.code
+              : '',
+          message: error instanceof Error ? error.message : String(error),
+          consecutiveFailures: globalNetworkRecoveryState.consecutiveFailures,
+          reason: 'nonrecoverable-probe-error',
+        })
+        resetGlobalNetworkRecoveryState()
+      }
+    })()
+  }, delayMs)
+  audit('global_network_reconnect_scheduled', {
+    source,
+    signature: classification.signature,
+    code: classification.code,
+    causeCode: classification.causeCode,
+    message: classification.message,
+    matchedBy: classification.matchedBy,
+    stackHint: classification.stackHint,
+    consecutiveFailures: nextFailures,
+    delayMs,
+    nextRetryAt,
+  })
+}
+
+function handleRecoverableGlobalNetworkError(
+  error: unknown,
+  source: GlobalRecoverySource,
+  classification: RecoverableGlobalNetworkErrorClassification,
+): void {
+  const agentState = agentService?.getState()
+  audit('global_network_error_classified', {
+    source,
+    code: classification.code,
+    causeCode: classification.causeCode,
+    message: classification.message,
+    matchedBy: classification.matchedBy,
+    fatalDomainDeniedBy: classification.fatalDomainDeniedBy,
+    stackHint: classification.stackHint,
+    recoverable: classification.recoverable,
+    controlPlaneStatus: controlPlaneConnectivityState.status,
+    agentEnabled: Boolean(agentState?.enabled),
+    agentConnected: Boolean(agentState?.connected),
+  })
+  if (getDesktopAuthState().authenticated) {
+    markControlPlaneGlobalNetworkDegraded(classification)
+  }
+  if (agentState?.enabled) {
+    agentService?.handleGlobalRecoverableNetworkError({
+      message: classification.message,
+      code: classification.code || classification.causeCode,
+    })
+  }
+  emitConfigChanged()
+  audit('global_network_error_recovered', {
+    source,
+    code: classification.code,
+    causeCode: classification.causeCode,
+    message: classification.message,
+    matchedBy: classification.matchedBy,
+    stackHint: classification.stackHint,
+    controlPlaneStatus: controlPlaneConnectivityState.status,
+    agentEnabled: Boolean(agentState?.enabled),
+    agentConnected: Boolean(agentState?.connected),
+    consecutiveFailures: getDesktopAuthState().authenticated
+      ? controlPlaneConnectivityState.consecutiveFailures
+      : (agentService?.getState().consecutiveFailures ?? 0),
+    rawError:
+      error instanceof Error
+        ? error.stack || error.message
+        : String(error),
+  })
+  if (getDesktopAuthState().authenticated) {
+    scheduleGlobalNetworkRecovery(classification, source)
+  }
 }
 
 function upsertControlPlaneSyncTask(
@@ -3809,6 +4098,7 @@ function clearDesktopAuth(): DesktopAuthState {
   sessionAuthToken = ''
   sessionAuthUser = null
   lastUserConfigSyncVersion = 0
+  resetGlobalNetworkRecoveryState()
   controlPlaneConnectivityState = {
     status: 'online',
     lastError: '',
@@ -5241,6 +5531,8 @@ function getDesktopRuntimeInfo(): DesktopRuntimeInfo {
     controlPlaneStatus: controlPlaneConnectivityState.status,
     controlPlaneLastError: controlPlaneConnectivityState.lastError,
     pendingSyncCount: getControlPlanePendingSyncCount(),
+    controlPlaneRecoveryState,
+    controlPlaneNextRetryAt: controlPlaneNextRetryAt || undefined,
   }
 }
 
@@ -5942,6 +6234,8 @@ function getRuntimeHostInfo() {
     controlPlanePendingSyncCount: getControlPlanePendingSyncCount(),
     controlPlaneConsecutiveFailures: controlPlaneConnectivityState.consecutiveFailures,
     controlPlaneLastSuccessAt: controlPlaneConnectivityState.lastSuccessAt,
+    controlPlaneRecoveryState,
+    controlPlaneNextRetryAt: controlPlaneNextRetryAt || undefined,
   }
 }
 
@@ -7918,20 +8212,21 @@ function initAgentService() {
         state.lastRecoverableFailureAt !== lastLoggedAgentRecoverableFailureAt
       ) {
         lastLoggedAgentRecoverableFailureAt = state.lastRecoverableFailureAt
-        audit('agent_network_recoverable_error', {
+        const isGlobalNetworkFailure = state.lastRecoverableFailureSource === 'global-network'
+        audit(isGlobalNetworkFailure ? 'agent_global_network_error_recovered' : 'agent_network_recoverable_error', {
           agentId: state.agentId,
           err: state.lastError,
           code: state.lastErrorCode || '',
           consecutiveFailures: state.consecutiveFailures,
           at: state.lastRecoverableFailureAt,
         })
-        traceStartup('agent_network_recoverable_error', {
+        traceStartup(isGlobalNetworkFailure ? 'agent_global_network_error_recovered' : 'agent_network_recoverable_error', {
           agentId: state.agentId,
           err: state.lastError,
           code: state.lastErrorCode || '',
           consecutiveFailures: state.consecutiveFailures,
         })
-        audit('agent_network_reconnect_scheduled', {
+        audit(isGlobalNetworkFailure ? 'agent_global_network_reconnect_scheduled' : 'agent_network_reconnect_scheduled', {
           agentId: state.agentId,
           err: state.lastError,
           code: state.lastErrorCode || '',

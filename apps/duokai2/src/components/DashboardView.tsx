@@ -74,6 +74,7 @@ export function DashboardView({
           queued: '\u6392\u961f',
           offline: '\u79bb\u7ebf',
           degraded: '\u964d\u7ea7',
+          reconnecting: '\u91cd\u8fde\u4e2d',
           pendingSync: '\u5f85\u8865\u4f20',
           failed: '\u5931\u8d25',
           ready: '\u6b63\u5e38',
@@ -94,6 +95,7 @@ export function DashboardView({
           queued: 'Queued',
           offline: 'Offline',
           degraded: 'Degraded',
+          reconnecting: 'Reconnecting',
           pendingSync: 'Pending sync',
           failed: 'Failed',
           ready: 'Ready',
@@ -160,18 +162,41 @@ export function DashboardView({
         : copy.ready
 
   const controlPlaneTone =
-    runtimeHostInfo?.controlPlaneStatus === 'offline'
+    runtimeHostInfo?.controlPlaneRecoveryState === 'scheduled' ||
+    runtimeHostInfo?.controlPlaneRecoveryState === 'reconnecting'
+      ? 'warning'
+      : runtimeHostInfo?.controlPlaneStatus === 'offline'
       ? 'danger'
       : runtimeHostInfo?.controlPlaneStatus === 'degraded'
         ? 'warning'
         : 'success'
 
   const controlPlaneLabel =
-    runtimeHostInfo?.controlPlaneStatus === 'offline'
+    runtimeHostInfo?.controlPlaneRecoveryState === 'scheduled' ||
+    runtimeHostInfo?.controlPlaneRecoveryState === 'reconnecting'
+      ? copy.reconnecting
+      : runtimeHostInfo?.controlPlaneStatus === 'offline'
       ? copy.offline
       : runtimeHostInfo?.controlPlaneStatus === 'degraded'
         ? copy.degraded
         : copy.ready
+
+  const controlPlaneDetail =
+    runtimeHostInfo?.controlPlaneStatus && runtimeHostInfo.controlPlaneStatus !== 'online'
+      ? `${runtimeHostInfo.controlPlaneLastError || runtimeHostInfo.reason} / ${
+          runtimeHostInfo.controlPlanePendingSyncCount ?? 0
+        } ${copy.pendingSync}${
+          runtimeHostInfo.controlPlaneNextRetryAt
+            ? ` / ${copy.reconnecting} ${formatDate(runtimeHostInfo.controlPlaneNextRetryAt)}`
+            : ''
+        }`
+      : runtimeHostInfo?.networkDiagnostics
+      ? `${runtimeHostInfo.networkDiagnostics.message || runtimeHostInfo.reason} / ${
+          runtimeHostInfo.networkDiagnostics.egressIp || copy.unresolved
+        } / ${runtimeHostInfo.networkDiagnostics.country || copy.unknownCountry} / ${
+          runtimeHostInfo.networkDiagnostics.timezone || copy.timezonePending
+        }`
+      : runtimeHostInfo?.reason || copy.hostNetworkHint
 
   return (
     <section className="space-y-6">
@@ -219,19 +244,7 @@ export function DashboardView({
               </div>
             </div>
             <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">
-              {runtimeHostInfo?.controlPlaneStatus && runtimeHostInfo.controlPlaneStatus !== 'online'
-                ? `${runtimeHostInfo.controlPlaneLastError || runtimeHostInfo.reason} / ${
-                    runtimeHostInfo.controlPlanePendingSyncCount ?? 0
-                  } ${copy.pendingSync}`
-                : runtimeHostInfo?.networkDiagnostics
-                ? `${runtimeHostInfo.networkDiagnostics.message || runtimeHostInfo.reason} / ${
-                    runtimeHostInfo.networkDiagnostics.egressIp || copy.unresolved
-                  } / ${
-                    runtimeHostInfo.networkDiagnostics.country || copy.unknownCountry
-                  } / ${
-                    runtimeHostInfo.networkDiagnostics.timezone || copy.timezonePending
-                  }`
-                : runtimeHostInfo?.reason || copy.hostNetworkHint}
+              {controlPlaneDetail}
             </div>
             {runtimeHostInfo?.networkDiagnostics?.checkedAt ? (
               <div className="text-xs text-slate-400">

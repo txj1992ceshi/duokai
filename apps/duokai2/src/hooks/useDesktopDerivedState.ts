@@ -112,9 +112,20 @@ export function useDesktopDerivedState({
           ? `，最近成功：${formatLocalizedDate(runtimeHostInfo.controlPlaneLastSuccessAt, locale, t.common.never)}`
           : `. Last success: ${formatLocalizedDate(runtimeHostInfo.controlPlaneLastSuccessAt, locale, t.common.never)}`
         : ''
+      const retryInfo = runtimeHostInfo.controlPlaneNextRetryAt
+        ? isZh
+          ? `，下次重试：${formatLocalizedDate(runtimeHostInfo.controlPlaneNextRetryAt, locale, t.common.never)}`
+          : `. Next retry: ${formatLocalizedDate(runtimeHostInfo.controlPlaneNextRetryAt, locale, t.common.never)}`
+        : ''
+      const failureInfo =
+        (runtimeHostInfo.controlPlaneConsecutiveFailures ?? 0) > 0
+          ? isZh
+            ? `，连续失败：${runtimeHostInfo.controlPlaneConsecutiveFailures}`
+            : `. Consecutive failures: ${runtimeHostInfo.controlPlaneConsecutiveFailures}`
+          : ''
       return isZh
-        ? `当前为离线只读模式：配置写操作已暂停，等待与控制面恢复连接${errorDetail}${pendingInfo}${recoveredAt}`
-        : `Offline read-only mode: config writes are paused until control plane reconnects${errorDetail}${pendingInfo}${recoveredAt}`
+        ? `当前为离线只读模式：配置写操作已暂停，等待与控制面恢复连接${errorDetail}${pendingInfo}${recoveredAt}${retryInfo}${failureInfo}`
+        : `Offline read-only mode: config writes are paused until control plane reconnects${errorDetail}${pendingInfo}${recoveredAt}${retryInfo}${failureInfo}`
     }
     if (!agentState?.enabled || agentState.writable) {
       return ''

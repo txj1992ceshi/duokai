@@ -77,6 +77,7 @@ export interface DesktopApi {
       lastError: string
       lastErrorCode?: string
       lastErrorKind?: 'network' | 'auth' | 'task' | 'unknown'
+      lastRecoverableFailureSource?: 'request' | 'global-network' | 'unknown'
       lastRecoverableFailureAt?: string | null
       consecutiveFailures: number
       lastTaskId: string | null

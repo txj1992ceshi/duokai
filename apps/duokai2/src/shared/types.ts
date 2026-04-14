@@ -666,6 +666,8 @@ export interface RuntimeHostInfo {
   controlPlanePendingSyncCount?: number
   controlPlaneConsecutiveFailures?: number
   controlPlaneLastSuccessAt?: string
+  controlPlaneRecoveryState?: 'idle' | 'scheduled' | 'reconnecting'
+  controlPlaneNextRetryAt?: string
 }
 
 export interface ProxyTestResult {
@@ -1042,6 +1044,8 @@ export interface DesktopRuntimeInfo {
   controlPlaneStatus?: ControlPlaneStatus
   controlPlaneLastError?: string
   pendingSyncCount?: number
+  controlPlaneRecoveryState?: 'idle' | 'scheduled' | 'reconnecting'
+  controlPlaneNextRetryAt?: string
 }
 
 export interface DesktopWindowFrameMetrics {
