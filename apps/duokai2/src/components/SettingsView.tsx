@@ -85,9 +85,6 @@ export function SettingsView({
           <div className="space-y-4 p-5">
             <div>
               <h2 className="m-0 text-xl font-semibold text-slate-950">{t.settings.title}</h2>
-              <p className="mt-1 mb-0 text-sm text-slate-500">
-                {desktopT('settings.profileDescription')}
-              </p>
             </div>
             <div className="grid gap-4 md:grid-cols-2">
               <div className="rounded-2xl border border-slate-200 bg-[var(--duokai-surface)] p-1">
@@ -232,9 +229,6 @@ export function SettingsView({
             <div className="space-y-4 p-5">
               <div>
                 <div className="text-sm font-medium text-slate-500">{desktopT('settings.runtimeLimitsTitle')}</div>
-                <div className="mt-1 text-sm text-slate-500">
-                  {desktopT('settings.runtimeLimitsDescription')}
-                </div>
               </div>
               <div className="grid gap-3 md:grid-cols-3">
                 <Input
@@ -284,9 +278,6 @@ export function SettingsView({
             <div className="space-y-4 p-5">
               <div>
                 <div className="text-sm font-medium text-slate-500">{t.settings.dataTools}</div>
-                <div className="mt-1 text-sm text-slate-500">
-                  {desktopT('settings.dataToolsDescription')}
-                </div>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <Button variant="secondary" onClick={onExportBundle}>
@@ -319,9 +310,6 @@ export function SettingsView({
           <div className="space-y-5 p-5">
             <div>
               <div className="text-sm font-medium text-slate-500">{t.settings.cloudPhoneProviders}</div>
-              <div className="mt-1 text-sm text-slate-500">
-                {desktopT('settings.providersDescription')}
-              </div>
             </div>
             <Select
               value={defaultCloudPhoneProvider}

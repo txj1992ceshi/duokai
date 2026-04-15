@@ -331,8 +331,8 @@ export const dictionaries: Record<LocaleCode, Dictionary> = {
       importBundle: '正在导入配置包...',
     },
     dashboard: {
-      title: '浏览器运营桌面端',
-      subtitle: '本地环境隔离、模板复用、批量操作与运行状态管理。',
+      title: 'Duokai运营桌面端',
+      subtitle: '',
       profiles: '环境',
       proxies: '代理',
       logs: '日志',
@@ -592,8 +592,8 @@ export const dictionaries: Record<LocaleCode, Dictionary> = {
       importBundle: 'Importing bundle...',
     },
     dashboard: {
-      title: 'Browser operations desktop',
-      subtitle: 'Local profile isolation, templates, batch actions, and runtime visibility.',
+      title: 'Duokai Operations Desktop',
+      subtitle: '',
       profiles: 'Profiles',
       proxies: 'Proxies',
       logs: 'Logs',

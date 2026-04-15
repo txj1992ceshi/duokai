@@ -788,6 +788,7 @@ function App() {
       <MainLayout
         title={pageHeading.title}
         subtitle={pageHeading.subtitle}
+        titleDisplay={pageHeading.titleDisplay}
         shellTitle={shellCopy.title}
         shellSubtitle={shellCopy.subtitle}
         breadcrumbItems={breadcrumbItems}

@@ -20,7 +20,7 @@ const resources = {
         title: 'DuoKai Pro',
         subtitle: '桌面控制中心',
         logout: '退出登录',
-        environmentTabsHint: '一级导航聚焦模块，顶部切换环境中心里的子视图。',
+        environmentTabsHint: '',
         releasePage: '发布页',
         updateTitle: '桌面端更新 {{version}}',
       },
@@ -49,31 +49,31 @@ const resources = {
       },
       headings: {
         dashboard: {
-          title: '浏览器运营桌面端',
-          subtitle: '本地环境隔离、模板复用、批量操作与运行状态管理。',
+          title: 'Duokai运营桌面端',
+          subtitle: '',
         },
         environmentCenter: {
           title: '环境中心',
-          subtitle: '统一管理环境、模板、云手机与批量分组操作。',
+          subtitle: '',
         },
         groupManagement: {
           title: '分组管理',
-          subtitle: '以分组维度查看环境、执行批量操作并保持列表上下文。',
+          subtitle: '',
         },
         proxies: {
           title: '代理管理',
-          subtitle: '管理可复用代理与健康检查。',
+          subtitle: '',
         },
         logs: {
           title: '运行与审计日志',
-          subtitle: '查看近期运行日志与事件轨迹。',
+          subtitle: '',
           description: '日志视图改成更适合桌面端长时间浏览的扁平列表。',
           emptyTitle: '还没有运行日志',
           backToCenter: '回到环境中心',
         },
         settings: {
           title: '应用设置',
-          subtitle: '管理桌面端运行时与默认策略。',
+          subtitle: '',
         },
         cloudPhones: {
           title: '云手机环境',
@@ -81,7 +81,7 @@ const resources = {
         },
         account: {
           title: '个人中心',
-          subtitle: '账号资料与桌面端绑定信息。后续可以在这里继续扩展更多个人设置。',
+          subtitle: '',
         },
       },
       bridge: {
@@ -231,7 +231,7 @@ const resources = {
         title: 'DuoKai Pro',
         subtitle: 'Desktop Control Center',
         logout: 'Log out',
-        environmentTabsHint: 'Primary nav picks a module, while these tabs switch environment-center subviews.',
+        environmentTabsHint: '',
         releasePage: 'Release page',
         updateTitle: 'Desktop update {{version}}',
       },
@@ -260,31 +260,31 @@ const resources = {
       },
       headings: {
         dashboard: {
-          title: 'Browser operations desktop',
-          subtitle: 'Local profile isolation, templates, batch actions, and runtime visibility.',
+          title: 'Duokai Operations Desktop',
+          subtitle: '',
         },
         environmentCenter: {
           title: 'Environment center',
-          subtitle: 'Manage environments, templates, cloud phones, and grouped operations in one place.',
+          subtitle: '',
         },
         groupManagement: {
           title: 'Group management',
-          subtitle: 'Review environments by group, run bulk actions, and keep the list context in place.',
+          subtitle: '',
         },
         proxies: {
           title: 'Proxies',
-          subtitle: 'Manage reusable proxies and health checks.',
+          subtitle: '',
         },
         logs: {
           title: 'Runtime and audit logs',
-          subtitle: 'Review recent runtime logs and event traces.',
+          subtitle: '',
           description: 'Logs now use a flatter desktop-friendly layout for longer scanning sessions.',
           emptyTitle: 'No runtime logs yet',
           backToCenter: 'Back to center',
         },
         settings: {
           title: 'Settings',
-          subtitle: 'Configure desktop runtime and default policies.',
+          subtitle: '',
         },
         cloudPhones: {
           title: 'Cloud phone environments',
@@ -292,7 +292,7 @@ const resources = {
         },
         account: {
           title: 'Personal Center',
-          subtitle: 'Account profile and desktop bindings. More personal settings can be added here later.',
+          subtitle: '',
         },
       },
       bridge: {

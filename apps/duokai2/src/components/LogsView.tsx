@@ -45,9 +45,6 @@ export function LogsView({
         <div className="flex flex-wrap items-center justify-between gap-4 p-5">
           <div>
             <h2 className="m-0 text-xl font-semibold text-slate-950">{t.logs.title}</h2>
-            <p className="mt-1 mb-0 text-sm text-slate-500">
-              {desktopT('headings.logs.description')}
-            </p>
           </div>
           <Button variant="secondary" onClick={onClear}>
             {t.logs.clear}

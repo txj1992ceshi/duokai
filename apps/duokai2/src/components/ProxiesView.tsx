@@ -96,9 +96,6 @@ export function ProxiesView({
         <div className="flex flex-wrap items-center justify-between gap-4 p-5">
           <div>
             <h2 className="m-0 text-xl font-semibold text-slate-950">{t.proxies.title}</h2>
-            <p className="mt-1 mb-0 text-sm text-slate-500">
-              {desktopT('proxies.description')}
-            </p>
           </div>
           <Button variant="primary" onClick={onOpenCreate}>
             {proxyPanelOpen && proxyPanelMode === 'create'

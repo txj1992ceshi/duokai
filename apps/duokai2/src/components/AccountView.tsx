@@ -50,11 +50,13 @@ export function AccountView({
                 title={desktopT('account.profile.uploadImage')}
               >
                 {currentAuthUser?.avatarUrl ? (
-                  <img
-                    className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.03]"
-                    src={currentAuthUser.avatarUrl}
-                    alt="avatar"
-                  />
+                  <div className="absolute inset-0 overflow-hidden rounded-[24px]">
+                    <img
+                      className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.03]"
+                      src={currentAuthUser.avatarUrl}
+                      alt="avatar"
+                    />
+                  </div>
                 ) : (
                   <div className="flex h-full w-full items-center justify-center text-2xl font-semibold text-slate-500 dark:text-slate-300">
                     {(currentAuthUser?.name || currentAuthUser?.username || currentAuthUser?.email || 'U')
@@ -141,9 +143,6 @@ export function AccountView({
           <div className="space-y-5 p-5">
             <div>
               <div className="text-sm font-medium text-slate-500">{desktopT('account.profile.title')}</div>
-              <div className="mt-1 text-sm text-slate-500">
-                {desktopT('account.profile.description')}
-              </div>
             </div>
             <div className="grid gap-4 md:grid-cols-2">
               <Input
@@ -189,9 +188,6 @@ export function AccountView({
           <div className="space-y-5 p-5">
             <div>
               <div className="text-sm font-medium text-slate-500">{desktopT('account.password.title')}</div>
-              <div className="mt-1 text-sm text-slate-500">
-                {desktopT('account.password.description')}
-              </div>
             </div>
             <Input
               type="password"

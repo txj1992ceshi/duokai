@@ -109,9 +109,11 @@ export function DesktopWorkspaceChrome({
                 </Button>
               ))}
             </div>
-            <div className="text-xs text-slate-500">
-              {desktopT('shell.environmentTabsHint')}
-            </div>
+            {desktopT('shell.environmentTabsHint') ? (
+              <div className="text-xs text-slate-500">
+                {desktopT('shell.environmentTabsHint')}
+              </div>
+            ) : null}
           </div>
         </Card>
       ) : null}

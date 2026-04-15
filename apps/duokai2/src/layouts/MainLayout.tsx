@@ -82,6 +82,7 @@ function SidebarButton({
 export function MainLayout({
   title,
   subtitle,
+  titleDisplay = 'default',
   shellTitle,
   shellSubtitle,
   breadcrumbItems,
@@ -100,6 +101,7 @@ export function MainLayout({
 }: {
   title: string
   subtitle: string
+  titleDisplay?: 'default' | 'gradient'
   shellTitle: string
   shellSubtitle: string
   breadcrumbItems: Array<{ label: string; current?: boolean }>
@@ -218,7 +220,7 @@ export function MainLayout({
         >
           <div className="min-w-0 space-y-1">
             <Breadcrumb items={breadcrumbItems} />
-            <div className="text-xs text-slate-500">{subtitle}</div>
+            {subtitle ? <div className="text-xs text-slate-500">{subtitle}</div> : null}
           </div>
           <div className="flex-1" />
           <div className="flex items-center gap-3" style={noDragRegionStyle}>
@@ -234,8 +236,16 @@ export function MainLayout({
           style={mainStyle}
         >
           <div className="mb-6">
-            <h1 className="m-0 text-3xl font-semibold tracking-tight text-slate-950">{title}</h1>
-            <p className="mt-2 mb-0 max-w-3xl text-sm text-slate-500">{subtitle}</p>
+            <h1
+              className={`m-0 text-3xl font-semibold tracking-tight ${
+                titleDisplay === 'gradient'
+                  ? 'bg-gradient-to-r from-blue-400 via-cyan-300 to-violet-400 bg-clip-text text-transparent'
+                  : 'text-slate-950'
+              }`}
+            >
+              {title}
+            </h1>
+            {subtitle ? <p className="mt-2 mb-0 max-w-3xl text-sm text-slate-500">{subtitle}</p> : null}
           </div>
           {children}
         </main>

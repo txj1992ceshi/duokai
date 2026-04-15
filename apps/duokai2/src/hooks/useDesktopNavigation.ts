@@ -54,40 +54,48 @@ export function useDesktopNavigation({
       ? {
           title: desktopT('headings.groupManagement.title'),
           subtitle: desktopT('headings.groupManagement.subtitle'),
+          titleDisplay: 'default' as const,
         }
       : view === 'profiles'
         ? {
             title: desktopT('headings.environmentCenter.title'),
             subtitle: desktopT('headings.environmentCenter.subtitle'),
+            titleDisplay: 'default' as const,
           }
         : view === 'cloudPhones'
           ? {
               title: desktopT('headings.cloudPhones.title'),
               subtitle: desktopT('headings.cloudPhones.subtitle'),
+              titleDisplay: 'default' as const,
             }
           : view === 'proxies'
             ? {
                 title: desktopT('headings.proxies.title'),
                 subtitle: desktopT('headings.proxies.subtitle'),
+                titleDisplay: 'default' as const,
               }
             : view === 'logs'
               ? {
                   title: desktopT('headings.logs.title'),
                   subtitle: desktopT('headings.logs.subtitle'),
+                  titleDisplay: 'default' as const,
                 }
               : view === 'settings'
                 ? {
                     title: desktopT('headings.settings.title'),
                     subtitle: desktopT('headings.settings.subtitle'),
+                    titleDisplay: 'default' as const,
                   }
                 : view === 'account'
                   ? {
                       title: desktopT('headings.account.title'),
                       subtitle: desktopT('headings.account.subtitle'),
+                      titleDisplay: 'default' as const,
                     }
                   : {
                       title: desktopT('headings.dashboard.title'),
                       subtitle: desktopT('headings.dashboard.subtitle'),
+                      titleDisplay: 'gradient' as const,
                     }
 
   const breadcrumbItems = [

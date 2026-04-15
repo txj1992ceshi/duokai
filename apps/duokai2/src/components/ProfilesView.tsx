@@ -209,15 +209,11 @@ export function ProfilesView({
   const isZh = locale === 'zh-CN'
   const copy = isZh
     ? {
-        workspaceDescription: '扁平列表、批量工具栏和右侧 Drawer 让高频操作更稳定。',
         drawerDescription: '从右侧抽屉编辑环境配置，不打断列表上下文。',
-        templatesDescription: '把稳定的指纹和代理组合固化成模板，后续建环境会更快。',
         emptyTemplatesTitle: '还没有模板',
         emptyTemplatesDescription:
           '先把常用平台、代理与地区配置沉淀为模板，后续新建环境会快很多。',
         templateWorkspaceTitle: '模板工作台',
-        templateWorkspaceDescription:
-          '模板更适合沉淀“平台 + 地区 + 代理 + 指纹策略”的组合。编辑时仍然保留原有校验和字段。',
         templatesWithProxy: '带代理模板',
         operationTemplates: '运营用途模板',
         registerTemplates: '注册用途模板',
@@ -232,17 +228,11 @@ export function ProfilesView({
         close: '关闭',
       }
     : {
-        workspaceDescription:
-          'Flat rows, a compact batch toolbar, and a right-side drawer make high-frequency work calmer.',
         drawerDescription: 'Edit the profile in a right-side drawer without losing list context.',
-        templatesDescription:
-          'Capture stable fingerprint and proxy combinations as reusable templates.',
         emptyTemplatesTitle: 'No templates yet',
         emptyTemplatesDescription:
           'Save your frequent platform, proxy, and locale combinations as templates to speed up profile creation.',
         templateWorkspaceTitle: 'Template workspace',
-        templateWorkspaceDescription:
-          'Templates work best for preserving platform, locale, proxy, and fingerprint strategies together. Existing validation and fields stay intact.',
         templatesWithProxy: 'Templates with proxy',
         operationTemplates: 'Operation templates',
         registerTemplates: 'Register templates',
@@ -265,7 +255,6 @@ export function ProfilesView({
         <div className="flex flex-wrap items-center justify-between gap-4 p-5">
           <div>
             <h2 className="m-0 text-xl font-semibold text-slate-950">{t.profiles.title}</h2>
-            <p className="mt-1 mb-0 text-sm text-slate-500">{copy.workspaceDescription}</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button variant={resourceMode === 'profiles' ? 'primary' : 'ghost'} onClick={onShowProfiles}>
@@ -402,7 +391,6 @@ export function ProfilesView({
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <h2 className="m-0 text-lg font-semibold text-slate-950">{t.templates.title}</h2>
-                    <p className="mt-1 mb-0 text-sm text-slate-500">{copy.templatesDescription}</p>
                   </div>
                   <Button variant="primary" onClick={onOpenCreateTemplate}>
                     {t.templates.newTemplate}
@@ -477,9 +465,6 @@ export function ProfilesView({
                   <div className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">
                     {templates.length}
                   </div>
-                </div>
-                <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">
-                  {copy.templateWorkspaceDescription}
                 </div>
                 <div className="space-y-3">
                   <div className="flex items-center justify-between rounded-2xl border border-slate-200 px-4 py-3">
