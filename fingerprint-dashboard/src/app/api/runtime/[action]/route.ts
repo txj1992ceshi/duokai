@@ -8,20 +8,11 @@ import { ProfileStorageStateModel } from '@/models/ProfileStorageState';
 
 export const runtime = 'nodejs';
 
-function resolveRuntimeUrl(raw: string): string {
-  const value = String(raw || '').trim();
-  if (!value || value === 'http://127.0.0.1:3001') {
-    return 'http://127.0.0.1:3101';
-  }
-  return value;
-}
-
 /**
  * POST /api/runtime/[action]
  * 
- * Proxies requests to the local Stealth Engine Runtime Server.
- * The runtime server runs at http://127.0.0.1:3101 (or RUNTIME_URL env).
- * 
+ * Prepares authorized runtime payloads for a local runtime client.
+ *
  * Supported actions: start | stop | action
  */
 export async function POST(
@@ -34,10 +25,6 @@ export async function POST(
     const authUser = requireUser(req);
     await connectMongo();
     const settingsDoc = await SettingModel.findOne({ userId: authUser.userId }).lean();
-    const runtimeUrl = resolveRuntimeUrl(
-      process.env.RUNTIME_URL ||
-      String((settingsDoc as Record<string, unknown> | null)?.runtimeUrl || '')
-    );
     const apiKey =
       process.env.RUNTIME_API_KEY ||
       String((settingsDoc as Record<string, unknown> | null)?.runtimeApiKey || '') ||
@@ -45,14 +32,7 @@ export async function POST(
 
     const payload = (await req.json().catch(() => ({}))) as Record<string, unknown>;
 
-    // Map action → runtime server endpoint path
-    const endpointMap: Record<string, string> = {
-      start:  '/session/start',
-      stop:   '/session/stop',
-      action: '/session/action',
-    };
-    const endpoint = endpointMap[action];
-    if (!endpoint) {
+    if (!['start', 'stop', 'action'].includes(action)) {
       return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });
     }
 
@@ -106,28 +86,14 @@ export async function POST(
         fileRef: syncedStorageState?.fileRef || '',
       });
     }
-
-    const target = runtimeUrl.replace(/\/$/, '') + endpoint;
-
-    const r = await fetch(target, {
-      method: 'POST',
-      headers: {
-        'Content-Type':  'application/json',
-        'x-runtime-key': apiKey,
-        ...(req.headers.get('authorization')
-          ? { authorization: req.headers.get('authorization') as string }
-          : {}),
-      },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(action === 'start' ? 60000 : 10000),
+    return NextResponse.json({
+      success: true,
+      action,
+      executionTarget: 'local-runtime',
+      runtimeApiKey: apiKey,
+      profileId: String(ownedProfile._id),
+      preparedPayload: payload,
     });
-
-    let json: unknown = {};
-    try { json = await r.json(); } catch { /* non-JSON response */ }
-
-    // On successful start/stop, always return the runtime's response directly
-    // so the frontend can pick up sessionId
-    return NextResponse.json(json, { status: r.status });
 
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Request failed';
@@ -135,12 +101,14 @@ export async function POST(
       return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
     }
 
-    const isTimeout = error instanceof Error && error.name === 'TimeoutError';
-    const runtimeMessage = isTimeout
-      ? 'Runtime server 响应超时 — 请确认 stealth-engine/server.js 已启动'
-      : (error instanceof Error ? error.message : '无法连接到 Runtime Server');
-
-    console.error(`[API /runtime/${action}]`, runtimeMessage);
-    return NextResponse.json({ error: runtimeMessage }, { status: 503 });
+    console.error(`[API /runtime/${action}]`, message);
+    return NextResponse.json(
+      {
+        success: false,
+        stage: 'cloud_prepare',
+        error: error instanceof Error ? error.message : 'Failed to prepare runtime payload',
+      },
+      { status: 503 },
+    );
   }
 }

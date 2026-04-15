@@ -89,7 +89,7 @@ process.stderr?.on?.('error', (err) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // In-memory session store: sessionId → SessionEntry
 // ─────────────────────────────────────────────────────────────────────────────
-/** @type {Map<string, { context: import('playwright').BrowserContext, page: import('playwright').Page, profileId: string, startedAt: number, currentUrl: string, verification?: any, dashboardAuth?: string }>} */
+/** @type {Map<string, { context: import('playwright').BrowserContext, page: import('playwright').Page, profileId: string, startedAt: number, currentUrl: string, verification?: any, dashboardAuth?: string, dashboardBaseUrl?: string }>} */
 const sessions = new Map();
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1319,6 +1319,7 @@ async function handleStart(body) {
     fingerprint: { ...fingerprint, userAgent: fingerprint.userAgent.slice(0, 80) },
     verification,
     dashboardAuth: typeof body.__dashboardAuth === 'string' ? body.__dashboardAuth : '',
+    dashboardBaseUrl: typeof body.__dashboardBaseUrl === 'string' ? body.__dashboardBaseUrl : '',
   });
 
   // Persist sessionId back to db (如原逻辑)
@@ -1383,7 +1384,7 @@ async function handleStop(body) {
 
   // Best-effort sync back to dashboard Mongo (non-blocking for stop flow)
   if (latestState && entry.dashboardAuth) {
-    const dashboardBaseUrl = (process.env.DASHBOARD_URL || 'http://127.0.0.1:3000').replace(/\/$/, '');
+    const dashboardBaseUrl = String(entry.dashboardBaseUrl || process.env.DASHBOARD_URL || 'http://127.0.0.1:3000').replace(/\/$/, '');
     try {
       const syncResp = await fetch(`${dashboardBaseUrl}/api/profile-storage-state/${entry.profileId}`, {
         method: 'PUT',

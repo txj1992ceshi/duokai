@@ -58,10 +58,6 @@ import {
   getHostEnvironmentLabel,
 } from '@/lib/dashboard-formatters'
 
-type RuntimeSessionSummary = {
-  profileId?: string;
-};
-
 type AdminProxyUsageAsset = ProxyAssetSummary & {
   affectedProfiles?: Array<{ profileId: string; name: string }>;
 };
@@ -624,48 +620,20 @@ export default function Home() {
   useEffect(() => {
     const checkRuntime = async () => {
       try {
-        const res = await apiFetch('/api/runtime/status');
-        if (res.ok) {
-          const data = await res.json();
-          runtimeFailureCountRef.current = 0;
-          setRuntimeOnline(data.online === true);
-          
-          if (data.online && data.sessions) {
-            // Synchronize profile statuses with actual runtime sessions
-            const activeProfileIds = (data.sessions as RuntimeSessionSummary[]).map((s) => s.profileId);
-            setProfiles(prev => prev.map(p => {
-              const isActuallyRunning = activeProfileIds.includes(p.id);
-              if (isActuallyRunning && p.status !== 'Running') {
-                return { ...p, status: 'Running' };
-              }
-              if (!isActuallyRunning && p.status === 'Running') {
-                return { ...p, status: 'Ready' };
-              }
-              return p;
-            }));
-          } else {
-            // Runtime offline or no sessions: ensure none are 'Running'
-            setProfiles(prev => prev.map(p => p.status === 'Running' ? { ...p, status: 'Ready' } : p));
-          }
-        } else {
-          runtimeFailureCountRef.current += 1;
-          if (runtimeFailureCountRef.current >= 2) {
-            setRuntimeOnline(false);
-          }
-          setProfiles(prev => prev.map(p => p.status === 'Running' ? { ...p, status: 'Ready' } : p));
-        }
+        const data = await runtime.checkRuntimeHealth(settings.runtimeApiKey);
+        runtimeFailureCountRef.current = 0;
+        setRuntimeOnline(data.ok === true);
       } catch {
         runtimeFailureCountRef.current += 1;
         if (runtimeFailureCountRef.current >= 2) {
           setRuntimeOnline(false);
-          setProfiles(prev => prev.map(p => p.status === 'Running' ? { ...p, status: 'Ready' } : p));
         }
       }
     };
     checkRuntime();
     const interval = setInterval(checkRuntime, 5000);
     return () => clearInterval(interval);
-  }, [profiles.length])
+  }, [settings.runtimeApiKey])
 
   const handleCreateProfile = async (isMobile = false, targetGroupId?: string) => {
     try {
@@ -688,11 +656,14 @@ export default function Home() {
       // Find if it has a session and stop it
       const p = profiles.find(x => x.id === id);
       if (p?.runtimeSessionId) {
-        await runtime.stopSession(p.runtimeSessionId).catch(() => {});
+        await runtime.stopSession(p.runtimeSessionId);
       }
       const res = await apiFetch(`/api/profiles/${id}`, { method: 'DELETE' })
       if (res.ok) fetchProfiles()
-    } catch (err) { console.error('Failed to delete', err) }
+    } catch (err) {
+      console.error('Failed to delete', err)
+      alert('删除失败: ' + (err instanceof Error ? err.message : String(err)))
+    }
   }
 
   const isRunningProfile = useCallback((profile: Profile) => {
@@ -739,31 +710,38 @@ export default function Home() {
     setStartingProfileIds(prev => ({ ...prev, [p.id]: true }));
     try {
       if (runtimeOnline === false) {
-        const statusRes = await apiFetch('/api/runtime/status').catch(() => null);
-        const statusJson = statusRes?.ok ? await statusRes.json() : null;
-        if (!statusJson?.online) {
+        try {
+          const runtimeHealth = await runtime.checkRuntimeHealth(settings.runtimeApiKey);
+          if (!runtimeHealth?.ok) {
+            throw new Error('Runtime Server 未运行');
+          }
+          setRuntimeOnline(true);
+          runtimeFailureCountRef.current = 0;
+        } catch {
           alert('⚠️ Runtime Server 未运行！\n\n请先启动：\n  node stealth-engine/server.js\n\n或使用「日常启动面板」脚本一键启动。');
           return;
         }
-        setRuntimeOnline(true);
-        runtimeFailureCountRef.current = 0;
       }
-      const res = await runtime.startSession(p, undefined, { headless: false });
+      const res = await runtime.startSession(p, undefined, { headless: false }) as Record<string, unknown>;
       if (res.sessionId) {
         fetchProfiles();
-        if (res.startupNavigation?.ok === false) {
-          alert(`环境已就绪，但默认平台页打开失败。\n\n目标地址: ${res.startupNavigation.requestedUrl || p.startupUrl || '未指定'}\n错误: ${res.startupNavigation.error || '未知错误'}`);
+        const startupNavigation = res.startupNavigation as
+          | { ok?: boolean; requestedUrl?: string; error?: string }
+          | undefined;
+        if (startupNavigation?.ok === false) {
+          alert(`环境已就绪，但默认平台页打开失败。\n\n目标地址: ${startupNavigation.requestedUrl || p.startupUrl || '未指定'}\n错误: ${startupNavigation.error || '未知错误'}`);
         }
       }
     } catch (err: unknown) {
       const runtimeError = err as {
         error?: string;
         message?: string;
+        stage?: string;
         hostEnvironment?: HostEnvironment;
         verification?: ProxyVerificationRecord;
       };
       const msg = runtimeError?.verification?.status
-        ? `${getCheckStatusLabel(runtimeError.verification.status)}${runtimeError.verification.detail ? `\n${runtimeError.verification.detail}` : ''}${runtimeError.verification.effectiveProxyTransport ? `\n最终入口模式: ${getEntryTransportLabel(runtimeError.verification.effectiveProxyTransport)}` : ''}${runtimeError.hostEnvironment ? `\n宿主环境: ${getHostEnvironmentLabel(runtimeError.hostEnvironment)}` : ''}`
+        ? `${getCheckStatusLabel(runtimeError.verification.status)}${runtimeError.verification.detail ? `\n${runtimeError.verification.detail}` : ''}${runtimeError.verification.effectiveProxyTransport ? `\n最终入口模式: ${getEntryTransportLabel(runtimeError.verification.effectiveProxyTransport)}` : ''}${runtimeError.hostEnvironment ? `\n宿主环境: ${getHostEnvironmentLabel(runtimeError.hostEnvironment)}` : ''}${runtimeError.stage ? `\n失败阶段: ${runtimeError.stage}` : ''}`
         : (runtimeError?.error || runtimeError?.message || JSON.stringify(runtimeError));
       alert('启动失败: ' + msg);
     } finally {
@@ -807,13 +785,19 @@ export default function Home() {
     try {
       await runtime.stopSession(p.runtimeSessionId);
       fetchProfiles();
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Stop failed', err);
-      await apiFetch(`/api/profiles/${p.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ ...p, runtimeSessionId: '', status: 'Ready' })
-      });
-      fetchProfiles();
+      const runtimeError = err as { stage?: string; error?: string; message?: string };
+      if (runtimeError?.stage === 'cloud_sync') {
+        await apiFetch(`/api/profiles/${p.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ ...p, runtimeSessionId: '', status: 'Ready' })
+        });
+        fetchProfiles();
+        alert('本地环境已停止，但云端状态回写失败，已尝试补写。');
+        return;
+      }
+      alert('停止失败: ' + (runtimeError?.error || runtimeError?.message || JSON.stringify(runtimeError)));
     }
   }
 
@@ -942,21 +926,18 @@ export default function Home() {
     if (!proxy) { alert('请先填写代理类型、主机和端口'); return; }
     setProxyBrowserChecking(true); setProxyBrowserResult(null);
     try {
-      const res = await apiFetch('/api/proxy/browser-check', {
-        method: 'POST',
-        body: JSON.stringify({
-          proxy,
-          proxyType: editingProfile.proxyType,
-          proxyHost: editingProfile.proxyHost,
-          proxyPort: editingProfile.proxyPort,
-          proxyUsername: editingProfile.proxyUsername,
-          proxyPassword: editingProfile.proxyPassword,
-          expectedIp: editingProfile.expectedProxyIp,
-          expectedCountry: editingProfile.expectedProxyCountry,
-          expectedRegion: editingProfile.expectedProxyRegion,
-        })
-      });
-      const result = await res.json();
+      const result = await runtime.testBrowserProxy({
+        profileId: editingProfile.id,
+        proxy,
+        proxyType: editingProfile.proxyType,
+        proxyHost: editingProfile.proxyHost,
+        proxyPort: editingProfile.proxyPort,
+        proxyUsername: editingProfile.proxyUsername,
+        proxyPassword: editingProfile.proxyPassword,
+        expectedIp: editingProfile.expectedProxyIp,
+        expectedCountry: editingProfile.expectedProxyCountry,
+        expectedRegion: editingProfile.expectedProxyRegion,
+      }) as ProxyVerificationRecord;
       setProxyBrowserResult(result);
       if (result?.country || result?.region || result?.city) {
         setEditingProfile((current) => (
@@ -968,8 +949,13 @@ export default function Home() {
             : current
         ));
       }
-    } catch {
-      setProxyBrowserResult({ layer: 'environment', status: 'unknown', error: '真实浏览器测试失败' });
+    } catch (err) {
+      setProxyBrowserResult({
+        layer: 'environment',
+        status: 'unknown',
+        error: err instanceof Error ? err.message : '真实浏览器测试失败',
+        detail: err && typeof err === 'object' && 'stage' in err ? `失败阶段: ${String((err as { stage?: string }).stage || '')}` : undefined,
+      });
     } finally {
       setProxyBrowserChecking(false);
     }
