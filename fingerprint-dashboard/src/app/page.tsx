@@ -709,21 +709,10 @@ export default function Home() {
     }
     setStartingProfileIds(prev => ({ ...prev, [p.id]: true }));
     try {
-      if (runtimeOnline === false) {
-        try {
-          const runtimeHealth = await runtime.checkRuntimeHealth(settings.runtimeApiKey);
-          if (!runtimeHealth?.ok) {
-            throw new Error('Runtime Server 未运行');
-          }
-          setRuntimeOnline(true);
-          runtimeFailureCountRef.current = 0;
-        } catch {
-          alert('⚠️ Runtime Server 未运行！\n\n请先启动：\n  node stealth-engine/server.js\n\n或使用「日常启动面板」脚本一键启动。');
-          return;
-        }
-      }
       const res = await runtime.startSession(p, undefined, { headless: false }) as Record<string, unknown>;
       if (res.sessionId) {
+        setRuntimeOnline(true);
+        runtimeFailureCountRef.current = 0;
         fetchProfiles();
         const startupNavigation = res.startupNavigation as
           | { ok?: boolean; requestedUrl?: string; error?: string }

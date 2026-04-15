@@ -60,6 +60,10 @@ const {
   describeResolvedRuntimeProxy,
   closeAllRuntimeProxyBridges,
 } = require('./proxy-bridge');
+const {
+  clearRuntimeManifest,
+  writeRuntimeManifest,
+} = require('./runtime-manifest');
 
 const { generateFingerprint }  = require('./profiles');
 const { humanClick, humanType, humanScroll, randomDelay } = require('./humanize');
@@ -70,7 +74,13 @@ const RedisProxyPool   = require('./redis-proxy-pool');
 const RuntimeMonitor   = require('./monitor');
 const metrics          = require('./metrics');
 
-const PORT         = parseInt(process.env.RUNTIME_PORT || '3001', 10);
+const PRIMARY_RUNTIME_PORT = parseInt(process.env.RUNTIME_PORT || '3101', 10);
+const RUNTIME_PORT_CANDIDATES = Array.from(new Set([
+  PRIMARY_RUNTIME_PORT,
+  3102,
+  3210,
+  3211,
+].filter((port) => Number.isFinite(port) && port > 0)));
 const BASE_DIR     = path.join(os.homedir(), '.antigravity-browser');
 const PROFILES_DIR = path.join(BASE_DIR, 'profiles');
 const DB_PATH      = path.join(BASE_DIR, 'db.json');
@@ -1740,27 +1750,65 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, '127.0.0.1', () => {
-  fs.mkdirSync(PROFILES_DIR, { recursive: true });
-  console.log('\n╔══════════════════════════════════════════════╗');
-  console.log('║   Stealth Engine Runtime Server  v2.0        ║');
-  console.log('╚══════════════════════════════════════════════╝');
-  console.log(`✅ Listening on http://127.0.0.1:${PORT}`);
-  console.log(`📁 Data directory: ${BASE_DIR}`);
-  console.log('─'.repeat(48));
-  console.log('Endpoints:');
-  console.log('  POST /session/start   — Launch a profile browser');
-  console.log('  POST /session/stop    — Stop & persist session');
-  console.log('  POST /session/action  — Execute page action');
-  console.log('  GET  /session/list    — List active sessions');
-  console.log('  GET  /health          — Health check\n');
+async function startServer() {
+  for (const port of RUNTIME_PORT_CANDIDATES) {
+    try {
+      await new Promise((resolve, reject) => {
+        const onError = (error) => {
+          server.removeListener('listening', onListening);
+          reject(error);
+        };
+        const onListening = () => {
+          server.removeListener('error', onError);
+          resolve();
+        };
+        server.once('error', onError);
+        server.once('listening', onListening);
+        server.listen(port, '127.0.0.1');
+      });
+
+      fs.mkdirSync(PROFILES_DIR, { recursive: true });
+      writeRuntimeManifest({
+        url: `http://127.0.0.1:${port}`,
+        pid: process.pid,
+        version: process.env.npm_package_version || '0.1.0',
+        updatedAt: new Date().toISOString(),
+      });
+      console.log('\n╔══════════════════════════════════════════════╗');
+      console.log('║   Stealth Engine Runtime Server  v2.0        ║');
+      console.log('╚══════════════════════════════════════════════╝');
+      console.log(`✅ Listening on http://127.0.0.1:${port}`);
+      console.log(`📁 Data directory: ${BASE_DIR}`);
+      console.log('─'.repeat(48));
+      console.log('Endpoints:');
+      console.log('  POST /session/start   — Launch a profile browser');
+      console.log('  POST /session/stop    — Stop & persist session');
+      console.log('  POST /session/action  — Execute page action');
+      console.log('  GET  /session/list    — List active sessions');
+      console.log('  GET  /health          — Health check\n');
+      return;
+    } catch (error) {
+      if (error?.code !== 'EADDRINUSE') {
+        throw error;
+      }
+    }
+  }
+
+  throw new Error(`No available runtime port in candidates: ${RUNTIME_PORT_CANDIDATES.join(', ')}`);
+}
+
+void startServer().catch((error) => {
+  console.error('[Runtime startup failed]', error?.message || error);
+  process.exit(1);
 });
 
 server.on('close', () => {
+  clearRuntimeManifest(process.pid);
   void closeAllRuntimeProxyBridges().catch(() => {});
 });
 
 process.once('beforeExit', async () => {
+  clearRuntimeManifest(process.pid);
   await closeAllRuntimeProxyBridges().catch(() => {});
 });
 

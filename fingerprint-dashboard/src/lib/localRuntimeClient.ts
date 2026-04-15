@@ -2,9 +2,17 @@ import { getApiBase, getAuthToken } from '@/lib/api-client';
 
 const DEFAULT_LOCAL_RUNTIME_URL = 'http://127.0.0.1:3101';
 
+type ResolvedLocalRuntime = {
+  url: string;
+  source: 'manifest' | 'default' | 'autostart';
+  pid?: number;
+  updatedAt?: string;
+};
+
 type LocalRuntimeRequestOptions = {
   runtimeApiKey?: string;
   timeoutMs?: number;
+  autoStart?: boolean;
 };
 
 type LocalRuntimeErrorCode =
@@ -33,8 +41,15 @@ export class LocalRuntimeRequestError extends Error {
   }
 }
 
-function resolveLocalRuntimeUrl(): string {
-  return DEFAULT_LOCAL_RUNTIME_URL;
+declare global {
+  interface Window {
+    desktop?: {
+      runtime?: {
+        ensureLocalRuntime?: (runtimeApiKey?: string) => Promise<ResolvedLocalRuntime>;
+        getLocalRuntimeInfo?: (runtimeApiKey?: string) => Promise<ResolvedLocalRuntime | null>;
+      };
+    };
+  }
 }
 
 function isSafariBrowser(): boolean {
@@ -69,33 +84,33 @@ function buildLocalRuntimeFetchFailureMessage(): {
   };
 }
 
-async function callLocalRuntime<T>(
+async function requestRuntimeJson<T>(
+  baseUrl: string,
   path: string,
   init: RequestInit,
-  options: LocalRuntimeRequestOptions = {},
+  options: LocalRuntimeRequestOptions,
 ): Promise<T> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 60_000);
-
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 60_000)
   try {
-    const headers = new Headers(init.headers || {});
-    headers.set('Content-Type', 'application/json');
+    const headers = new Headers(init.headers || {})
+    headers.set('Content-Type', 'application/json')
 
-    const authToken = getAuthToken();
+    const authToken = getAuthToken()
     if (authToken && !headers.has('Authorization')) {
-      headers.set('Authorization', `Bearer ${authToken}`);
+      headers.set('Authorization', `Bearer ${authToken}`)
     }
     if (options.runtimeApiKey && !headers.has('x-runtime-key')) {
-      headers.set('x-runtime-key', options.runtimeApiKey);
+      headers.set('x-runtime-key', options.runtimeApiKey)
     }
 
-    const response = await fetch(`${resolveLocalRuntimeUrl()}${path}`, {
+    const response = await fetch(`${baseUrl.replace(/\/$/, '')}${path}`, {
       ...init,
       headers,
       signal: controller.signal,
-    });
+    })
 
-    const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+    const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>
     if (!response.ok) {
       throw new LocalRuntimeRequestError(
         'LOCAL_RUNTIME_HTTP_ERROR',
@@ -106,36 +121,91 @@ async function callLocalRuntime<T>(
           status: response.status,
           payload,
         },
-      );
+      )
     }
 
-    return payload as T;
+    return payload as T
   } catch (error) {
     if (error instanceof LocalRuntimeRequestError) {
-      throw error;
+      throw error
     }
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw new LocalRuntimeRequestError(
         'LOCAL_RUNTIME_TIMEOUT',
         '本地 Runtime Server 响应超时，请确认当前电脑上的运行时与浏览器依赖正常。',
-      );
+      )
     }
 
-    const failure = buildLocalRuntimeFetchFailureMessage();
+    const failure = buildLocalRuntimeFetchFailureMessage()
     throw new LocalRuntimeRequestError(failure.code, failure.message, {
       payload: error instanceof Error ? { cause: error.message } : { cause: String(error) },
-    });
+    })
   } finally {
-    clearTimeout(timer);
+    clearTimeout(timer)
   }
 }
 
+async function tryHealth(url: string, runtimeApiKey?: string): Promise<boolean> {
+  try {
+    const response = await requestRuntimeJson<{ ok?: boolean }>(
+      url,
+      '/health',
+      { method: 'GET' },
+      { runtimeApiKey, timeoutMs: 10_000, autoStart: false },
+    )
+    return response.ok === true
+  } catch {
+    return false
+  }
+}
+
+async function discoverLocalRuntime(
+  runtimeApiKey?: string,
+  options: { autoStart?: boolean } = {},
+): Promise<ResolvedLocalRuntime> {
+  const desktopRuntime = typeof window !== 'undefined' ? window.desktop?.runtime : undefined
+
+  if (desktopRuntime?.getLocalRuntimeInfo) {
+    const runtimeInfo = await desktopRuntime.getLocalRuntimeInfo(runtimeApiKey)
+    if (runtimeInfo?.url) {
+      return runtimeInfo
+    }
+  }
+
+  if (await tryHealth(DEFAULT_LOCAL_RUNTIME_URL, runtimeApiKey)) {
+    return {
+      url: DEFAULT_LOCAL_RUNTIME_URL,
+      source: 'default',
+    }
+  }
+
+  if (options.autoStart && desktopRuntime?.ensureLocalRuntime) {
+    return await desktopRuntime.ensureLocalRuntime(runtimeApiKey)
+  }
+
+  const failure = buildLocalRuntimeFetchFailureMessage()
+  throw new LocalRuntimeRequestError(failure.code, failure.message)
+}
+
+async function callLocalRuntime<T>(
+  path: string,
+  init: RequestInit,
+  options: LocalRuntimeRequestOptions = {},
+): Promise<T> {
+  const resolved = await discoverLocalRuntime(options.runtimeApiKey, {
+    autoStart: options.autoStart,
+  })
+  return await requestRuntimeJson<T>(resolved.url, path, init, options)
+}
+
 export async function checkLocalRuntimeHealth(runtimeApiKey?: string): Promise<{ ok: boolean }> {
-  return await callLocalRuntime<{ ok: boolean }>(
+  const resolved = await discoverLocalRuntime(runtimeApiKey, { autoStart: false })
+  return await requestRuntimeJson<{ ok: boolean }>(
+    resolved.url,
     '/health',
     { method: 'GET' },
-    { runtimeApiKey, timeoutMs: 10_000 },
-  );
+    { runtimeApiKey, timeoutMs: 10_000, autoStart: false },
+  )
 }
 
 export async function startLocalRuntimeSession(
@@ -151,7 +221,7 @@ export async function startLocalRuntimeSession(
         __dashboardBaseUrl: getApiBase(),
       }),
     },
-    { runtimeApiKey, timeoutMs: 60_000 },
+    { runtimeApiKey, timeoutMs: 60_000, autoStart: true },
   );
 }
 
@@ -165,7 +235,7 @@ export async function stopLocalRuntimeSession(
       method: 'POST',
       body: JSON.stringify(payload),
     },
-    { runtimeApiKey, timeoutMs: 15_000 },
+    { runtimeApiKey, timeoutMs: 15_000, autoStart: true },
   );
 }
 
@@ -179,7 +249,7 @@ export async function runLocalRuntimeAction(
       method: 'POST',
       body: JSON.stringify(payload),
     },
-    { runtimeApiKey, timeoutMs: 30_000 },
+    { runtimeApiKey, timeoutMs: 30_000, autoStart: true },
   );
 }
 
@@ -193,6 +263,6 @@ export async function testLocalBrowserProxy(
       method: 'POST',
       body: JSON.stringify(payload),
     },
-    { runtimeApiKey, timeoutMs: 45_000 },
+    { runtimeApiKey, timeoutMs: 45_000, autoStart: true },
   );
 }
