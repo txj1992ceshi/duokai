@@ -1,10 +1,9 @@
 import http from 'node:http'
+import https from 'node:https'
 import net from 'node:net'
-import type { Duplex } from 'node:stream'
 import tls from 'node:tls'
-import { spawnSync } from 'node:child_process'
+import type { Duplex } from 'node:stream'
 import type { ProxyRecord } from '../../src/shared/types'
-import { buildProxyServer } from './runtime'
 
 type PlaywrightProxyConfig = {
   server: string
@@ -12,94 +11,62 @@ type PlaywrightProxyConfig = {
   password?: string
 }
 
-type UpstreamProxy = {
+type UpstreamProxyTarget = {
+  type: 'http' | 'https' | 'socks5'
   host: string
   port: number
+  username?: string
+  password?: string
 }
 
 type BridgeEntry = {
   key: string
   server: http.Server
   port: number
-  upstream: UpstreamProxy
+  upstream: UpstreamProxyTarget
+}
+
+type TargetRequestInfo = {
+  protocol: 'http:' | 'https:'
+  host: string
+  hostHeader: string
+  port: number
+  path: string
 }
 
 const bridgeCache = new Map<string, Promise<BridgeEntry>>()
 
-function isLoopbackHost(host: string): boolean {
-  const normalized = host.trim().toLowerCase()
-  return normalized === '127.0.0.1' || normalized === 'localhost' || normalized === '::1'
+function buildBridgeKey(proxy: ProxyRecord): string {
+  return `${proxy.type}://${proxy.host}:${proxy.port}|${proxy.username || ''}|${proxy.password || ''}`
 }
 
-function parseProxyHostPort(value: string): UpstreamProxy | null {
-  const trimmed = value.trim()
-  if (!trimmed) {
-    return null
+function toUpstreamProxyTarget(proxy: ProxyRecord): UpstreamProxyTarget {
+  return {
+    type: proxy.type,
+    host: proxy.host,
+    port: Number(proxy.port),
+    username: proxy.username || undefined,
+    password: proxy.password || undefined,
   }
-
-  const raw =
-    trimmed.includes('=') ?
-      (trimmed
-        .split(';')
-        .map((part) => part.trim())
-        .find((part) => /^https?=/i.test(part)) || trimmed.split(';')[0] || '')
-        .split('=')
-        .slice(1)
-        .join('=')
-        .trim()
-    : trimmed
-
-  const withoutScheme = raw.replace(/^[a-z]+:\/\//i, '')
-  const [host, portText] = withoutScheme.split(':')
-  const port = Number(portText)
-  if (!host || !Number.isFinite(port) || port <= 0) {
-    return null
-  }
-  return { host, port }
 }
 
-function readWindowsSystemProxy(): UpstreamProxy | null {
-  if (process.platform !== 'win32') {
-    return null
-  }
-
-  const key = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'
-  const enabled = spawnSync('reg.exe', ['query', key, '/v', 'ProxyEnable'], {
-    encoding: 'utf8',
-    windowsHide: true,
-  })
-  if (enabled.status !== 0 || !/\b0x1\b/.test(enabled.stdout)) {
-    return null
-  }
-
-  const server = spawnSync('reg.exe', ['query', key, '/v', 'ProxyServer'], {
-    encoding: 'utf8',
-    windowsHide: true,
-  })
-  if (server.status !== 0) {
-    return null
-  }
-
-  const match = server.stdout.match(/ProxyServer\s+REG_SZ\s+([^\r\n]+)/i)
-  return match ? parseProxyHostPort(match[1]) : null
-}
-
-async function connectSocket(host: string, port: number): Promise<net.Socket> {
+async function connectTcp(host: string, port: number): Promise<net.Socket> {
   return await new Promise<net.Socket>((resolve, reject) => {
     const socket = net.createConnection({ host, port })
     const onError = (error: Error) => {
-      socket.destroy()
+      socket.removeListener('connect', onConnect)
       reject(error)
     }
-    socket.once('connect', () => {
+    const onConnect = () => {
       socket.removeListener('error', onError)
       resolve(socket)
-    })
+    }
+    socket.once('connect', onConnect)
     socket.once('error', onError)
   })
 }
 
-async function readResponseHead(socket: net.Socket | tls.TLSSocket): Promise<{ statusCode: number; rest: Buffer }> {
+async function readUntilHeaderEnd(socket: net.Socket | tls.TLSSocket): Promise<Buffer> {
   return await new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
     let total = 0
@@ -117,24 +84,19 @@ async function readResponseHead(socket: net.Socket | tls.TLSSocket): Promise<{ s
 
     const onEnd = () => {
       cleanup()
-      reject(new Error('Socket ended before proxy response was complete'))
+      reject(new Error('Socket ended before response header completed'))
     }
 
     const onData = (chunk: Buffer) => {
       chunks.push(chunk)
       total += chunk.length
-      const buffer = Buffer.concat(chunks, total)
-      const index = buffer.indexOf('\r\n\r\n')
+      const merged = Buffer.concat(chunks, total)
+      const index = merged.indexOf('\r\n\r\n')
       if (index === -1) {
         return
       }
       cleanup()
-      const headText = buffer.subarray(0, index).toString('utf8')
-      const statusCode = Number(headText.split(/\s+/)[1] || 0)
-      resolve({
-        statusCode,
-        rest: buffer.subarray(index + 4),
-      })
+      resolve(merged)
     }
 
     socket.on('data', onData)
@@ -143,74 +105,314 @@ async function readResponseHead(socket: net.Socket | tls.TLSSocket): Promise<{ s
   })
 }
 
-async function connectViaUpstreamProxy(upstream: UpstreamProxy, targetHost: string, targetPort: number): Promise<net.Socket> {
-  const socket = await connectSocket(upstream.host, upstream.port)
-  socket.write(
-    `CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\nHost: ${targetHost}:${targetPort}\r\nProxy-Connection: Keep-Alive\r\n\r\n`,
-  )
-  const response = await readResponseHead(socket)
-  if (response.statusCode !== 200) {
-    socket.destroy()
-    throw new Error(`Upstream proxy CONNECT failed with status ${response.statusCode || 'unknown'}`)
+function parseHttpStatusCode(buffer: Buffer): number {
+  const firstLine = buffer.toString('utf8').split('\r\n')[0] || ''
+  return Number(firstLine.split(/\s+/)[1] || 0)
+}
+
+function buildBasicAuthHeader(username?: string, password?: string): string | null {
+  if (!username) {
+    return null
   }
-  if (response.rest.length > 0) {
-    socket.unshift(response.rest)
+  const raw = `${username}:${password || ''}`
+  return `Basic ${Buffer.from(raw).toString('base64')}`
+}
+
+async function openHttpProxySocket(upstream: UpstreamProxyTarget): Promise<net.Socket | tls.TLSSocket> {
+  const tcp = await connectTcp(upstream.host, upstream.port)
+  if (upstream.type !== 'https') {
+    return tcp
+  }
+  return await new Promise<tls.TLSSocket>((resolve, reject) => {
+    const secure = tls.connect({
+      socket: tcp,
+      servername: upstream.host,
+    })
+    const onError = (error: Error) => {
+      secure.removeListener('secureConnect', onSecureConnect)
+      reject(error)
+    }
+    const onSecureConnect = () => {
+      secure.removeListener('error', onError)
+      resolve(secure)
+    }
+    secure.once('secureConnect', onSecureConnect)
+    secure.once('error', onError)
+  })
+}
+
+async function connectViaHttpFamilyProxy(
+  upstream: UpstreamProxyTarget,
+  targetHost: string,
+  targetPort: number,
+): Promise<net.Socket | tls.TLSSocket> {
+  const socket = await openHttpProxySocket(upstream)
+  const auth = buildBasicAuthHeader(upstream.username, upstream.password)
+  const request =
+    `CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\n` +
+    `Host: ${targetHost}:${targetPort}\r\n` +
+    `${auth ? `Proxy-Authorization: ${auth}\r\n` : ''}` +
+    'Proxy-Connection: Keep-Alive\r\n\r\n'
+
+  socket.write(request)
+  const responseHead = await readUntilHeaderEnd(socket)
+  const statusCode = parseHttpStatusCode(responseHead)
+  if (statusCode !== 200) {
+    socket.destroy()
+    throw new Error(
+      `HTTP/HTTPS upstream proxy CONNECT failed with status ${statusCode || 'unknown'}`,
+    )
+  }
+
+  const index = responseHead.indexOf('\r\n\r\n')
+  const rest = index >= 0 ? responseHead.subarray(index + 4) : Buffer.alloc(0)
+  if (rest.length > 0) {
+    socket.unshift(rest)
   }
   return socket
 }
 
-async function openOuterProxySocket(proxy: ProxyRecord, upstream: UpstreamProxy): Promise<net.Socket | tls.TLSSocket> {
-  const baseSocket = await connectViaUpstreamProxy(upstream, proxy.host, Number(proxy.port))
-  if (proxy.type !== 'https') {
-    return baseSocket
+function encodeSocks5Address(host: string): Buffer {
+  if (net.isIPv4(host)) {
+    return Buffer.concat([
+      Buffer.from([0x01]),
+      Buffer.from(host.split('.').map((part) => Number(part))),
+    ])
   }
-  return await new Promise<tls.TLSSocket>((resolve, reject) => {
-    const secureSocket = tls.connect({
-      socket: baseSocket,
-      servername: proxy.host,
-    })
-    secureSocket.once('secureConnect', () => resolve(secureSocket))
-    secureSocket.once('error', reject)
+
+  const hostBuffer = Buffer.from(host, 'utf8')
+  if (hostBuffer.length > 255) {
+    throw new Error('SOCKS5 host is too long')
+  }
+  return Buffer.concat([Buffer.from([0x03, hostBuffer.length]), hostBuffer])
+}
+
+async function readExact(socket: net.Socket, size: number): Promise<Buffer> {
+  return await new Promise((resolve, reject) => {
+    let total = 0
+    const chunks: Buffer[] = []
+
+    const cleanup = () => {
+      socket.removeListener('data', onData)
+      socket.removeListener('error', onError)
+      socket.removeListener('end', onEnd)
+    }
+
+    const onError = (error: Error) => {
+      cleanup()
+      reject(error)
+    }
+
+    const onEnd = () => {
+      cleanup()
+      reject(new Error('Socket ended before enough bytes were received'))
+    }
+
+    const onData = (chunk: Buffer) => {
+      chunks.push(chunk)
+      total += chunk.length
+      const merged = Buffer.concat(chunks, total)
+      if (merged.length < size) {
+        return
+      }
+
+      cleanup()
+      const head = merged.subarray(0, size)
+      const rest = merged.subarray(size)
+      if (rest.length > 0) {
+        socket.unshift(rest)
+      }
+      resolve(head)
+    }
+
+    socket.on('data', onData)
+    socket.once('error', onError)
+    socket.once('end', onEnd)
   })
 }
 
-function buildProxyAuthorization(proxy: ProxyRecord): string | null {
-  if (!proxy.username) {
-    return null
+function describeSocks5ReplyCode(code: number): string {
+  const descriptions: Record<number, string> = {
+    0x01: 'general SOCKS server failure',
+    0x02: 'connection not allowed by ruleset',
+    0x03: 'network unreachable',
+    0x04: 'host unreachable',
+    0x05: 'connection refused',
+    0x06: 'TTL expired',
+    0x07: 'command not supported',
+    0x08: 'address type not supported',
   }
-  const raw = `${proxy.username}:${proxy.password || ''}`
-  return `Basic ${Buffer.from(raw).toString('base64')}`
+  return descriptions[code] || 'unknown error'
 }
 
-async function handleConnectTunnel(
+async function performSocks5Handshake(
+  socket: net.Socket,
+  upstream: UpstreamProxyTarget,
+): Promise<void> {
+  const supportsAuth = Boolean(upstream.username)
+  const methods = supportsAuth ? [0x00, 0x02] : [0x00]
+  socket.write(Buffer.from([0x05, methods.length, ...methods]))
+
+  const methodReply = await readExact(socket, 2)
+  if (methodReply[0] !== 0x05) {
+    throw new Error('SOCKS5 handshake failed: invalid version in method reply')
+  }
+  if (methodReply[1] === 0xff) {
+    throw new Error('SOCKS5 handshake failed: upstream proxy rejected all auth methods')
+  }
+
+  if (methodReply[1] === 0x02) {
+    const username = Buffer.from(upstream.username || '', 'utf8')
+    const password = Buffer.from(upstream.password || '', 'utf8')
+    if (username.length > 255 || password.length > 255) {
+      throw new Error('SOCKS5 authentication failed: username or password too long')
+    }
+
+    socket.write(
+      Buffer.concat([
+        Buffer.from([0x01, username.length]),
+        username,
+        Buffer.from([password.length]),
+        password,
+      ]),
+    )
+
+    const authReply = await readExact(socket, 2)
+    if (authReply[0] !== 0x01) {
+      throw new Error('SOCKS5 authentication failed: invalid auth reply version')
+    }
+    if (authReply[1] !== 0x00) {
+      throw new Error('SOCKS5 authentication failed: username/password rejected')
+    }
+    return
+  }
+
+  if (methodReply[1] !== 0x00) {
+    throw new Error(
+      `SOCKS5 handshake failed: unsupported auth method selected ${methodReply[1]}`,
+    )
+  }
+}
+
+async function connectViaSocks5Proxy(
+  upstream: UpstreamProxyTarget,
+  targetHost: string,
+  targetPort: number,
+): Promise<net.Socket> {
+  const socket = await connectTcp(upstream.host, upstream.port)
+  await performSocks5Handshake(socket, upstream)
+
+  const address = encodeSocks5Address(targetHost)
+  const port = Buffer.from([(targetPort >> 8) & 0xff, targetPort & 0xff])
+  const request = Buffer.concat([Buffer.from([0x05, 0x01, 0x00]), address, port])
+  socket.write(request)
+
+  const head = await readExact(socket, 4)
+  if (head[0] !== 0x05) {
+    socket.destroy()
+    throw new Error('SOCKS5 CONNECT failed: invalid version in connect reply')
+  }
+  if (head[1] !== 0x00) {
+    socket.destroy()
+    throw new Error(
+      `SOCKS5 CONNECT failed with reply code ${head[1]} (${describeSocks5ReplyCode(head[1])})`,
+    )
+  }
+
+  const atyp = head[3]
+  if (atyp === 0x01) {
+    await readExact(socket, 4 + 2)
+  } else if (atyp === 0x03) {
+    const length = await readExact(socket, 1)
+    await readExact(socket, length[0] + 2)
+  } else if (atyp === 0x04) {
+    await readExact(socket, 16 + 2)
+  } else {
+    socket.destroy()
+    throw new Error(`SOCKS5 CONNECT failed: unknown address type ${atyp}`)
+  }
+
+  return socket
+}
+
+async function openUpstreamTunnel(
+  upstream: UpstreamProxyTarget,
+  targetHost: string,
+  targetPort: number,
+): Promise<net.Socket | tls.TLSSocket> {
+  if (upstream.type === 'socks5') {
+    return await connectViaSocks5Proxy(upstream, targetHost, targetPort)
+  }
+  return await connectViaHttpFamilyProxy(upstream, targetHost, targetPort)
+}
+
+function parseTargetRequestInfo(rawUrl: string, hostHeader?: string): TargetRequestInfo {
+  const normalizedUrl =
+    /^[a-z]+:\/\//i.test(rawUrl)
+      ? rawUrl
+      : `http://${hostHeader || '127.0.0.1'}${rawUrl.startsWith('/') ? rawUrl : `/${rawUrl}`}`
+  const parsed = new URL(normalizedUrl)
+  const protocol = parsed.protocol === 'https:' ? 'https:' : 'http:'
+  const port = Number(parsed.port || (protocol === 'https:' ? 443 : 80))
+
+  return {
+    protocol,
+    host: parsed.hostname,
+    hostHeader: parsed.host,
+    port,
+    path: `${parsed.pathname || '/'}${parsed.search || ''}`,
+  }
+}
+
+function pipeBidirectional(left: Duplex, right: Duplex): void {
+  left.pipe(right)
+  right.pipe(left)
+}
+
+function wrapTlsTunnel(
+  socket: net.Socket | tls.TLSSocket,
+  host: string,
+): Promise<tls.TLSSocket> {
+  return new Promise((resolve, reject) => {
+    const secure = tls.connect({
+      socket,
+      servername: host,
+    })
+    const onError = (error: Error) => {
+      secure.removeListener('secureConnect', onSecureConnect)
+      reject(error)
+    }
+    const onSecureConnect = () => {
+      secure.removeListener('error', onError)
+      resolve(secure)
+    }
+    secure.once('secureConnect', onSecureConnect)
+    secure.once('error', onError)
+  })
+}
+
+async function handleConnectRequest(
   clientSocket: Duplex,
   head: Buffer,
   requestUrl: string,
-  proxy: ProxyRecord,
-  upstream: UpstreamProxy,
-) {
+  upstream: UpstreamProxyTarget,
+): Promise<void> {
   let upstreamSocket: net.Socket | tls.TLSSocket | null = null
   try {
-    upstreamSocket = await openOuterProxySocket(proxy, upstream)
-    const auth = buildProxyAuthorization(proxy)
-    upstreamSocket.write(
-      `CONNECT ${requestUrl} HTTP/1.1\r\nHost: ${requestUrl}\r\n${auth ? `Proxy-Authorization: ${auth}\r\n` : ''}Proxy-Connection: Keep-Alive\r\n\r\n`,
-    )
-    const response = await readResponseHead(upstreamSocket)
-    if (response.statusCode !== 200) {
-      clientSocket.end(`HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n`)
-      upstreamSocket.destroy()
+    const separatorIndex = requestUrl.lastIndexOf(':')
+    const targetHost = separatorIndex === -1 ? '' : requestUrl.slice(0, separatorIndex)
+    const targetPort = Number(separatorIndex === -1 ? '' : requestUrl.slice(separatorIndex + 1))
+    if (!targetHost || !Number.isFinite(targetPort) || targetPort <= 0) {
+      clientSocket.end('HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n')
       return
     }
+
+    upstreamSocket = await openUpstreamTunnel(upstream, targetHost, targetPort)
     clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
-    if (response.rest.length > 0) {
-      clientSocket.write(response.rest)
-    }
     if (head.length > 0) {
       upstreamSocket.write(head)
     }
-    upstreamSocket.pipe(clientSocket)
-    clientSocket.pipe(upstreamSocket)
+    pipeBidirectional(clientSocket, upstreamSocket)
   } catch {
     upstreamSocket?.destroy()
     clientSocket.end('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n')
@@ -220,43 +422,51 @@ async function handleConnectTunnel(
 async function handleHttpRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  proxy: ProxyRecord,
-  upstream: UpstreamProxy,
-) {
+  upstream: UpstreamProxyTarget,
+): Promise<void> {
   let upstreamSocket: net.Socket | tls.TLSSocket | null = null
+  let proxyRequest: http.ClientRequest | null = null
+
   try {
-    upstreamSocket = await openOuterProxySocket(proxy, upstream)
-    const auth = buildProxyAuthorization(proxy)
-    const headers = { ...req.headers }
+    const target = parseTargetRequestInfo(req.url || '/', req.headers.host)
+    upstreamSocket = await openUpstreamTunnel(upstream, target.host, target.port)
+    const transport = target.protocol === 'https:' ? https : http
+    const connection =
+      target.protocol === 'https:'
+        ? await wrapTlsTunnel(upstreamSocket, target.host)
+        : upstreamSocket
+
+    const headers: http.OutgoingHttpHeaders = { ...req.headers }
     delete headers['proxy-connection']
     delete headers['proxy-authorization']
-    headers.connection = headers.connection || 'close'
-    if (auth) {
-      headers['proxy-authorization'] = auth
-    }
-    const headerLines = Object.entries(headers)
-      .flatMap(([key, value]) => {
-        if (value === undefined) {
-          return []
-        }
-        if (Array.isArray(value)) {
-          return value.map((item) => `${key}: ${item}`)
-        }
-        return [`${key}: ${value}`]
-      })
-      .join('\r\n')
-    upstreamSocket.write(`${req.method || 'GET'} ${req.url || '/'} HTTP/1.1\r\n${headerLines}\r\n\r\n`)
-    req.pipe(upstreamSocket)
-    upstreamSocket.pipe(res)
-    upstreamSocket.once('end', () => res.end())
-    upstreamSocket.once('error', () => {
+    headers.host = target.hostHeader
+
+    proxyRequest = transport.request({
+      host: target.host,
+      port: target.port,
+      method: req.method || 'GET',
+      path: target.path,
+      headers,
+      agent: false,
+      createConnection: () => connection,
+    })
+
+    proxyRequest.once('response', (proxyResponse) => {
+      res.writeHead(proxyResponse.statusCode || 502, proxyResponse.headers)
+      proxyResponse.pipe(res)
+    })
+
+    proxyRequest.once('error', () => {
       if (!res.headersSent) {
         res.writeHead(502).end()
       } else {
         res.end()
       }
     })
+
+    req.pipe(proxyRequest)
   } catch {
+    proxyRequest?.destroy()
     upstreamSocket?.destroy()
     if (!res.headersSent) {
       res.writeHead(502).end()
@@ -266,24 +476,38 @@ async function handleHttpRequest(
   }
 }
 
-async function createBridge(proxy: ProxyRecord, upstream: UpstreamProxy): Promise<BridgeEntry> {
+async function createBridge(proxy: ProxyRecord): Promise<BridgeEntry> {
+  const upstream = toUpstreamProxyTarget(proxy)
   const server = http.createServer((req, res) => {
-    void handleHttpRequest(req, res, proxy, upstream)
+    void handleHttpRequest(req, res, upstream)
   })
+
   server.on('connect', (req, clientSocket, head) => {
-    void handleConnectTunnel(clientSocket, head, req.url || '', proxy, upstream)
+    void handleConnectRequest(clientSocket, head, req.url || '', upstream)
   })
+
   await new Promise<void>((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => resolve())
+    const onError = (error: Error) => {
+      server.removeListener('listening', onListening)
+      reject(error)
+    }
+    const onListening = () => {
+      server.removeListener('error', onError)
+      resolve()
+    }
+    server.once('error', onError)
+    server.once('listening', onListening)
+    server.listen(0, '127.0.0.1')
   })
+
   const address = server.address()
   if (!address || typeof address === 'string') {
     server.close()
     throw new Error('Failed to determine local proxy bridge port')
   }
+
   return {
-    key: '',
+    key: buildBridgeKey(proxy),
     server,
     port: address.port,
     upstream,
@@ -297,41 +521,23 @@ export async function resolveLaunchProxy(
     return { config: null, bridgeActive: false, detail: '' }
   }
 
-  const upstream = readWindowsSystemProxy()
-  if (
-    process.platform !== 'win32' ||
-    !upstream ||
-    !isLoopbackHost(upstream.host) ||
-    isLoopbackHost(proxy.host) ||
-    (proxy.host === upstream.host && Number(proxy.port) === upstream.port)
-  ) {
-    return {
-      config: {
-        server: buildProxyServer(proxy),
-        username: proxy.username || undefined,
-        password: proxy.password || undefined,
-      },
-      bridgeActive: false,
-      detail: '',
-    }
-  }
-
-  const key = `${buildProxyServer(proxy)}|${proxy.username || ''}|${proxy.password || ''}|${upstream.host}:${upstream.port}`
+  const key = buildBridgeKey(proxy)
   if (!bridgeCache.has(key)) {
     bridgeCache.set(
       key,
-      createBridge(proxy, upstream).then((entry) => ({
-        ...entry,
-        key,
-      })),
+      createBridge(proxy).catch((error) => {
+        bridgeCache.delete(key)
+        throw error
+      }),
     )
   }
+
   const bridge = await bridgeCache.get(key)!
   return {
     config: {
       server: `http://127.0.0.1:${bridge.port}`,
     },
     bridgeActive: true,
-    detail: `via local bridge http://127.0.0.1:${bridge.port} through system proxy ${upstream.host}:${upstream.port}`,
+    detail: `via local proxy bridge http://127.0.0.1:${bridge.port} -> ${proxy.type}://${proxy.host}:${proxy.port}`,
   }
 }

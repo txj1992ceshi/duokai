@@ -6,7 +6,6 @@ import { resolveLaunchProxy } from './proxyBridge'
 import {
   applyProxyCompatibilityArgs,
   buildChromiumLaunchEnv,
-  proxyToPlaywrightConfig,
   resolveChromiumExecutable,
 } from './runtime'
 
@@ -124,67 +123,81 @@ async function lookupWithoutProxy(): Promise<ProxyCheckResult> {
 
 async function lookupWithProxy(proxy: ProxyRecord): Promise<ProxyCheckResult> {
   let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null
-  const launchProxy = await resolveLaunchProxy(proxy)
+  let launchProxy: Awaited<ReturnType<typeof resolveLaunchProxy>> = {
+    config: null,
+    bridgeActive: false,
+    detail: '',
+  }
   try {
-    browser = await chromium.launch({
-      headless: true,
-      executablePath: resolveChromiumExecutable(),
-      proxy: launchProxy.config ?? proxyToPlaywrightConfig(proxy) ?? undefined,
-      env: buildChromiumLaunchEnv(),
-      args: applyProxyCompatibilityArgs([], proxy, { bridgeActive: launchProxy.bridgeActive }),
-    })
-    const page = await browser.newPage()
-    await page.goto(LOOKUP_URL, { waitUntil: 'domcontentloaded', timeout: 20_000 })
-    const bodyText = (await page.textContent('body'))?.trim() ?? ''
-    const payload = parseLookupPayload(bodyText ? JSON.parse(bodyText) : null)
-    if (!payload) {
-      throw new Error('Lookup payload missing timezone data')
-    }
-    return {
-      ok: true,
-      ip: payload.ip,
-      country: payload.country,
-      region: payload.region,
-      city: payload.city,
-      timezone: payload.timezone,
-      languageHint: languageFromCountry(payload.countryCode),
-      geolocation: buildGeolocationValue(payload.latitude, payload.longitude),
-      message: 'Proxy egress resolved successfully',
-      source: 'proxy',
-    }
-  } catch (error) {
+    launchProxy = await resolveLaunchProxy(proxy)
     try {
-      if (browser) {
-        await browser.close().catch(() => undefined)
-        browser = null
-      }
       browser = await chromium.launch({
         headless: true,
         executablePath: resolveChromiumExecutable(),
-        proxy: launchProxy.config ?? proxyToPlaywrightConfig(proxy) ?? undefined,
+        proxy: launchProxy.config || undefined,
         env: buildChromiumLaunchEnv(),
         args: applyProxyCompatibilityArgs([], proxy, { bridgeActive: launchProxy.bridgeActive }),
       })
       const page = await browser.newPage()
-      await page.goto('https://example.com', { waitUntil: 'domcontentloaded', timeout: 20_000 })
+      await page.goto(LOOKUP_URL, { waitUntil: 'domcontentloaded', timeout: 20_000 })
+      const bodyText = (await page.textContent('body'))?.trim() ?? ''
+      const payload = parseLookupPayload(bodyText ? JSON.parse(bodyText) : null)
+      if (!payload) {
+        throw new Error('Lookup payload missing timezone data')
+      }
       return {
         ok: true,
-        ip: '',
-        country: '',
-        region: '',
-        city: '',
-        timezone: '',
-        languageHint: '',
-        geolocation: '',
-        message:
-          error instanceof Error
-            ? `Proxy connectivity verified${launchProxy.bridgeActive ? ` ${launchProxy.detail}` : ''}, but IP metadata lookup failed: ${error.message}`
-            : 'Proxy connectivity verified, but IP metadata lookup failed',
+        ip: payload.ip,
+        country: payload.country,
+        region: payload.region,
+        city: payload.city,
+        timezone: payload.timezone,
+        languageHint: languageFromCountry(payload.countryCode),
+        geolocation: buildGeolocationValue(payload.latitude, payload.longitude),
+        message: 'Proxy egress resolved successfully',
         source: 'proxy',
       }
-    } catch {
-      throw error
+    } catch (error) {
+      if (browser) {
+        await browser.close().catch(() => undefined)
+        browser = null
+      }
+
+      try {
+        browser = await chromium.launch({
+          headless: true,
+          executablePath: resolveChromiumExecutable(),
+          proxy: launchProxy.config || undefined,
+          env: buildChromiumLaunchEnv(),
+          args: applyProxyCompatibilityArgs([], proxy, { bridgeActive: launchProxy.bridgeActive }),
+        })
+        const page = await browser.newPage()
+        await page.goto('https://example.com', { waitUntil: 'domcontentloaded', timeout: 20_000 })
+        return {
+          ok: true,
+          ip: '',
+          country: '',
+          region: '',
+          city: '',
+          timezone: '',
+          languageHint: '',
+          geolocation: '',
+          message:
+            error instanceof Error
+              ? `Proxy connectivity verified proxyType=${proxy.type}; host=${proxy.host}; port=${proxy.port}; bridgeActive=${launchProxy.bridgeActive}; detail=${launchProxy.detail || 'none'}, but IP metadata lookup failed: ${error.message}`
+              : 'Proxy connectivity verified, but IP metadata lookup failed',
+          source: 'proxy',
+        }
+      } catch {
+        throw error
+      }
     }
+  } catch (error) {
+    const errorMessage =
+      error instanceof Error ? error.message : 'Unknown proxy check error'
+    throw new Error(
+      `${errorMessage} proxyType=${proxy.type}; host=${proxy.host}; port=${proxy.port}; bridgeActive=${launchProxy.bridgeActive}; detail=${launchProxy.detail || 'none'}`,
+    )
   } finally {
     await browser?.close().catch(() => undefined)
   }

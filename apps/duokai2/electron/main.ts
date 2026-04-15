@@ -62,7 +62,6 @@ import {
   applyProxyCompatibilityArgs,
   buildChromiumLaunchEnv,
   buildProxyServer,
-  proxyToPlaywrightConfig,
   resolveChromiumExecutable,
 } from './services/runtime'
 import { resolveWorkspaceLaunchConfig } from './services/workspaceRuntime'
@@ -5806,7 +5805,7 @@ async function performProxyConnectivityTest(
     const browser = await chromium.launch({
       headless: true,
       executablePath: resolveChromiumExecutable(),
-      proxy: launchProxy.config ?? proxyToPlaywrightConfig(proxy) ?? undefined,
+      proxy: launchProxy.config || undefined,
       env: buildChromiumLaunchEnv(),
       args: applyProxyCompatibilityArgs([], proxy, { bridgeActive: launchProxy.bridgeActive }),
     })
@@ -5818,7 +5817,12 @@ async function performProxyConnectivityTest(
     if (options.syncStoredProxyId) {
       requireDatabase().setProxyStatus(options.syncStoredProxyId, 'online')
     }
-    logEvent('info', category, `Proxy "${options.label}" verified locally`, null)
+    logEvent(
+      'info',
+      category,
+      `Proxy "${options.label}" verified locally proxyType=${proxy.type}; host=${proxy.host}; port=${proxy.port}; bridgeActive=${launchProxy.bridgeActive}; detail=${launchProxy.detail || 'none'}`,
+      null,
+    )
     return {
       success: true,
       message: '本机检测通过（local）',
@@ -6789,14 +6793,13 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     downloadsPath: workspaceLaunch.downloadsDir,
   }
 
-  const proxyConfig = proxyToPlaywrightConfig(resolvedProxy)
   const launchProxy = await resolveLaunchProxy(resolvedProxy)
-  if (proxyConfig || launchProxy.config) {
+  if (resolvedProxy) {
     const bypassArg = `--proxy-bypass-list=${GOOGLE_PROXY_BYPASS_LIST}`
     if (!launchOptions.args?.some((arg) => arg.startsWith('--proxy-bypass-list='))) {
       launchOptions.args = [...(launchOptions.args ?? []), bypassArg]
     }
-    launchOptions.proxy = launchProxy.config ?? proxyConfig ?? undefined
+    launchOptions.proxy = launchProxy.config ?? undefined
   }
   launchOptions.args = applyProxyCompatibilityArgs(launchOptions.args ?? [], resolvedProxy, {
     bridgeActive: launchProxy.bridgeActive,
@@ -6847,7 +6850,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     logEvent(
     'info',
     'runtime',
-    `Launched profile "${profile.name}"${resolvedProxy ? ` via ${buildProxyServer(resolvedProxy)}` : ''}${launchProxy.bridgeActive ? ` ${launchProxy.detail}` : ''}`,
+    `Launched profile "${profile.name}"${resolvedProxy ? ` proxyType=${resolvedProxy.type}; host=${resolvedProxy.host}; port=${resolvedProxy.port}; bridgeActive=${launchProxy.bridgeActive}; detail=${launchProxy.detail || 'none'}; upstream=${buildProxyServer(resolvedProxy)}` : ''}`,
     profileId,
     )
     await context.addInitScript(buildFingerprintInitScript(profile.id, profile.fingerprintConfig))
