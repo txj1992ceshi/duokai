@@ -55,6 +55,11 @@ const { buildInjectionScript } = require('./fingerprint-injector');
 const { buildFontInjectionScript } = require('./font-injector');
 const { buildMediaDevicesScript } = require('./media-devices');
 const { setupRequestInterceptor } = require('./request-interceptor');
+const {
+  resolveRuntimeLaunchProxy,
+  describeResolvedRuntimeProxy,
+  closeAllRuntimeProxyBridges,
+} = require('./proxy-bridge');
 
 const { generateFingerprint }  = require('./profiles');
 const { humanClick, humanType, humanScroll, randomDelay } = require('./humanize');
@@ -432,7 +437,10 @@ function createRuntimeHttpError(status, body) {
 function buildEnvironmentVerification({
   status,
   proxyType,
+  upstreamServer,
   effectiveProxyTransport,
+  bridgeActive,
+  proxyBridgeDetail,
   hostEnvironment,
   networkMode,
   gatewayReachable,
@@ -456,7 +464,10 @@ function buildEnvironmentVerification({
     layer: 'environment',
     status,
     proxyType,
+    upstreamServer,
     effectiveProxyTransport,
+    bridgeActive,
+    proxyBridgeDetail,
     hostEnvironment,
     networkMode,
     gatewayReachable,
@@ -649,6 +660,18 @@ function classifyBrowserProxyError(err) {
   const message = String(err?.message || err || '');
   const sanitized = message.replace(/\u001b\[[0-9;]*m/g, '');
   const normalized = sanitized.toLowerCase();
+
+  if (normalized.includes('socks5 handshake failed')) {
+    return { type: 'socks5_handshake_failed', message: sanitized || 'SOCKS5 handshake failed' };
+  }
+
+  if (normalized.includes('socks5 authentication failed')) {
+    return { type: 'socks5_auth_failed', message: sanitized || 'SOCKS5 authentication failed' };
+  }
+
+  if (normalized.includes('socks5 connect failed')) {
+    return { type: 'socks5_connect_failed', message: sanitized || 'SOCKS5 CONNECT failed' };
+  }
 
   if (
     normalized.includes('timeout') ||
@@ -907,22 +930,28 @@ async function negotiateBrowserProxyEgress(proxy, expectations = {}, hostProfile
 
   for (const candidateTransport of profile.proxyEntryCandidates) {
     const candidateProxy = toCandidateProxy(proxy, candidateTransport);
-    const browserProxy = candidateProxy
-      ? { server: candidateProxy.server, username: candidateProxy.username, password: candidateProxy.password }
-      : undefined;
+    let resolvedLaunchProxy = {
+      browserProxy: undefined,
+      bridgeActive: false,
+      detail: 'direct',
+    };
 
     let browser;
     try {
+      resolvedLaunchProxy = await resolveRuntimeLaunchProxy(candidateProxy);
       browser = await chromium.launch({
         headless: true,
-        proxy: browserProxy,
+        proxy: resolvedLaunchProxy.browserProxy,
         args: ['--no-sandbox', '--disable-setuid-sandbox'],
       });
       const page = await browser.newPage();
       const verification = await verifyBrowserProxyEgress(page, expectations, candidateProxy?.proxyType || 'direct');
       const result = {
         ...verification,
+        upstreamServer: candidateProxy?.server || null,
         effectiveProxyTransport: candidateTransport,
+        bridgeActive: resolvedLaunchProxy.bridgeActive,
+        proxyBridgeDetail: resolvedLaunchProxy.detail,
         hostEnvironment: profile.os,
         networkMode: profile.networkMode,
         gatewayReachable: profile.proxyGatewayReachable,
@@ -940,7 +969,10 @@ async function negotiateBrowserProxyEgress(proxy, expectations = {}, hostProfile
       failures.push(buildEnvironmentVerification({
         status: classified.type,
         proxyType: candidateProxy?.proxyType || proxy?.proxyType || 'direct',
+        upstreamServer: candidateProxy?.server || null,
         effectiveProxyTransport: candidateTransport,
+        bridgeActive: resolvedLaunchProxy.bridgeActive,
+        proxyBridgeDetail: resolvedLaunchProxy.detail,
         hostEnvironment: profile.os,
         networkMode: profile.networkMode,
         gatewayReachable: profile.proxyGatewayReachable,
@@ -964,7 +996,10 @@ async function negotiateBrowserProxyEgress(proxy, expectations = {}, hostProfile
     verification: bestFailure || buildEnvironmentVerification({
       status: 'unknown',
       proxyType: proxy?.proxyType || 'direct',
+      upstreamServer: proxy?.server || null,
       effectiveProxyTransport: toEntryTransport(proxy?.proxyType || 'direct'),
+      bridgeActive: false,
+      proxyBridgeDetail: proxy?.server ? 'unresolved' : 'direct',
       hostEnvironment: profile.os,
       networkMode: profile.networkMode,
       gatewayReachable: profile.proxyGatewayReachable,
@@ -984,7 +1019,10 @@ async function handleBrowserProxyTest(body) {
     return buildEnvironmentVerification({
       status: 'unknown',
       proxyType: normalizeProxyType(body?.proxyType),
+      upstreamServer: null,
       effectiveProxyTransport: toEntryTransport(normalizeProxyType(body?.proxyType)),
+      bridgeActive: false,
+      proxyBridgeDetail: 'proxy protocol ambiguous',
       hostEnvironment: detectHostEnvironment(),
       networkMode: inferNetworkMode(detectHostEnvironment()),
       gatewayReachable: false,
@@ -1104,6 +1142,11 @@ async function handleStart(body) {
   );
   let verification = null;
   let resolvedProxy = proxyStr;
+  let resolvedLaunchProxy = {
+    browserProxy: undefined,
+    bridgeActive: false,
+    detail: 'direct',
+  };
 
   if (proxyStr || wantsDirect) {
     const negotiated = await negotiateBrowserProxyEgress(proxyStr, {
@@ -1133,9 +1176,9 @@ async function handleStart(body) {
 
   // ---------- build Playwright context options ----------
   /** @type {import('playwright').BrowserContextOptions} */
-  const browserProxy = resolvedProxy
-    ? { server: resolvedProxy.server, username: resolvedProxy.username, password: resolvedProxy.password }
-    : undefined;
+  if (resolvedProxy) {
+    resolvedLaunchProxy = await resolveRuntimeLaunchProxy(resolvedProxy);
+  }
   const ctxOptions = {
     headless,
     userAgent: fingerprint.userAgent,
@@ -1158,7 +1201,7 @@ async function handleStart(body) {
     ignoreDefaultArgs: ['--enable-automation'],
   };
 
-  if (browserProxy) ctxOptions.proxy = browserProxy;
+  if (resolvedLaunchProxy.browserProxy) ctxOptions.proxy = resolvedLaunchProxy.browserProxy;
 
   // ---------- launch persistent context ----------
   const context = await chromium.launchPersistentContext(userDataDir, ctxOptions);
@@ -1205,7 +1248,11 @@ async function handleStart(body) {
       city: verification?.city,
       isp: verification?.isp,
       provider: verification?.provider || null,
+      upstreamProxyType: verification?.proxyType || resolvedProxy?.proxyType || runtimeProxyType || null,
+      upstreamServer: verification?.upstreamServer || resolvedProxy?.server || null,
       effectiveProxyTransport: verification?.effectiveProxyTransport || null,
+      bridgeActive: verification?.bridgeActive ?? resolvedLaunchProxy.bridgeActive,
+      proxyBridgeDetail: verification?.proxyBridgeDetail || resolvedLaunchProxy.detail,
       hostEnvironment: hostProfile.os,
     });
   } catch (err) {
@@ -1288,11 +1335,15 @@ async function handleStart(body) {
   metrics.onSessionStart();
 
   console.log(`[Runtime] ✅ Session started: ${sessionId} (profile: ${profileData.name || profileId})`);
-  if (ctxOptions.proxy) console.log(`[Runtime]    Proxy: ${ctxOptions.proxy.server}`);
+  console.log(`[Runtime]    Proxy: ${describeResolvedRuntimeProxy(resolvedProxy, resolvedLaunchProxy)}`);
 
   monitor.log(sessionId, profileId, {
     event: 'start',
     proxy: ctxOptions.proxy?.server || 'direct',
+    upstreamProxy: resolvedProxy?.server || 'direct',
+    upstreamProxyType: resolvedProxy?.proxyType || 'direct',
+    bridgeActive: resolvedLaunchProxy.bridgeActive,
+    proxyBridgeDetail: resolvedLaunchProxy.detail,
     ua: fingerprint.userAgent,
     startupUrl: startupUrl || null,
   });
@@ -1702,6 +1753,14 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log('  POST /session/action  — Execute page action');
   console.log('  GET  /session/list    — List active sessions');
   console.log('  GET  /health          — Health check\n');
+});
+
+server.on('close', () => {
+  void closeAllRuntimeProxyBridges().catch(() => {});
+});
+
+process.once('beforeExit', async () => {
+  await closeAllRuntimeProxyBridges().catch(() => {});
 });
 
 // Graceful shutdown is now handled automatically by session-queue.js hook.
