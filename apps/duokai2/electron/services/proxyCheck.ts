@@ -303,3 +303,25 @@ export async function checkProfileEgress(
     }
   }
 }
+
+export async function checkStandaloneProxyEgress(proxy: ProxyRecord): Promise<ProxyCheckResult> {
+  try {
+    return await lookupWithProxy(proxy)
+  } catch (error) {
+    const diagnostic = await diagnoseProxyEndpoint(proxy).catch(() => null)
+    return {
+      ok: false,
+      ip: '',
+      country: '',
+      region: '',
+      city: '',
+      timezone: '',
+      languageHint: '',
+      geolocation: '',
+      message:
+        (error instanceof Error ? error.message : 'Unknown proxy check error') +
+        formatProxyDiagnostic(diagnostic),
+      source: 'proxy',
+    }
+  }
+}

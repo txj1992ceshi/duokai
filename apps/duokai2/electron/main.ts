@@ -113,6 +113,7 @@ import {
   ensureLocalRuntimeRunning,
   getLocalRuntimeInfo,
 } from './services/localRuntimeLauncher'
+import { checkStandaloneProxyEgress } from './services/proxyCheck'
 import type {
   AuthUser,
   CloudPhoneBulkActionPayload,
@@ -5804,97 +5805,26 @@ async function performProxyConnectivityTest(
   },
 ) {
   const category = options.category ?? 'proxy'
-  try {
-    const launchProxy = await resolveLaunchProxy(proxy)
-    const browser = await chromium.launch({
-      headless: true,
-      executablePath: resolveChromiumExecutable(),
-      proxy: launchProxy.config || undefined,
-      env: buildChromiumLaunchEnv(),
-      args: applyProxyCompatibilityArgs([], proxy, { bridgeActive: launchProxy.bridgeActive }),
-    })
-    const page = await browser.newPage()
-    await page.goto('https://example.com', { waitUntil: 'domcontentloaded', timeout: 20000 })
-    await browser.close()
+  const checkedAt = new Date().toISOString()
+  const result = await checkStandaloneProxyEgress(proxy)
 
-    const checkedAt = new Date().toISOString()
-    if (options.syncStoredProxyId) {
-      requireDatabase().setProxyStatus(options.syncStoredProxyId, 'online')
-    }
-    logEvent(
-      'info',
-      category,
-      `Proxy "${options.label}" verified locally proxyType=${proxy.type}; host=${proxy.host}; port=${proxy.port}; bridgeActive=${launchProxy.bridgeActive}; detail=${launchProxy.detail || 'none'}`,
-      null,
-    )
-    return {
-      success: true,
-      message: '本机检测通过（local）',
-      checkedAt,
-    }
-  } catch (error) {
-    if (getDesktopAuthState().authenticated) {
-      logEvent(
-        'warn',
-        category,
-        `Local proxy check failed for "${options.label}", attempting control plane fallback`,
-        null,
-      )
-      try {
-        const result = await requestControlPlane('/api/proxy/browser-check', {
-          method: 'POST',
-          body: JSON.stringify({
-            proxyType: proxy.type,
-            proxyHost: proxy.host,
-            proxyPort: String(proxy.port),
-            proxyUsername: proxy.username,
-            proxyPassword: proxy.password,
-          }),
-        })
-        const success = Boolean(result.status === 'verified' || result.browserVerified === true)
-        const checkedAt = String(result.checkedAt || new Date().toISOString())
-        if (options.syncStoredProxyId) {
-          requireDatabase().setProxyStatus(options.syncStoredProxyId, success ? 'online' : 'offline')
-        }
-        logEvent(
-          success ? 'info' : 'warn',
-          category,
-          success
-            ? `Proxy "${options.label}" verified via control plane fallback`
-            : `Proxy "${options.label}" failed local and control plane verification`,
-          null,
-        )
-        return {
-          success,
-          message: String(
-            result.detail ||
-              result.error ||
-              (success
-                ? '本机检测失败，但控制台后备检测通过（control-plane）'
-                : '本机与控制台后备检测均失败')
-          ),
-          checkedAt,
-        }
-      } catch (remoteError) {
-        logEvent(
-          'warn',
-          category,
-          `Control plane proxy check also failed for "${options.label}": ${remoteError instanceof Error ? remoteError.message : String(remoteError)}`,
-          null,
-        )
-      }
-    }
+  if (options.syncStoredProxyId) {
+    requireDatabase().setProxyStatus(options.syncStoredProxyId, result.ok ? 'online' : 'offline')
+  }
 
-    const checkedAt = new Date().toISOString()
-    if (options.syncStoredProxyId) {
-      requireDatabase().setProxyStatus(options.syncStoredProxyId, 'offline')
-    }
-    logEvent('error', category, `Proxy "${options.label}" test failed locally`, null)
-    return {
-      success: false,
-      message: error instanceof Error ? `本机检测失败：${error.message}` : '本机检测失败：未知错误',
-      checkedAt,
-    }
+  logEvent(
+    result.ok ? 'info' : 'error',
+    category,
+    result.ok
+      ? `Proxy "${options.label}" verified locally proxyType=${proxy.type}; host=${proxy.host}; port=${proxy.port}; detail=${result.message}`
+      : `Proxy "${options.label}" test failed locally proxyType=${proxy.type}; host=${proxy.host}; port=${proxy.port}; error=${result.message}`,
+    null,
+  )
+
+  return {
+    success: result.ok,
+    message: result.ok ? result.message || '本机检测通过（local）' : `本机检测失败：${result.message}`,
+    checkedAt,
   }
 }
 
