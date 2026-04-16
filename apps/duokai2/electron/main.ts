@@ -84,6 +84,7 @@ import {
 import { buildFingerprintInitScript } from './services/fingerprint'
 import { applyNetworkDerivedFingerprint } from './services/networkProfileResolver'
 import { resolveLaunchProxy } from './services/proxyBridge'
+import { listEgressPathCandidates } from './services/egressPaths'
 import { RuntimeScheduler } from './services/runtimeScheduler'
 import { AgentNetworkError, AgentService } from './services/agentService'
 import {
@@ -1958,6 +1959,7 @@ function resetTrustAfterWorkspaceRecovery(
     lastQuickCheckAt: '',
     lastQuickCheckSuccess: null,
     lastQuickCheckMessage: '',
+    lastNetworkEgressPath: '',
     lastQuickIsolationCheck: null,
     trustedSnapshotStatus: 'stale',
     trustedLaunchSnapshot: null,
@@ -4505,6 +4507,82 @@ function getSettings(): SettingsPayload {
   return requireDatabase().getSettings()
 }
 
+function rememberSuccessfulEgressPath(pathType: SettingsPayload['networkLastSuccessfulEgressPath']): void {
+  if (!pathType) {
+    return
+  }
+  const settings = getSettings()
+  if (
+    settings.networkLastSuccessfulEgressPath === pathType &&
+    settings.networkLastSuccessfulEgressAt
+  ) {
+    requireDatabase().setSettings({
+      ...settings,
+      networkLastSuccessfulEgressAt: new Date().toISOString(),
+    })
+    return
+  }
+  requireDatabase().setSettings({
+    ...settings,
+    networkLastSuccessfulEgressPath: pathType,
+    networkLastSuccessfulEgressAt: new Date().toISOString(),
+  })
+}
+
+function serializeProxyDiagnostics(
+  diagnostics: Array<{
+    pathType: string
+    stage: string
+    success: boolean
+    errorCode: string
+    errorMessage: string
+    latencyMs: number
+  }> = [],
+): string {
+  if (!diagnostics.length) {
+    return ''
+  }
+  try {
+    return JSON.stringify(
+      diagnostics.map((item) => ({
+        pathType: item.pathType,
+        stage: item.stage,
+        success: item.success,
+        errorCode: item.errorCode,
+        errorMessage: item.errorMessage,
+        latencyMs: item.latencyMs,
+      })),
+    )
+  } catch {
+    return ''
+  }
+}
+
+function formatProxyDiagnosticsSummary(
+  diagnostics: Array<{
+    pathType: string
+    stage: string
+    success: boolean
+    errorCode: string
+    errorMessage: string
+  }> = [],
+): string {
+  if (!diagnostics.length) {
+    return ''
+  }
+  const summary = diagnostics
+    .filter((item) => !item.success)
+    .slice(0, 3)
+    .map((item) => {
+      const stage = item.stage.replace(/_/g, '-')
+      const code = item.errorCode ? `/${item.errorCode}` : ''
+      const message = item.errorMessage ? ` ${item.errorMessage}` : ''
+      return `${item.pathType}:${stage}${code}${message}`.trim()
+    })
+    .join(' | ')
+  return summary ? ` Diagnostics: ${summary}` : ''
+}
+
 function normalizeProfileName(name: string | undefined): string {
   return String(name || '').trim()
 }
@@ -5806,24 +5884,30 @@ async function performProxyConnectivityTest(
 ) {
   const category = options.category ?? 'proxy'
   const checkedAt = new Date().toISOString()
-  const result = await checkStandaloneProxyEgress(proxy)
+  const result = await checkStandaloneProxyEgress(proxy, getSettings())
 
   if (options.syncStoredProxyId) {
     requireDatabase().setProxyStatus(options.syncStoredProxyId, result.ok ? 'online' : 'offline')
+  }
+
+  if (result.ok) {
+    rememberSuccessfulEgressPath(result.egressPathType)
   }
 
   logEvent(
     result.ok ? 'info' : 'error',
     category,
     result.ok
-      ? `Proxy "${options.label}" verified locally proxyType=${proxy.type}; host=${proxy.host}; port=${proxy.port}; detail=${result.message}`
-      : `Proxy "${options.label}" test failed locally proxyType=${proxy.type}; host=${proxy.host}; port=${proxy.port}; error=${result.message}`,
+      ? `Proxy "${options.label}" verified locally proxyType=${proxy.type}; host=${proxy.host}; port=${proxy.port}; egressPath=${result.egressPathType}; detail=${result.message}`
+      : `Proxy "${options.label}" test failed locally proxyType=${proxy.type}; host=${proxy.host}; port=${proxy.port}; egressPath=${result.egressPathType}; error=${result.message}${formatProxyDiagnosticsSummary(result.diagnostics)}`,
     null,
   )
 
   return {
     success: result.ok,
-    message: result.ok ? result.message || '本机检测通过（local）' : `本机检测失败：${result.message}`,
+    message: result.ok
+      ? result.message || '本机检测通过（local）'
+      : `本机检测失败：${result.message}${formatProxyDiagnosticsSummary(result.diagnostics)}`,
     checkedAt,
   }
 }
@@ -6301,6 +6385,7 @@ async function applyResolvedNetworkProfileToPayload(
       updatedAt: new Date().toISOString(),
     },
     proxy,
+    database.getSettings(),
   )
   if (!check.ok) {
     logEvent(
@@ -6342,6 +6427,8 @@ async function applyResolvedNetworkProfileToPayload(
         lastProxyCheckAt: new Date().toISOString(),
         lastProxyCheckSuccess: check.ok,
         lastProxyCheckMessage: check.message,
+        lastProxyCheckDiagnosticsJson: serializeProxyDiagnostics(check.diagnostics),
+        lastNetworkEgressPath: check.egressPathType,
       },
     },
   }
@@ -6353,7 +6440,7 @@ async function runProxyPreflight(
 ): Promise<{ proxy: ProxyRecord | null; check: NetworkHealthResult }> {
   const originalProxy = resolveProfileProxy(profile, database)
   const proxy = toCandidateProxy(originalProxy, toEntryTransport(originalProxy))
-  const check = await checkNetworkHealth(profile, proxy)
+  const check = await checkNetworkHealth(profile, proxy, database.getSettings())
 
   updateRuntimeMetadata(profile, {
     lastResolvedIp: check.ip,
@@ -6367,18 +6454,27 @@ async function runProxyPreflight(
     lastProxyCheckAt: new Date().toISOString(),
     lastProxyCheckSuccess: check.ok,
     lastProxyCheckMessage: check.message,
+    lastProxyCheckDiagnosticsJson: serializeProxyDiagnostics(check.diagnostics),
+    lastNetworkEgressPath: check.egressPathType,
   })
   if (profile.proxyId && profile.fingerprintConfig.proxySettings.proxyMode === 'manager') {
     database.setProxyStatus(profile.proxyId, check.ok ? 'online' : 'offline')
   }
+  if (check.ok) {
+    rememberSuccessfulEgressPath(check.egressPathType)
+  }
   if (!check.ok && proxy) {
-    const detail = check.message || 'Unknown proxy preflight error'
+    const detail =
+      (check.message || 'Unknown proxy preflight error') +
+      formatProxyDiagnosticsSummary(check.diagnostics)
     audit('proxy_preflight_failed', {
       profileId: profile.id,
       profileName: profile.name,
       platform: process.platform,
       detail,
       source: check.source,
+      egressPathType: check.egressPathType,
+      diagnostics: check.diagnostics,
     })
     throw new Error(`Proxy preflight failed for "${profile.name}": ${detail}`)
   }
@@ -6549,7 +6645,10 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       trustedSnapshotStatus: 'trusted',
       trustedLaunchVerifiedAt: existingSnapshot?.verifiedAt || '',
     })
-    check = await checkNetworkHealth(profile, proxy)
+    check = await checkNetworkHealth(profile, proxy, database.getSettings())
+    if (check.ok) {
+      rememberSuccessfulEgressPath(check.egressPathType)
+    }
     effectiveProxyTransport = toEntryTransport(proxy)
     const comparison = compareSnapshotWithCheck(existingSnapshot!, check, effectiveProxyTransport)
     const quickCheck = buildQuickIsolationCheck(
@@ -6563,6 +6662,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       lastQuickCheckAt: quickCheck.checkedAt,
       lastQuickCheckSuccess: quickCheck.success,
       lastQuickCheckMessage: quickCheck.message,
+      lastNetworkEgressPath: check.egressPathType,
       lastEffectiveProxyTransport: effectiveProxyTransport,
       trustedSnapshotStatus: comparison.ok ? 'trusted' : 'invalid',
       trustedLaunchSnapshot: comparison.ok
@@ -6604,6 +6704,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       lastQuickCheckAt: '',
       lastQuickCheckSuccess: null,
       lastQuickCheckMessage: '',
+      lastNetworkEgressPath: check.egressPathType,
       lastEffectiveProxyTransport: effectiveProxyTransport,
       trustedSnapshotStatus: 'stale',
     })
@@ -6727,7 +6828,12 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     downloadsPath: workspaceLaunch.downloadsDir,
   }
 
-  const launchProxy = await resolveLaunchProxy(resolvedProxy)
+  const launchProxy = await resolveLaunchProxy(resolvedProxy, {
+    egressPath:
+      check.egressPathType === 'direct'
+        ? undefined
+        : listEgressPathCandidates(getSettings()).find((item) => item.type === check.egressPathType),
+  })
   if (resolvedProxy) {
     const bypassArg = `--proxy-bypass-list=${GOOGLE_PROXY_BYPASS_LIST}`
     if (!launchOptions.args?.some((arg) => arg.startsWith('--proxy-bypass-list='))) {
@@ -6754,6 +6860,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       level: diagnostics.level,
       messages: diagnostics.messages,
       message: diagnostics.messages[0] || check.message || '',
+      egressPathType: check.egressPathType,
       checkedAt: check.checkedAt,
       egressIp: check.ip,
       country: check.country,
@@ -6784,7 +6891,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     logEvent(
     'info',
     'runtime',
-    `Launched profile "${profile.name}"${resolvedProxy ? ` proxyType=${resolvedProxy.type}; host=${resolvedProxy.host}; port=${resolvedProxy.port}; bridgeActive=${launchProxy.bridgeActive}; detail=${launchProxy.detail || 'none'}; upstream=${buildProxyServer(resolvedProxy)}` : ''}`,
+    `Launched profile "${profile.name}"${resolvedProxy ? ` proxyType=${resolvedProxy.type}; host=${resolvedProxy.host}; port=${resolvedProxy.port}; egressPath=${check.egressPathType}; bridgeActive=${launchProxy.bridgeActive}; detail=${launchProxy.detail || 'none'}; upstream=${buildProxyServer(resolvedProxy)}` : ''}`,
     profileId,
     )
     await context.addInitScript(buildFingerprintInitScript(profile.id, profile.fingerprintConfig))

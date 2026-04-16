@@ -1,5 +1,5 @@
 import { useState, type Dispatch, type SetStateAction } from 'react'
-import { Button, Card, Input, Select, Textarea } from '@duokai/ui'
+import { Badge, Button, Card, Input, Select, Textarea } from '@duokai/ui'
 import type { Dictionary } from '../i18n'
 import i18nClient from '../lib/i18n-client'
 import { SUPPORTED_ENVIRONMENT_LANGUAGES } from '../shared/environmentLanguages'
@@ -12,6 +12,25 @@ import type {
   ImportResult,
   SettingsPayload,
 } from '../shared/types'
+
+type LatestNetworkCheck = {
+  profileName: string
+  success: boolean | null
+  ip: string
+  country: string
+  timezone: string
+  egressPath: string
+  message: string
+  diagnostics: Array<{
+    pathType: string
+    stage: string
+    success: boolean
+    errorCode: string
+    errorMessage: string
+    latencyMs: number
+  }>
+  checkedAt: string
+} | null
 
 export function SettingsView({
   locale,
@@ -28,6 +47,7 @@ export function SettingsView({
   importResult,
   directoryInfo,
   runtimeInfo,
+  latestNetworkCheck,
   updateState,
   rendererOperatingSystem,
   appVersion,
@@ -60,6 +80,7 @@ export function SettingsView({
     chromiumExecutable?: string
   } | null
   runtimeInfo: DesktopRuntimeInfo | null
+  latestNetworkCheck: LatestNetworkCheck
   updateState: DesktopUpdateState | null
   rendererOperatingSystem: string
   appVersion: string
@@ -77,6 +98,42 @@ export function SettingsView({
   const desktopT = i18nClient.getFixedT(locale, 'desktop')
   const [capabilitiesExpanded, setCapabilitiesExpanded] = useState(false)
   const capabilityList = runtimeInfo?.capabilities ?? []
+  const failedLabel = locale === 'zh-CN' ? '失败' : 'Failed'
+  const unknownLabel = locale === 'zh-CN' ? '未知' : 'Unknown'
+  const selectedNetworkMode = settings.networkEgressMode ?? 'auto'
+  const getPathLabel = (path: string | undefined) =>
+    path === 'custom'
+      ? t.settings.networkEgressCustom
+      : path === 'system'
+        ? t.settings.networkEgressSystem
+        : path === 'env'
+          ? 'ENV'
+          : path === 'auto'
+            ? t.settings.networkEgressAuto
+            : t.settings.networkEgressDirect
+  const networkPathLabel = getPathLabel(latestNetworkCheck?.egressPath)
+  const lastSuccessfulPathLabel = getPathLabel(settings.networkLastSuccessfulEgressPath)
+  const selectedModeDescription =
+    selectedNetworkMode === 'custom'
+      ? t.settings.networkModeDescriptionCustom
+      : selectedNetworkMode === 'system'
+        ? t.settings.networkModeDescriptionSystem
+        : selectedNetworkMode === 'direct'
+          ? t.settings.networkModeDescriptionDirect
+          : t.settings.networkModeDescriptionAuto
+  const stageLabel = (stage: string) => {
+    const labels: Record<string, string> = {
+      dns_resolve: 'DNS',
+      tcp_connect: 'TCP',
+      proxy_bridge: 'Bridge',
+      browser_launch: 'Browser',
+      target_probe: 'Target',
+    }
+    return labels[stage] || stage
+  }
+  const latestLocation = [latestNetworkCheck?.country, latestNetworkCheck?.timezone]
+    .filter((value) => Boolean(value))
+    .join(' / ')
 
   return (
     <section className="space-y-6">
@@ -267,6 +324,91 @@ export function SettingsView({
                   }
                   placeholder={t.settings.runtimeMaxLaunchRetries}
                 />
+              </div>
+              <div className="space-y-3 rounded-2xl bg-slate-50 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-medium text-slate-700">{t.settings.networkTitle}</div>
+                    <div className="mt-1 text-xs text-slate-500">{t.settings.networkModeDescription}</div>
+                  </div>
+                  <Badge tone={selectedNetworkMode === 'custom' ? 'warning' : selectedNetworkMode === 'system' ? 'primary' : 'neutral'}>
+                    {getPathLabel(selectedNetworkMode)}
+                  </Badge>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <div className="text-xs font-medium uppercase tracking-[0.12em] text-slate-400">
+                      {t.settings.networkEgressMode}
+                    </div>
+                    <Select
+                      value={selectedNetworkMode}
+                      onChange={(event) =>
+                        setSettings((current) => ({
+                          ...current,
+                          networkEgressMode: event.target.value as 'auto' | 'direct' | 'system' | 'custom',
+                        }))
+                      }
+                    >
+                      <option value="auto">{t.settings.networkEgressAuto}</option>
+                      <option value="direct">{t.settings.networkEgressDirect}</option>
+                      <option value="system">{t.settings.networkEgressSystem}</option>
+                      <option value="custom">{t.settings.networkEgressCustom}</option>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="text-xs font-medium uppercase tracking-[0.12em] text-slate-400">
+                      {t.settings.networkParentProxyUrl}
+                    </div>
+                    <Input
+                      value={settings.networkParentProxyUrl ?? ''}
+                      onChange={(event) =>
+                        setSettings((current) => ({
+                          ...current,
+                          networkParentProxyUrl: event.target.value,
+                        }))
+                      }
+                      placeholder={t.settings.networkParentProxyHint}
+                      disabled={selectedNetworkMode !== 'custom'}
+                    />
+                  </div>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="rounded-2xl border border-slate-200 bg-white/80 px-4 py-3">
+                    <div className="text-xs uppercase tracking-[0.12em] text-slate-400">
+                      {t.settings.networkModeDescription}
+                    </div>
+                    <div className="mt-1 text-sm text-slate-700">{selectedModeDescription}</div>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-white/80 px-4 py-3">
+                    <div className="text-xs uppercase tracking-[0.12em] text-slate-400">
+                      {t.settings.networkLastSuccessfulPath}
+                    </div>
+                    <div className="mt-1 text-sm text-slate-700">
+                      {settings.networkLastSuccessfulEgressPath ? lastSuccessfulPathLabel : unknownLabel}
+                    </div>
+                    <div className="mt-1 text-xs text-slate-500">
+                      {settings.networkLastSuccessfulEgressAt
+                        ? `${t.settings.networkLastSuccessfulAt}: ${formatDate(settings.networkLastSuccessfulEgressAt)}`
+                        : t.common.never}
+                    </div>
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-white/70 px-4 py-3">
+                  <div className="text-xs uppercase tracking-[0.12em] text-slate-400">
+                    {t.settings.networkModeCandidates}
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <Badge tone="neutral">{t.settings.networkEgressDirect}</Badge>
+                    <Badge tone="primary">{t.settings.networkEgressSystem}</Badge>
+                    <Badge tone="success">ENV</Badge>
+                    <Badge tone="warning">{t.settings.networkEgressCustom}</Badge>
+                  </div>
+                </div>
+                <div className="text-xs text-slate-500">
+                  {selectedNetworkMode === 'custom'
+                    ? t.settings.networkParentProxyHint
+                    : t.settings.networkParentProxyInactive}
+                </div>
               </div>
               <Button className="w-fit" variant="primary" onClick={onSave}>
                 {t.settings.save}
@@ -488,6 +630,105 @@ export function SettingsView({
                   <div className="mt-3 rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">
                     {capabilityList.join(', ') || t.common.loading}
                   </div>
+                ) : null}
+              </div>
+              <div className="rounded-2xl border border-slate-200 px-4 py-3">
+                <div className="text-xs uppercase tracking-[0.12em] text-slate-400">
+                  {t.settings.latestNetworkDiagnostics}
+                </div>
+                <div className="mt-2 grid gap-3 md:grid-cols-3">
+                  <div>
+                    <div className="text-xs text-slate-400">{t.settings.latestNetworkDiagnosticsPath}</div>
+                    <div className="mt-1 flex items-center gap-2 text-sm text-slate-700">
+                      <span>{latestNetworkCheck ? networkPathLabel : t.common.loading}</span>
+                      {latestNetworkCheck ? (
+                        <Badge
+                          tone={
+                            latestNetworkCheck.egressPath === 'custom'
+                              ? 'warning'
+                              : latestNetworkCheck.egressPath === 'system'
+                                ? 'primary'
+                                : latestNetworkCheck.egressPath === 'env'
+                                  ? 'success'
+                                  : 'neutral'
+                          }
+                        >
+                          {latestNetworkCheck.egressPath.toUpperCase()}
+                        </Badge>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-slate-400">{t.settings.latestNetworkDiagnosticsStatus}</div>
+                    <div className="mt-1 text-sm text-slate-700">
+                      {!latestNetworkCheck
+                        ? t.common.loading
+                        : latestNetworkCheck.success === true
+                          ? t.common.ready
+                          : latestNetworkCheck.success === false
+                            ? failedLabel
+                            : unknownLabel}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-slate-400">{t.settings.latestNetworkDiagnosticsProfile}</div>
+                    <div className="mt-1 text-sm text-slate-700">{latestNetworkCheck?.profileName ?? t.common.loading}</div>
+                  </div>
+                </div>
+                <div className="mt-3 grid gap-3 md:grid-cols-3">
+                  <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                    <div className="text-xs uppercase tracking-[0.12em] text-slate-400">
+                      {t.settings.latestNetworkDiagnosticsIp}
+                    </div>
+                    <div className="mt-1 text-sm text-slate-700">{latestNetworkCheck?.ip || unknownLabel}</div>
+                  </div>
+                  <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                    <div className="text-xs uppercase tracking-[0.12em] text-slate-400">
+                      {t.settings.latestNetworkDiagnosticsLocation}
+                    </div>
+                    <div className="mt-1 text-sm text-slate-700">{latestLocation || unknownLabel}</div>
+                  </div>
+                  <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                    <div className="text-xs uppercase tracking-[0.12em] text-slate-400">
+                      {t.settings.latestNetworkDiagnosticsTimezone}
+                    </div>
+                    <div className="mt-1 text-sm text-slate-700">{latestNetworkCheck?.timezone || unknownLabel}</div>
+                  </div>
+                </div>
+                <div className="mt-3 text-sm text-slate-600">
+                  {latestNetworkCheck?.message || t.settings.latestNetworkDiagnosticsHint}
+                </div>
+                {latestNetworkCheck?.diagnostics.length ? (
+                  <div className="mt-3 rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">
+                    <div className="grid gap-2">
+                      {latestNetworkCheck.diagnostics.map((item, index) => (
+                        <div
+                          key={`${item.pathType}-${item.stage}-${index}`}
+                          className="rounded-2xl border border-slate-200 bg-white/80 px-3 py-2"
+                        >
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-medium text-slate-700">{stageLabel(item.stage)}</span>
+                            <Badge tone={item.success ? 'success' : 'danger'}>
+                              {item.success ? t.common.ready : failedLabel}
+                            </Badge>
+                            <Badge tone="neutral">{item.pathType.toUpperCase()}</Badge>
+                            {item.latencyMs > 0 ? <span className="text-slate-400">{item.latencyMs} ms</span> : null}
+                            {item.errorCode ? <span className="text-slate-400">{item.errorCode}</span> : null}
+                          </div>
+                          {item.errorMessage ? (
+                            <div className="mt-1 text-xs leading-5 text-slate-600">{item.errorMessage}</div>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : latestNetworkCheck ? (
+                  <div className="mt-3 rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-500">
+                    {t.settings.latestNetworkDiagnosticsNone}
+                  </div>
+                ) : null}
+                {latestNetworkCheck?.checkedAt ? (
+                  <div className="mt-2 text-xs text-slate-400">{formatDate(latestNetworkCheck.checkedAt)}</div>
                 ) : null}
               </div>
             </div>

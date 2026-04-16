@@ -111,6 +111,7 @@ export function useDesktopWorkspaceViewProps({
   loadTemplateIntoProfile,
   saveProfile,
   deleteSelectedProfile,
+  deleteProfileById,
   saveTemplate,
   deleteSelectedTemplate,
   getEnvironmentPurposeLabel,
@@ -271,6 +272,7 @@ export function useDesktopWorkspaceViewProps({
   loadTemplateIntoProfile: ProfilesProps['onCreateProfileFromTemplate']
   saveProfile: () => void | Promise<void>
   deleteSelectedProfile: () => void | Promise<void>
+  deleteProfileById: (profileId: string) => void | Promise<void>
   saveTemplate: () => void | Promise<void>
   deleteSelectedTemplate: () => void | Promise<void>
   getEnvironmentPurposeLabel: ProfilesProps['getEnvironmentPurposeLabel']
@@ -440,6 +442,7 @@ export function useDesktopWorkspaceViewProps({
     onCloseProfileEditor: returnToProfileList,
     onSaveProfile: saveProfile,
     onDeleteProfile: deleteSelectedProfile,
+    onDeleteProfileById: (profileId) => void deleteProfileById(profileId),
     onRevealProfileFolder:
       selectedProfileId ? revealSelectedProfileFolder : null,
     onSaveProfileAsTemplate:
@@ -568,6 +571,7 @@ export function useDesktopWorkspaceViewProps({
     importResult,
     directoryInfo,
     runtimeInfo,
+    latestNetworkCheck,
     updateState,
     rendererOperatingSystem,
     appVersion,

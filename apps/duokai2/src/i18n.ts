@@ -210,6 +210,32 @@ export type Dictionary = {
     runtimeMaxConcurrentStarts: string
     runtimeMaxActiveProfiles: string
     runtimeMaxLaunchRetries: string
+    networkTitle: string
+    networkEgressMode: string
+    networkEgressAuto: string
+    networkEgressDirect: string
+    networkEgressSystem: string
+    networkEgressCustom: string
+    networkParentProxyUrl: string
+    networkParentProxyHint: string
+    networkModeDescription: string
+    networkModeCandidates: string
+    networkModeDescriptionAuto: string
+    networkModeDescriptionDirect: string
+    networkModeDescriptionSystem: string
+    networkModeDescriptionCustom: string
+    networkParentProxyInactive: string
+    networkLastSuccessfulPath: string
+    networkLastSuccessfulAt: string
+    latestNetworkDiagnostics: string
+    latestNetworkDiagnosticsHint: string
+    latestNetworkDiagnosticsPath: string
+    latestNetworkDiagnosticsStatus: string
+    latestNetworkDiagnosticsProfile: string
+    latestNetworkDiagnosticsIp: string
+    latestNetworkDiagnosticsLocation: string
+    latestNetworkDiagnosticsTimezone: string
+    latestNetworkDiagnosticsNone: string
     save: string
     runtimePaths: string
     appData: string
@@ -473,6 +499,32 @@ export const dictionaries: Record<LocaleCode, Dictionary> = {
       runtimeMaxConcurrentStarts: '最大并发启动数',
       runtimeMaxActiveProfiles: '最大活跃窗口数',
       runtimeMaxLaunchRetries: '启动重试次数',
+      networkTitle: '网络出站策略',
+      networkEgressMode: '出站路径模式',
+      networkEgressAuto: '自动选择',
+      networkEgressDirect: '仅直连',
+      networkEgressSystem: '系统代理',
+      networkEgressCustom: '自定义父代理',
+      networkParentProxyUrl: '父代理地址',
+      networkParentProxyHint: '示例：http://127.0.0.1:7890 或 socks5://127.0.0.1:1080',
+      networkModeDescription: 'Duokai 会根据当前模式决定如何把本地 bridge 流量送往上游代理。',
+      networkModeCandidates: '自动模式候选路径',
+      networkModeDescriptionAuto: '优先尝试最近成功路径，其次按直连、系统代理、环境变量、自定义父代理依次探测。',
+      networkModeDescriptionDirect: '只允许应用直连上游代理，适合已经由全局隧道接管的网络环境。',
+      networkModeDescriptionSystem: '优先复用操作系统当前生效的代理设置，适合通过系统代理接管流量的场景。',
+      networkModeDescriptionCustom: '显式指定外层父代理，适合本机 bridge 需要稳定挂到固定出口时使用。',
+      networkParentProxyInactive: '仅在“自定义父代理”模式下启用。',
+      networkLastSuccessfulPath: '最近成功路径',
+      networkLastSuccessfulAt: '最近成功时间',
+      latestNetworkDiagnostics: '最近一次网络诊断',
+      latestNetworkDiagnosticsHint: '展示最近一次代理预检实际使用的出站路径与结果摘要。',
+      latestNetworkDiagnosticsPath: '实际出站路径',
+      latestNetworkDiagnosticsStatus: '诊断状态',
+      latestNetworkDiagnosticsProfile: '关联环境',
+      latestNetworkDiagnosticsIp: '出口 IP',
+      latestNetworkDiagnosticsLocation: '地区',
+      latestNetworkDiagnosticsTimezone: '时区',
+      latestNetworkDiagnosticsNone: '尚未产生网络诊断记录。完成一次代理测试后，这里会显示最近一次出站路径和阶段结果。',
       save: '保存设置',
       runtimePaths: '运行路径',
       appData: '应用数据目录',
@@ -734,6 +786,33 @@ export const dictionaries: Record<LocaleCode, Dictionary> = {
       runtimeMaxConcurrentStarts: 'Max concurrent starts',
       runtimeMaxActiveProfiles: 'Max active profiles',
       runtimeMaxLaunchRetries: 'Launch retry limit',
+      networkTitle: 'Network egress',
+      networkEgressMode: 'Egress mode',
+      networkEgressAuto: 'Auto',
+      networkEgressDirect: 'Direct only',
+      networkEgressSystem: 'System proxy',
+      networkEgressCustom: 'Custom parent proxy',
+      networkParentProxyUrl: 'Parent proxy URL',
+      networkParentProxyHint: 'Example: http://127.0.0.1:7890 or socks5://127.0.0.1:1080',
+      networkModeDescription: 'Duokai decides how local bridge traffic reaches the upstream proxy based on the selected mode.',
+      networkModeCandidates: 'Auto mode candidates',
+      networkModeDescriptionAuto: 'Prefers the last successful path, then probes direct, system proxy, env proxy, and custom parent proxy.',
+      networkModeDescriptionDirect: 'Only allows direct outbound connections to the upstream proxy. Best for full-tunnel environments.',
+      networkModeDescriptionSystem: 'Reuses the operating system proxy configuration when the current machine relies on system-managed proxy routing.',
+      networkModeDescriptionCustom: 'Pins outbound traffic to an explicit parent proxy for predictable bridge egress.',
+      networkParentProxyInactive: 'Enabled only when Custom parent proxy mode is selected.',
+      networkLastSuccessfulPath: 'Last successful path',
+      networkLastSuccessfulAt: 'Last success time',
+      latestNetworkDiagnostics: 'Latest network diagnostics',
+      latestNetworkDiagnosticsHint: 'Shows the most recent proxy preflight path and result summary.',
+      latestNetworkDiagnosticsPath: 'Active egress path',
+      latestNetworkDiagnosticsStatus: 'Diagnostic status',
+      latestNetworkDiagnosticsProfile: 'Profile',
+      latestNetworkDiagnosticsIp: 'Exit IP',
+      latestNetworkDiagnosticsLocation: 'Location',
+      latestNetworkDiagnosticsTimezone: 'Timezone',
+      latestNetworkDiagnosticsNone:
+        'No network diagnostics yet. After a proxy test runs, the latest egress path and stage results will appear here.',
       save: 'Save settings',
       runtimePaths: 'Runtime paths',
       appData: 'App data',

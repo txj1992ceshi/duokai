@@ -87,6 +87,7 @@ export function ProfilesView({
   onCloneProfile,
   onLaunchProfile,
   onStopProfile,
+  onDeleteProfileById,
   onMoveProfileToNurture,
   onMoveProfileToOperation,
   onBatchStart,
@@ -153,6 +154,7 @@ export function ProfilesView({
   onCloneProfile: (profileId: string) => void
   onLaunchProfile: (profileId: string) => void
   onStopProfile: (profileId: string) => void
+  onDeleteProfileById: (profileId: string) => void | Promise<void>
   onMoveProfileToNurture: (profileId: string) => void
   onMoveProfileToOperation: (profileId: string) => void
   onBatchStart: () => void
@@ -352,10 +354,11 @@ export function ProfilesView({
                 onEdit={onEditProfile}
                 onClone={onCloneProfile}
                 onLaunch={onLaunchProfile}
-              onStop={onStopProfile}
-              onMoveToNurture={onMoveProfileToNurture}
-              onMoveToOperation={onMoveProfileToOperation}
-            />
+                onStop={onStopProfile}
+                onDelete={onDeleteProfileById}
+                onMoveToNurture={onMoveProfileToNurture}
+                onMoveToOperation={onMoveProfileToOperation}
+              />
           ) : null}
 
           <ProfileDrawer

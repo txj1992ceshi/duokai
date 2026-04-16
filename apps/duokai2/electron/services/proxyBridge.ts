@@ -3,7 +3,8 @@ import https from 'node:https'
 import net from 'node:net'
 import tls from 'node:tls'
 import type { Duplex } from 'node:stream'
-import type { ProxyRecord } from '../../src/shared/types'
+import type { EgressPathType, ProxyRecord } from '../../src/shared/types'
+import type { EgressPathCandidate, ParentProxyConfig } from './egressPaths'
 
 type PlaywrightProxyConfig = {
   server: string
@@ -24,6 +25,7 @@ type BridgeEntry = {
   server: http.Server
   port: number
   upstream: UpstreamProxyTarget
+  egressPathType: EgressPathType
 }
 
 type TargetRequestInfo = {
@@ -36,8 +38,8 @@ type TargetRequestInfo = {
 
 const bridgeCache = new Map<string, Promise<BridgeEntry>>()
 
-function buildBridgeKey(proxy: ProxyRecord): string {
-  return `${proxy.type}://${proxy.host}:${proxy.port}|${proxy.username || ''}|${proxy.password || ''}`
+function buildBridgeKey(proxy: ProxyRecord, egressPath?: EgressPathCandidate): string {
+  return `${proxy.type}://${proxy.host}:${proxy.port}|${proxy.username || ''}|${proxy.password || ''}|${egressPath?.type || 'direct'}|${egressPath?.parentProxy?.rawUrl || ''}`
 }
 
 function toUpstreamProxyTarget(proxy: ProxyRecord): UpstreamProxyTarget {
@@ -47,6 +49,16 @@ function toUpstreamProxyTarget(proxy: ProxyRecord): UpstreamProxyTarget {
     port: Number(proxy.port),
     username: proxy.username || undefined,
     password: proxy.password || undefined,
+  }
+}
+
+function parentProxyToUpstreamTarget(parentProxy: ParentProxyConfig): UpstreamProxyTarget {
+  return {
+    type: parentProxy.protocol,
+    host: parentProxy.host,
+    port: parentProxy.port,
+    username: parentProxy.username,
+    password: parentProxy.password,
   }
 }
 
@@ -118,35 +130,17 @@ function buildBasicAuthHeader(username?: string, password?: string): string | nu
   return `Basic ${Buffer.from(raw).toString('base64')}`
 }
 
-async function openHttpProxySocket(upstream: UpstreamProxyTarget): Promise<net.Socket | tls.TLSSocket> {
-  const tcp = await connectTcp(upstream.host, upstream.port)
-  if (upstream.type !== 'https') {
-    return tcp
-  }
-  return await new Promise<tls.TLSSocket>((resolve, reject) => {
-    const secure = tls.connect({
-      socket: tcp,
-      servername: upstream.host,
-    })
-    const onError = (error: Error) => {
-      secure.removeListener('secureConnect', onSecureConnect)
-      reject(error)
-    }
-    const onSecureConnect = () => {
-      secure.removeListener('error', onError)
-      resolve(secure)
-    }
-    secure.once('secureConnect', onSecureConnect)
-    secure.once('error', onError)
-  })
-}
-
 async function connectViaHttpFamilyProxy(
   upstream: UpstreamProxyTarget,
   targetHost: string,
   targetPort: number,
+  socketFactory: (host: string, port: number) => Promise<net.Socket | tls.TLSSocket> = connectTcp,
 ): Promise<net.Socket | tls.TLSSocket> {
-  const socket = await openHttpProxySocket(upstream)
+  const tcp = await socketFactory(upstream.host, upstream.port)
+  const socket =
+    upstream.type === 'https'
+      ? await wrapTlsTunnel(tcp, upstream.host)
+      : tcp
   const auth = buildBasicAuthHeader(upstream.username, upstream.password)
   const request =
     `CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\n` +
@@ -298,8 +292,9 @@ async function connectViaSocks5Proxy(
   upstream: UpstreamProxyTarget,
   targetHost: string,
   targetPort: number,
+  socketFactory: (host: string, port: number) => Promise<net.Socket> = connectTcp,
 ): Promise<net.Socket> {
-  const socket = await connectTcp(upstream.host, upstream.port)
+  const socket = await socketFactory(upstream.host, upstream.port)
   await performSocks5Handshake(socket, upstream)
 
   const address = encodeSocks5Address(targetHost)
@@ -339,11 +334,31 @@ async function openUpstreamTunnel(
   upstream: UpstreamProxyTarget,
   targetHost: string,
   targetPort: number,
+  socketFactory?: (host: string, port: number) => Promise<net.Socket | tls.TLSSocket>,
 ): Promise<net.Socket | tls.TLSSocket> {
   if (upstream.type === 'socks5') {
-    return await connectViaSocks5Proxy(upstream, targetHost, targetPort)
+    const connectSocket =
+      socketFactory as ((host: string, port: number) => Promise<net.Socket>) | undefined
+    return await connectViaSocks5Proxy(
+      upstream,
+      targetHost,
+      targetPort,
+      connectSocket,
+    )
   }
-  return await connectViaHttpFamilyProxy(upstream, targetHost, targetPort)
+  return await connectViaHttpFamilyProxy(upstream, targetHost, targetPort, socketFactory)
+}
+
+async function connectTcpViaEgress(
+  host: string,
+  port: number,
+  egressPath?: EgressPathCandidate,
+): Promise<net.Socket | tls.TLSSocket> {
+  if (!egressPath || egressPath.type === 'direct' || !egressPath.parentProxy) {
+    return await connectTcp(host, port)
+  }
+  const parentProxy = parentProxyToUpstreamTarget(egressPath.parentProxy)
+  return await openUpstreamTunnel(parentProxy, host, port)
 }
 
 function parseTargetRequestInfo(rawUrl: string, hostHeader?: string): TargetRequestInfo {
@@ -396,6 +411,7 @@ async function handleConnectRequest(
   head: Buffer,
   requestUrl: string,
   upstream: UpstreamProxyTarget,
+  egressPath?: EgressPathCandidate,
 ): Promise<void> {
   let upstreamSocket: net.Socket | tls.TLSSocket | null = null
   try {
@@ -407,7 +423,12 @@ async function handleConnectRequest(
       return
     }
 
-    upstreamSocket = await openUpstreamTunnel(upstream, targetHost, targetPort)
+    upstreamSocket = await openUpstreamTunnel(
+      upstream,
+      targetHost,
+      targetPort,
+      (host, port) => connectTcpViaEgress(host, port, egressPath),
+    )
     clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
     if (head.length > 0) {
       upstreamSocket.write(head)
@@ -423,13 +444,19 @@ async function handleHttpRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   upstream: UpstreamProxyTarget,
+  egressPath?: EgressPathCandidate,
 ): Promise<void> {
   let upstreamSocket: net.Socket | tls.TLSSocket | null = null
   let proxyRequest: http.ClientRequest | null = null
 
   try {
     const target = parseTargetRequestInfo(req.url || '/', req.headers.host)
-    upstreamSocket = await openUpstreamTunnel(upstream, target.host, target.port)
+    upstreamSocket = await openUpstreamTunnel(
+      upstream,
+      target.host,
+      target.port,
+      (host, port) => connectTcpViaEgress(host, port, egressPath),
+    )
     const transport = target.protocol === 'https:' ? https : http
     const connection =
       target.protocol === 'https:'
@@ -476,14 +503,17 @@ async function handleHttpRequest(
   }
 }
 
-async function createBridge(proxy: ProxyRecord): Promise<BridgeEntry> {
+async function createBridge(
+  proxy: ProxyRecord,
+  egressPath?: EgressPathCandidate,
+): Promise<BridgeEntry> {
   const upstream = toUpstreamProxyTarget(proxy)
   const server = http.createServer((req, res) => {
-    void handleHttpRequest(req, res, upstream)
+    void handleHttpRequest(req, res, upstream, egressPath)
   })
 
   server.on('connect', (req, clientSocket, head) => {
-    void handleConnectRequest(clientSocket, head, req.url || '', upstream)
+    void handleConnectRequest(clientSocket, head, req.url || '', upstream, egressPath)
   })
 
   await new Promise<void>((resolve, reject) => {
@@ -507,25 +537,37 @@ async function createBridge(proxy: ProxyRecord): Promise<BridgeEntry> {
   }
 
   return {
-    key: buildBridgeKey(proxy),
+    key: buildBridgeKey(proxy, egressPath),
     server,
     port: address.port,
     upstream,
+    egressPathType: egressPath?.type || 'direct',
   }
 }
 
 export async function resolveLaunchProxy(
   proxy: ProxyRecord | null,
-): Promise<{ config: PlaywrightProxyConfig | null; bridgeActive: boolean; detail: string }> {
+  options: { egressPath?: EgressPathCandidate } = {},
+): Promise<{
+  config: PlaywrightProxyConfig | null
+  bridgeActive: boolean
+  detail: string
+  egressPathType: EgressPathType
+}> {
   if (!proxy) {
-    return { config: null, bridgeActive: false, detail: '' }
+    return {
+      config: null,
+      bridgeActive: false,
+      detail: '',
+      egressPathType: options.egressPath?.type || 'direct',
+    }
   }
 
-  const key = buildBridgeKey(proxy)
+  const key = buildBridgeKey(proxy, options.egressPath)
   if (!bridgeCache.has(key)) {
     bridgeCache.set(
       key,
-      createBridge(proxy).catch((error) => {
+      createBridge(proxy, options.egressPath).catch((error) => {
         bridgeCache.delete(key)
         throw error
       }),
@@ -538,6 +580,11 @@ export async function resolveLaunchProxy(
       server: `http://127.0.0.1:${bridge.port}`,
     },
     bridgeActive: true,
-    detail: `via local proxy bridge http://127.0.0.1:${bridge.port} -> ${proxy.type}://${proxy.host}:${proxy.port}`,
+    detail:
+      `via local proxy bridge http://127.0.0.1:${bridge.port} -> ${proxy.type}://${proxy.host}:${proxy.port}` +
+      (options.egressPath?.parentProxy
+        ? ` via ${options.egressPath.type} parent proxy ${options.egressPath.parentProxy.protocol}://${options.egressPath.parentProxy.host}:${options.egressPath.parentProxy.port}`
+        : ''),
+    egressPathType: bridge.egressPathType,
   }
 }

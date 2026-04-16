@@ -10,7 +10,7 @@ import {
   DropdownMenuTrigger,
 } from '@duokai/ui'
 import { AnimatePresence, motion } from 'framer-motion'
-import { MoreHorizontal, Play, Square, Copy, ArrowRightLeft, ChevronDown, ChevronUp } from 'lucide-react'
+import { MoreHorizontal, Play, Square, Copy, ArrowRightLeft, ChevronDown, ChevronUp, Trash2 } from 'lucide-react'
 import type { EnvironmentListItem } from '../../lib/desktop-types'
 import { EXPANDABLE_TRANSITION, EXPANDABLE_VARIANTS } from '../../lib/motion'
 
@@ -147,6 +147,7 @@ export function EnvironmentRow({
   onPullStorageState,
   onLaunch,
   onStop,
+  onDelete,
   onMoveToNurture,
   onMoveToOperation,
 }: {
@@ -163,6 +164,7 @@ export function EnvironmentRow({
   onPullStorageState: () => void
   onLaunch: () => void
   onStop: () => void
+  onDelete: () => void
   onMoveToNurture: () => void
   onMoveToOperation: () => void
 }) {
@@ -324,6 +326,16 @@ export function EnvironmentRow({
                     >
                       <Copy size={14} />
                       <span className="ml-2">{t('environment.row.actions.clone')}</span>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => {
+                        setMenuOpen(false)
+                        onDelete()
+                      }}
+                      className="text-rose-600 focus:text-rose-700 dark:text-rose-300 dark:focus:text-rose-200"
+                    >
+                      <Trash2 size={14} />
+                      <span className="ml-2">{t('environment.row.actions.delete')}</span>
                     </DropdownMenuItem>
                     {item.canMoveToNurture ? (
                       <DropdownMenuItem

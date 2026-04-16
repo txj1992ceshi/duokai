@@ -15,10 +15,47 @@ import type {
   CloudPhoneProviderHealth,
   CloudPhoneProviderSummary,
   DesktopUpdateState,
+  EgressPathType,
   ProfileRecord,
   RuntimeHostInfo,
   RuntimeStatus,
 } from '../shared/types'
+
+type ProxyDiagnosticSummary = {
+  pathType: EgressPathType | string
+  stage: string
+  success: boolean
+  errorCode: string
+  errorMessage: string
+  latencyMs: number
+}
+
+function parseProxyDiagnosticsSummary(input: string): ProxyDiagnosticSummary[] {
+  if (!input) {
+    return []
+  }
+  try {
+    const parsed = JSON.parse(input) as unknown
+    if (!Array.isArray(parsed)) {
+      return []
+    }
+    return parsed
+      .filter((item) => item && typeof item === 'object')
+      .map((item) => {
+        const record = item as Record<string, unknown>
+        return {
+          pathType: typeof record.pathType === 'string' ? record.pathType : '',
+          stage: typeof record.stage === 'string' ? record.stage : '',
+          success: Boolean(record.success),
+          errorCode: typeof record.errorCode === 'string' ? record.errorCode : '',
+          errorMessage: typeof record.errorMessage === 'string' ? record.errorMessage : '',
+          latencyMs: typeof record.latencyMs === 'number' ? record.latencyMs : 0,
+        }
+      })
+  } catch {
+    return []
+  }
+}
 
 type PendingLaunchState = Record<string, number>
 type AgentState = Awaited<ReturnType<DesktopApi['meta']['getAgentState']>>
@@ -88,7 +125,9 @@ export function useDesktopDerivedState({
       ip: metadata.lastResolvedIp,
       country: metadata.lastResolvedCountry || metadata.lastResolvedRegion,
       timezone: metadata.lastResolvedTimezone,
+      egressPath: metadata.lastNetworkEgressPath || 'direct',
       message: metadata.lastProxyCheckMessage || '',
+      diagnostics: parseProxyDiagnosticsSummary(metadata.lastProxyCheckDiagnosticsJson || ''),
       checkedAt:
         metadata.lastProxyCheckAt || metadata.lastResolvedAt || latest.profile.updatedAt,
     }

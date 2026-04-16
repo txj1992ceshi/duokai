@@ -281,10 +281,17 @@ export function useProfileActions({
     if (!selectedProfileId) {
       return
     }
+    await deleteProfileById(selectedProfileId, { closeEditor: true })
+  }
+
+  async function deleteProfileById(profileId: string, options?: { closeEditor?: boolean }) {
     await withBusy(t.busy.deleteProfile, async () => {
       const api = requireDesktopApi(['profiles.delete'])
-      await api.profiles.delete(selectedProfileId)
-      returnToProfileList()
+      await api.profiles.delete(profileId)
+      setSelectedProfileIds((current) => current.filter((entry) => entry !== profileId))
+      if (options?.closeEditor || selectedProfileId === profileId) {
+        returnToProfileList()
+      }
       setProfileForm(emptyProfile(proxies[0]?.id ?? null, defaultEnvironmentLanguage))
       setNoticeMessage(copy.profileDeleted)
     })
@@ -485,6 +492,7 @@ export function useProfileActions({
     saveProfile,
     saveTemplate,
     deleteSelectedProfile,
+    deleteProfileById,
     launchProfile,
     stopProfile,
     syncProfileConfig,

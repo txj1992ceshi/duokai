@@ -24,6 +24,8 @@ export type FontMode = 'system' | 'random'
 export type EnvironmentPurpose = 'register' | 'nurture' | 'operation'
 export type PlatformKind = 'tiktok' | 'linkedin' | 'facebook' | ''
 export type RuntimeMode = 'local' | 'strong-local' | 'vm' | 'container'
+export type EgressPathType = 'direct' | 'system' | 'env' | 'custom'
+export type ParentProxyProtocol = 'http' | 'https' | 'socks5'
 export type ProxyBindingMode = 'dedicated' | 'reusable'
 export type FingerprintSupportStatus = 'active' | 'partial' | 'placeholder'
 export type IpUsageKind = 'launch' | 'register-launch'
@@ -345,6 +347,7 @@ export interface ProfileRuntimeMetadata {
   lastProxyCheckAt: string
   lastProxyCheckSuccess: boolean | null
   lastProxyCheckMessage: string
+  lastProxyCheckDiagnosticsJson: string
   lastValidationLevel: 'unknown' | 'pass' | 'warn' | 'block'
   lastValidationMessages: string[]
   lastRegistrationRiskScore: number
@@ -359,6 +362,7 @@ export interface ProfileRuntimeMetadata {
   lastQuickCheckAt: string
   lastQuickCheckSuccess: boolean | null
   lastQuickCheckMessage: string
+  lastNetworkEgressPath: EgressPathType | ''
   lastEffectiveProxyTransport: string
   trustedSnapshotStatus: 'unknown' | 'trusted' | 'stale' | 'invalid'
   configFingerprintHash: string
@@ -896,6 +900,10 @@ export interface CloudPhoneBulkActionPayload {
 export interface SettingsPayload {
   [key: string]: string | undefined
   themeMode?: 'system' | 'light' | 'dark'
+  networkEgressMode?: 'auto' | EgressPathType
+  networkParentProxyUrl?: string
+  networkLastSuccessfulEgressPath?: EgressPathType
+  networkLastSuccessfulEgressAt?: string
 }
 
 export interface AuthUser {

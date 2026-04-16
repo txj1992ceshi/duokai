@@ -14,7 +14,16 @@ type LatestNetworkCheck = {
   ip: string
   country: string
   timezone: string
+  egressPath: string
   message: string
+  diagnostics: Array<{
+    pathType: string
+    stage: string
+    success: boolean
+    errorCode: string
+    errorMessage: string
+    latencyMs: number
+  }>
   checkedAt: string
 } | null
 
