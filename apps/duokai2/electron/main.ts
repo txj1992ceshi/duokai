@@ -8797,10 +8797,10 @@ async function bootstrap(): Promise<void> {
     userData: app.getPath('userData'),
     version: app.getVersion(),
   })
-  syncTheme()
-  traceStartup('theme_synced')
   db = new DatabaseService(app)
   traceStartup('database_initialized')
+  syncTheme()
+  traceStartup('theme_synced')
   clearPersistedDesktopAuthOnStartup()
   traceStartup('desktop_auth_cleared_on_startup')
   migrateStableHardwareFingerprintsOnStartup()

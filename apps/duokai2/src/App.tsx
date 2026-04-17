@@ -153,9 +153,14 @@ function App() {
     const applyTheme = () => {
       const useDark = themeMode === 'dark' || (themeMode === 'system' && media.matches)
       root.classList.toggle('dark', useDark)
+      root.style.colorScheme = useDark ? 'dark' : 'light'
     }
 
     applyTheme()
+    if (themeMode !== 'system') {
+      return
+    }
+
     media.addEventListener('change', applyTheme)
     return () => {
       media.removeEventListener('change', applyTheme)
