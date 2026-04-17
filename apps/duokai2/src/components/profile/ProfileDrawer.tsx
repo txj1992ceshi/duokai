@@ -20,6 +20,7 @@ import type { Dictionary } from '../../i18n'
 import { SUPPORTED_ENVIRONMENT_LANGUAGES } from '../../shared/environmentLanguages'
 import { COMMON_TIMEZONE_OPTIONS } from '../../shared/timezones'
 import { assignStableHardwareFingerprint } from '../../shared/hardwareProfiles'
+import { buildDesktopUserAgent } from '../../lib/desktop-profile-presets'
 import type { EnvironmentPurpose, ProxyRecord } from '../../shared/types'
 import type { ProfileFormState } from '../../lib/desktop-types'
 
@@ -112,12 +113,18 @@ export function ProfileDrawer({
         selectPlatform: '请选择',
         custom: '自定义',
         webrtcDefault: '默认',
+        webrtcProxyAware: '代理感知（推荐）',
         webrtcDisabled: '禁用',
         platformName: '平台名称',
         platformUrl: '平台 URL',
-        canvasRandom: '随机',
-        canvasOff: '关闭',
-        canvasCustom: '自定义',
+        modeStableCustom: '稳定自定义（推荐）',
+        modeLegacyRandom: '旧版随机',
+        modeOff: '关闭',
+        webglImage: 'WebGL 图像',
+        audio: '音频',
+        clientRects: 'ClientRects',
+        mediaDevices: '媒体设备',
+        speechVoices: '语音列表',
         deviceName: '设备名称',
         launchArgs: '启动参数',
         cancel: '取消',
@@ -157,12 +164,18 @@ export function ProfileDrawer({
         selectPlatform: 'Select',
         custom: 'Custom',
         webrtcDefault: 'Default',
+        webrtcProxyAware: 'Proxy-aware (Recommended)',
         webrtcDisabled: 'Disabled',
         platformName: 'Platform name',
         platformUrl: 'Platform URL',
-        canvasRandom: 'Random',
-        canvasOff: 'Off',
-        canvasCustom: 'Custom',
+        modeStableCustom: 'Stable custom (Recommended)',
+        modeLegacyRandom: 'Legacy random',
+        modeOff: 'Off',
+        webglImage: 'WebGL image',
+        audio: 'Audio',
+        clientRects: 'ClientRects',
+        mediaDevices: 'Media devices',
+        speechVoices: 'Speech voices',
         deviceName: 'Device name',
         launchArgs: 'Launch arguments',
         cancel: 'Cancel',
@@ -349,8 +362,13 @@ export function ProfileDrawer({
                         ...current,
                         fingerprintConfig: {
                           ...current.fingerprintConfig,
+                          userAgent: buildDesktopUserAgent(
+                            current.fingerprintConfig.advanced.operatingSystem,
+                            event.target.value,
+                          ),
                           advanced: {
                             ...current.fingerprintConfig.advanced,
+                            browserKernelVersion: event.target.value,
                             browserVersion: event.target.value,
                           },
                         },
@@ -729,6 +747,7 @@ export function ProfileDrawer({
                     }
                   >
                     <option value="default">{copy.webrtcDefault}</option>
+                    <option value="proxy-aware">{copy.webrtcProxyAware}</option>
                     <option value="disabled">{copy.webrtcDisabled}</option>
                   </Select>
                 </label>
@@ -807,13 +826,13 @@ export function ProfileDrawer({
                       }))
                     }
                   >
-                    <option value="random">{copy.canvasRandom}</option>
-                    <option value="off">{copy.canvasOff}</option>
-                    <option value="custom">{copy.canvasCustom}</option>
+                    <option value="custom">{copy.modeStableCustom}</option>
+                    <option value="random">{copy.modeLegacyRandom}</option>
+                    <option value="off">{copy.modeOff}</option>
                   </Select>
                 </label>
                 <label className="block space-y-2">
-                  <span className="text-sm font-medium text-slate-700">WebGL</span>
+                  <span className="text-sm font-medium text-slate-700">{copy.webglImage}</span>
                   <Select
                     value={profileForm.fingerprintConfig.advanced.webglImageMode}
                     onChange={(event) =>
@@ -829,9 +848,101 @@ export function ProfileDrawer({
                       }))
                     }
                   >
-                    <option value="random">{copy.canvasRandom}</option>
-                    <option value="off">{copy.canvasOff}</option>
-                    <option value="custom">{copy.canvasCustom}</option>
+                    <option value="custom">{copy.modeStableCustom}</option>
+                    <option value="random">{copy.modeLegacyRandom}</option>
+                    <option value="off">{copy.modeOff}</option>
+                  </Select>
+                </label>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <label className="block space-y-2">
+                  <span className="text-sm font-medium text-slate-700">{copy.audio}</span>
+                  <Select
+                    value={profileForm.fingerprintConfig.advanced.audioContextMode}
+                    onChange={(event) =>
+                      setProfileForm((current) => ({
+                        ...current,
+                        fingerprintConfig: {
+                          ...current.fingerprintConfig,
+                          advanced: {
+                            ...current.fingerprintConfig.advanced,
+                            audioContextMode: event.target.value as typeof current.fingerprintConfig.advanced.audioContextMode,
+                          },
+                        },
+                      }))
+                    }
+                  >
+                    <option value="custom">{copy.modeStableCustom}</option>
+                    <option value="random">{copy.modeLegacyRandom}</option>
+                    <option value="off">{copy.modeOff}</option>
+                  </Select>
+                </label>
+                <label className="block space-y-2">
+                  <span className="text-sm font-medium text-slate-700">{copy.clientRects}</span>
+                  <Select
+                    value={profileForm.fingerprintConfig.advanced.clientRectsMode}
+                    onChange={(event) =>
+                      setProfileForm((current) => ({
+                        ...current,
+                        fingerprintConfig: {
+                          ...current.fingerprintConfig,
+                          advanced: {
+                            ...current.fingerprintConfig.advanced,
+                            clientRectsMode: event.target.value as typeof current.fingerprintConfig.advanced.clientRectsMode,
+                          },
+                        },
+                      }))
+                    }
+                  >
+                    <option value="off">{copy.modeOff}</option>
+                    <option value="custom">{copy.modeStableCustom}</option>
+                    <option value="random">{copy.modeLegacyRandom}</option>
+                  </Select>
+                </label>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <label className="block space-y-2">
+                  <span className="text-sm font-medium text-slate-700">{copy.mediaDevices}</span>
+                  <Select
+                    value={profileForm.fingerprintConfig.advanced.mediaDevicesMode}
+                    onChange={(event) =>
+                      setProfileForm((current) => ({
+                        ...current,
+                        fingerprintConfig: {
+                          ...current.fingerprintConfig,
+                          advanced: {
+                            ...current.fingerprintConfig.advanced,
+                            mediaDevicesMode: event.target.value as typeof current.fingerprintConfig.advanced.mediaDevicesMode,
+                          },
+                        },
+                      }))
+                    }
+                  >
+                    <option value="custom">{copy.modeStableCustom}</option>
+                    <option value="random">{copy.modeLegacyRandom}</option>
+                    <option value="off">{copy.modeOff}</option>
+                  </Select>
+                </label>
+                <label className="block space-y-2">
+                  <span className="text-sm font-medium text-slate-700">{copy.speechVoices}</span>
+                  <Select
+                    value={profileForm.fingerprintConfig.advanced.speechVoicesMode}
+                    onChange={(event) =>
+                      setProfileForm((current) => ({
+                        ...current,
+                        fingerprintConfig: {
+                          ...current.fingerprintConfig,
+                          advanced: {
+                            ...current.fingerprintConfig.advanced,
+                            speechVoicesMode: event.target.value as typeof current.fingerprintConfig.advanced.speechVoicesMode,
+                          },
+                        },
+                      }))
+                    }
+                  >
+                    <option value="custom">{copy.modeStableCustom}</option>
+                    <option value="random">{copy.modeLegacyRandom}</option>
+                    <option value="off">{copy.modeOff}</option>
                   </Select>
                 </label>
               </div>

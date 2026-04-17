@@ -32,6 +32,14 @@ test('assignStableHardwareFingerprint differs across profile ids', () => {
   assert.notEqual(first.advanced.macAddress, second.advanced.macAddress)
 })
 
+test('generated hardware profiles only emit current-stable-nearby browser majors', () => {
+  const generated = assignStableHardwareFingerprint(createDefaultFingerprint(), 'profile-browser-major')
+
+  assert.equal(new Set(['146', '147']).has(generated.advanced.browserVersion), true)
+  assert.equal(generated.advanced.browserKernelVersion, generated.advanced.browserVersion)
+  assert.match(generated.userAgent, new RegExp(`Chrome/${generated.advanced.browserVersion}\\.0\\.0\\.0`))
+})
+
 test('macOS hardware profiles keep macOS-compatible renderers', () => {
   const macFingerprint = createDefaultFingerprint()
   const generated = assignStableHardwareFingerprint(macFingerprint, 'profile-mac')
@@ -49,6 +57,14 @@ test('macOS hardware profiles use realistic cpu and memory pairings', () => {
 
   assert.equal(generated.advanced.operatingSystem, 'macOS')
   assert.equal(supportedPairings.has(pairing), true)
+})
+
+test('macOS hardware profiles use mac-style device names', () => {
+  const macFingerprint = createDefaultFingerprint()
+  const generated = assignStableHardwareFingerprint(macFingerprint, 'profile-mac-device-name')
+
+  assert.equal(generated.advanced.operatingSystem, 'macOS')
+  assert.match(generated.advanced.deviceName, /^MacBook-(Air|Pro)-/)
 })
 
 test('macOS Air templates never emit Pro-only resolutions', () => {
@@ -76,6 +92,19 @@ test('Windows business templates stay on business-class GPU renderers', () => {
     assert.match(generated.advanced.webglRenderer, /UHD|Iris\(R\) Xe|Iris Xe/i)
     assert.doesNotMatch(generated.advanced.webglRenderer, /RTX|GTX|Radeon/i)
   }
+})
+
+test('Windows hardware profiles use windows-style device names', () => {
+  const fingerprint = createDefaultFingerprint()
+  fingerprint.advanced.operatingSystem = 'Windows'
+
+  const generated = assignStableHardwareFingerprint(fingerprint, 'profile-win-device-name', {
+    forceRegenerate: true,
+    seed: 'win-device-name-seed',
+  })
+
+  assert.equal(generated.advanced.operatingSystem, 'Windows')
+  assert.match(generated.advanced.deviceName, /^(DESKTOP|LAPTOP)-/)
 })
 
 test('generated profiles record template metadata', () => {

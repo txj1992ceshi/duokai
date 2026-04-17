@@ -551,11 +551,32 @@ function validatePurposeSpecificPolicies(profile: ProfileRecord): ValidationResu
   return { level, messages }
 }
 
+function getLegacyNoiseFingerprintSignals(profile: ProfileRecord): string[] {
+  const { advanced } = profile.fingerprintConfig
+  const signals: string[] = []
+  if (advanced.canvasMode === 'random') signals.push('Canvas')
+  if (advanced.webglImageMode === 'random') signals.push('WebGL')
+  if (advanced.audioContextMode === 'random') signals.push('Audio')
+  if (advanced.clientRectsMode === 'random') signals.push('ClientRects')
+  return signals
+}
+
 function validatePlatformSpecificPolicies(profile: ProfileRecord): ValidationResult {
   const messages: string[] = []
   let level: ValidationLevel = 'pass'
   const platform = profile.fingerprintConfig.basicSettings.platform.trim().toLowerCase()
-  const { commonSettings, advanced, proxySettings } = profile.fingerprintConfig
+  const { commonSettings, advanced, proxySettings, webrtcMode } = profile.fingerprintConfig
+  const legacyNoiseSignals = getLegacyNoiseFingerprintSignals(profile)
+
+  if (profile.environmentPurpose === 'register' && webrtcMode === 'default') {
+    level = escalateLevel(level, 'warn')
+    messages.push('注册环境建议使用代理感知 WebRTC，避免暴露更像默认宿主浏览器的候选行为。')
+  }
+
+  if (profile.environmentPurpose === 'register' && legacyNoiseSignals.length > 0) {
+    level = escalateLevel(level, 'warn')
+    messages.push(`注册环境不建议使用高噪声随机扰动：${legacyNoiseSignals.join(' / ')}。`)
+  }
 
   if (platform === 'linkedin') {
     if (advanced.deviceMode !== 'desktop') {
@@ -570,9 +591,9 @@ function validatePlatformSpecificPolicies(profile: ProfileRecord): ValidationRes
       level = escalateLevel(level, 'warn')
       messages.push('LinkedIn 注册环境建议关闭标签页同步，降低新环境噪声。')
     }
-    if (advanced.mediaDevicesMode !== 'off' && profile.environmentPurpose === 'register') {
+    if (advanced.mediaDevicesMode === 'random' && profile.environmentPurpose === 'register') {
       level = escalateLevel(level, 'warn')
-      messages.push('LinkedIn 注册环境建议关闭媒体设备暴露，保持更保守的办公画像。')
+      messages.push('LinkedIn 注册环境建议使用稳定媒体设备画像，而不是高噪声随机模式。')
     }
   }
 
@@ -903,6 +924,7 @@ export function assessRegistrationRisk(
   const factors: string[] = []
   const { fingerprintConfig, deviceProfile } = profile
   const platform = fingerprintConfig.basicSettings.platform.trim().toLowerCase()
+  const legacyNoiseSignals = getLegacyNoiseFingerprintSignals(profile)
 
   if (validation.level === 'warn') {
     score += 30
@@ -948,6 +970,16 @@ export function assessRegistrationRisk(
     factors.push('语言、时区或地理位置未完全跟随 IP 联动。')
   }
 
+  if (fingerprintConfig.webrtcMode === 'default') {
+    score += 15
+    factors.push('当前仍使用默认 WebRTC 模式，注册时更容易暴露宿主候选行为。')
+  }
+
+  if (legacyNoiseSignals.length > 0) {
+    score += Math.min(24, legacyNoiseSignals.length * 8)
+    factors.push(`当前注册环境仍启用高噪声随机扰动：${legacyNoiseSignals.join(' / ')}。`)
+  }
+
   if (
     deviceProfile.hardware.webglRenderer.includes('RTX 3090') ||
     deviceProfile.hardware.webglVendor.includes('NVIDIA')
@@ -972,6 +1004,10 @@ export function assessRegistrationRisk(
     if (fingerprintConfig.commonSettings.syncTabs) {
       score += 10
       factors.push('LinkedIn 注册环境开启标签页同步会增加额外噪声。')
+    }
+    if (fingerprintConfig.advanced.mediaDevicesMode === 'random') {
+      score += 10
+      factors.push('LinkedIn 注册环境不建议使用随机媒体设备模式。')
     }
   }
 

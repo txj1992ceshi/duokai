@@ -56,6 +56,7 @@ type GeneratedHardwareFingerprint = {
 
 const MAX_TEMPLATE_RETRIES = 12
 const DEFAULT_TEMPLATE_ID = 'mac_air_m2_13'
+const CURRENT_BROWSER_MAJORS = ['146', '147'] as const
 
 const LEGACY_DEFAULT_HARDWARE = {
   deviceName: 'DESKTOP-U09K1H5',
@@ -73,7 +74,7 @@ const DEVICE_TEMPLATES: DeviceTemplate[] = [
     family: 'mac_air',
     model: 'MacBook Air 13 M1',
     weight: 16,
-    browserMajors: ['136', '137', '138'],
+    browserMajors: [...CURRENT_BROWSER_MAJORS],
     deviceNameStyle: 'mac_air',
     hostIpRanges: [
       { first: 10, second: 0 },
@@ -105,7 +106,7 @@ const DEVICE_TEMPLATES: DeviceTemplate[] = [
     family: 'mac_air',
     model: 'MacBook Air 13 M2',
     weight: 18,
-    browserMajors: ['136', '137', '138'],
+    browserMajors: [...CURRENT_BROWSER_MAJORS],
     deviceNameStyle: 'mac_air',
     hostIpRanges: [
       { first: 10, second: 0 },
@@ -145,7 +146,7 @@ const DEVICE_TEMPLATES: DeviceTemplate[] = [
     family: 'mac_air',
     model: 'MacBook Air 13 M3',
     weight: 14,
-    browserMajors: ['136', '137', '138'],
+    browserMajors: [...CURRENT_BROWSER_MAJORS],
     deviceNameStyle: 'mac_air',
     hostIpRanges: [
       { first: 10, second: 0 },
@@ -185,7 +186,7 @@ const DEVICE_TEMPLATES: DeviceTemplate[] = [
     family: 'mac_pro',
     model: 'MacBook Pro 14 M3',
     weight: 10,
-    browserMajors: ['136', '137', '138'],
+    browserMajors: [...CURRENT_BROWSER_MAJORS],
     deviceNameStyle: 'mac_pro',
     hostIpRanges: [
       { first: 10, second: 0 },
@@ -225,7 +226,7 @@ const DEVICE_TEMPLATES: DeviceTemplate[] = [
     family: 'mac_pro',
     model: 'MacBook Pro 14 M3 Pro',
     weight: 8,
-    browserMajors: ['136', '137', '138'],
+    browserMajors: [...CURRENT_BROWSER_MAJORS],
     deviceNameStyle: 'mac_pro',
     hostIpRanges: [
       { first: 10, second: 0 },
@@ -273,7 +274,7 @@ const DEVICE_TEMPLATES: DeviceTemplate[] = [
     family: 'win_business',
     model: 'Dell Latitude 5440',
     weight: 12,
-    browserMajors: ['136', '137', '138'],
+    browserMajors: [...CURRENT_BROWSER_MAJORS],
     deviceNameStyle: 'windows_laptop',
     hostIpRanges: [
       { first: 10, second: 0 },
@@ -313,7 +314,7 @@ const DEVICE_TEMPLATES: DeviceTemplate[] = [
     family: 'win_business',
     model: 'ThinkPad E14 Gen 5',
     weight: 11,
-    browserMajors: ['136', '137', '138'],
+    browserMajors: [...CURRENT_BROWSER_MAJORS],
     deviceNameStyle: 'windows_laptop',
     hostIpRanges: [
       { first: 10, second: 0 },
@@ -353,7 +354,7 @@ const DEVICE_TEMPLATES: DeviceTemplate[] = [
     family: 'win_business',
     model: 'ThinkPad T14 Gen 4',
     weight: 10,
-    browserMajors: ['136', '137', '138'],
+    browserMajors: [...CURRENT_BROWSER_MAJORS],
     deviceNameStyle: 'windows_laptop',
     hostIpRanges: [
       { first: 10, second: 0 },
@@ -393,7 +394,7 @@ const DEVICE_TEMPLATES: DeviceTemplate[] = [
     family: 'win_home',
     model: 'Inspiron 14 5430',
     weight: 7,
-    browserMajors: ['136', '137', '138', '139'],
+    browserMajors: [...CURRENT_BROWSER_MAJORS],
     deviceNameStyle: 'windows_laptop',
     hostIpRanges: [
       { first: 10, second: 0 },
@@ -425,7 +426,7 @@ const DEVICE_TEMPLATES: DeviceTemplate[] = [
     family: 'win_performance',
     model: 'Windows Performance Mid RTX',
     weight: 4,
-    browserMajors: ['136', '137', '138', '139'],
+    browserMajors: [...CURRENT_BROWSER_MAJORS],
     deviceNameStyle: 'windows_desktop',
     hostIpRanges: [
       { first: 10, second: 0 },
@@ -512,7 +513,7 @@ function parseResolution(value: string): { width: number; height: number } {
 }
 
 function buildDesktopUserAgent(operatingSystem: DevicePlatform, browserVersion: string): string {
-  const majorVersion = String(browserVersion || '136').trim() || '136'
+  const majorVersion = String(browserVersion || '147').trim() || '147'
   if (operatingSystem === 'macOS') {
     return `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${majorVersion}.0.0.0 Safari/537.36`
   }
@@ -702,6 +703,7 @@ function generateFingerprintFromTemplate(
 function buildStableHardwareFingerprint(
   seedValue: string,
   preferredOperatingSystem?: string,
+  preferredBrowserVersion?: string,
 ): GeneratedHardwareFingerprint {
   const rng = createRng(seedValue)
   const templatePool = preferredOperatingSystem?.toLowerCase().includes('mac')
@@ -719,7 +721,10 @@ function buildStableHardwareFingerprint(
       continue
     }
     const variant = pickOne(validVariants, rng)
-    const browserVersion = pickOne(template.browserMajors, rng)
+    const browserVersion =
+      preferredBrowserVersion && template.browserMajors.includes(preferredBrowserVersion) ?
+        preferredBrowserVersion
+      : pickOne(template.browserMajors, rng)
     const resolution = pickOne(variant.resolutions, rng)
     if (validateGeneratedHardwareFingerprint(template, variant, browserVersion, resolution)) {
       return generateFingerprintFromTemplate(template, variant, browserVersion, resolution, rng)
@@ -728,7 +733,10 @@ function buildStableHardwareFingerprint(
 
   const fallbackVariant = DEFAULT_TEMPLATE.variants.find((variant) => isValidHardwareTemplateVariant(DEFAULT_TEMPLATE, variant))
     ?? DEFAULT_TEMPLATE.variants[0]
-  const fallbackBrowserVersion = DEFAULT_TEMPLATE.browserMajors[0] ?? '136'
+  const fallbackBrowserVersion =
+    (preferredBrowserVersion && DEFAULT_TEMPLATE.browserMajors.includes(preferredBrowserVersion) ? preferredBrowserVersion : null) ??
+    DEFAULT_TEMPLATE.browserMajors[DEFAULT_TEMPLATE.browserMajors.length - 1] ??
+    '147'
   const fallbackResolution = fallbackVariant?.resolutions[0] ?? '1680x1050'
 
   return generateFingerprintFromTemplate(
@@ -790,7 +798,11 @@ export function assignStableHardwareFingerprint(
   }
 
   const seedValue = options?.seed || config.runtimeMetadata.hardwareSeed || profileId
-  const generated = buildStableHardwareFingerprint(seedValue, config.advanced.operatingSystem)
+  const generated = buildStableHardwareFingerprint(
+    seedValue,
+    config.advanced.operatingSystem,
+    String(config.advanced.browserVersion || '').trim() || undefined,
+  )
 
   return {
     ...config,
@@ -799,6 +811,7 @@ export function assignStableHardwareFingerprint(
     advanced: {
       ...config.advanced,
       operatingSystem: generated.operatingSystem,
+      browserKernelVersion: generated.browserVersion,
       browserVersion: generated.browserVersion,
       windowWidth: generated.width,
       windowHeight: generated.height,

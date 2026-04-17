@@ -227,6 +227,17 @@ export function ProfilesView({
         manualGeo: '手动位置',
         autoResolved: '由代理 IP 自动解析',
         manualMode: '手动模式',
+        webrtcDefault: '默认',
+        webrtcProxyAware: '代理感知（推荐）',
+        webrtcDisabled: '禁用',
+        modeStableCustom: '稳定自定义（推荐）',
+        modeLegacyRandom: '旧版随机',
+        modeOff: '关闭',
+        webglImage: 'WebGL 图像',
+        audio: '音频',
+        clientRects: 'ClientRects',
+        mediaDevices: '媒体设备',
+        speechVoices: '语音列表',
         close: '关闭',
       }
     : {
@@ -246,6 +257,17 @@ export function ProfilesView({
         manualGeo: 'Manual geo',
         autoResolved: 'Resolved automatically from the proxy IP',
         manualMode: 'Manual mode',
+        webrtcDefault: 'Default',
+        webrtcProxyAware: 'Proxy-aware (Recommended)',
+        webrtcDisabled: 'Disabled',
+        modeStableCustom: 'Stable custom (Recommended)',
+        modeLegacyRandom: 'Legacy random',
+        modeOff: 'Off',
+        webglImage: 'WebGL image',
+        audio: 'Audio',
+        clientRects: 'ClientRects',
+        mediaDevices: 'Media devices',
+        speechVoices: 'Speech voices',
         close: 'Close',
       }
   const getStartupPlatformLabel = (item: StartupPlatformOption) => (isZh ? item.labelZh : item.labelEn)
@@ -788,8 +810,129 @@ export function ProfilesView({
                         }))
                       }
                     >
-                      <option value="default">Default</option>
-                      <option value="disabled">Disabled</option>
+                      <option value="default">{copy.webrtcDefault}</option>
+                      <option value="proxy-aware">{copy.webrtcProxyAware}</option>
+                      <option value="disabled">{copy.webrtcDisabled}</option>
+                    </Select>
+                  </div>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <Select
+                      value={templateForm.fingerprintConfig.advanced.canvasMode}
+                      onChange={(event) =>
+                        setTemplateForm((current) => ({
+                          ...current,
+                          fingerprintConfig: {
+                            ...current.fingerprintConfig,
+                            advanced: {
+                              ...current.fingerprintConfig.advanced,
+                              canvasMode: event.target.value as FingerprintConfig['advanced']['canvasMode'],
+                            },
+                          },
+                        }))
+                      }
+                    >
+                      <option value="custom">{copy.modeStableCustom}</option>
+                      <option value="random">{copy.modeLegacyRandom}</option>
+                      <option value="off">{copy.modeOff}</option>
+                    </Select>
+                    <Select
+                      value={templateForm.fingerprintConfig.advanced.webglImageMode}
+                      onChange={(event) =>
+                        setTemplateForm((current) => ({
+                          ...current,
+                          fingerprintConfig: {
+                            ...current.fingerprintConfig,
+                            advanced: {
+                              ...current.fingerprintConfig.advanced,
+                              webglImageMode: event.target.value as FingerprintConfig['advanced']['webglImageMode'],
+                            },
+                          },
+                        }))
+                      }
+                    >
+                      <option value="custom">{copy.webglImage}: {copy.modeStableCustom}</option>
+                      <option value="random">{copy.webglImage}: {copy.modeLegacyRandom}</option>
+                      <option value="off">{copy.webglImage}: {copy.modeOff}</option>
+                    </Select>
+                  </div>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <Select
+                      value={templateForm.fingerprintConfig.advanced.audioContextMode}
+                      onChange={(event) =>
+                        setTemplateForm((current) => ({
+                          ...current,
+                          fingerprintConfig: {
+                            ...current.fingerprintConfig,
+                            advanced: {
+                              ...current.fingerprintConfig.advanced,
+                              audioContextMode: event.target.value as FingerprintConfig['advanced']['audioContextMode'],
+                            },
+                          },
+                        }))
+                      }
+                    >
+                      <option value="custom">{copy.audio}: {copy.modeStableCustom}</option>
+                      <option value="random">{copy.audio}: {copy.modeLegacyRandom}</option>
+                      <option value="off">{copy.audio}: {copy.modeOff}</option>
+                    </Select>
+                    <Select
+                      value={templateForm.fingerprintConfig.advanced.clientRectsMode}
+                      onChange={(event) =>
+                        setTemplateForm((current) => ({
+                          ...current,
+                          fingerprintConfig: {
+                            ...current.fingerprintConfig,
+                            advanced: {
+                              ...current.fingerprintConfig.advanced,
+                              clientRectsMode: event.target.value as FingerprintConfig['advanced']['clientRectsMode'],
+                            },
+                          },
+                        }))
+                      }
+                    >
+                      <option value="off">{copy.clientRects}: {copy.modeOff}</option>
+                      <option value="custom">{copy.clientRects}: {copy.modeStableCustom}</option>
+                      <option value="random">{copy.clientRects}: {copy.modeLegacyRandom}</option>
+                    </Select>
+                  </div>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <Select
+                      value={templateForm.fingerprintConfig.advanced.mediaDevicesMode}
+                      onChange={(event) =>
+                        setTemplateForm((current) => ({
+                          ...current,
+                          fingerprintConfig: {
+                            ...current.fingerprintConfig,
+                            advanced: {
+                              ...current.fingerprintConfig.advanced,
+                              mediaDevicesMode: event.target.value as FingerprintConfig['advanced']['mediaDevicesMode'],
+                            },
+                          },
+                        }))
+                      }
+                    >
+                      <option value="custom">{copy.mediaDevices}: {copy.modeStableCustom}</option>
+                      <option value="random">{copy.mediaDevices}: {copy.modeLegacyRandom}</option>
+                      <option value="off">{copy.mediaDevices}: {copy.modeOff}</option>
+                    </Select>
+                    <Select
+                      value={templateForm.fingerprintConfig.advanced.speechVoicesMode}
+                      onChange={(event) =>
+                        setTemplateForm((current) => ({
+                          ...current,
+                          fingerprintConfig: {
+                            ...current.fingerprintConfig,
+                            advanced: {
+                              ...current.fingerprintConfig.advanced,
+                              speechVoicesMode: event.target.value as FingerprintConfig['advanced']['speechVoicesMode'],
+                            },
+                          },
+                        }))
+                      }
+                    >
+                      <option value="custom">{copy.speechVoices}: {copy.modeStableCustom}</option>
+                      <option value="random">{copy.speechVoices}: {copy.modeLegacyRandom}</option>
+                      <option value="off">{copy.speechVoices}: {copy.modeOff}</option>
                     </Select>
                   </div>
                   <Textarea

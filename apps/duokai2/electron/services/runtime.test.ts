@@ -6,6 +6,7 @@ import test from 'node:test'
 
 import { createDefaultFingerprint, createProfilePayload, normalizeWorkspaceDescriptor } from './factories.ts'
 import {
+  assessRegistrationRisk,
   computeWorkspaceConsistencySummary,
   computeWorkspaceHealthSummary,
   validateProfileReadiness,
@@ -111,7 +112,7 @@ function buildProfile(
           paths,
           resolvedEnvironment: {
             browserFamily: 'chrome',
-            browserMajorVersionRange: '136',
+            browserMajorVersionRange: '147',
             systemLanguage: 'en-US',
             browserLanguage: 'fr-FR',
             timezone: 'Europe/Paris',
@@ -157,7 +158,36 @@ test('resolveWorkspaceLaunchConfig uses workspace runtime source of truth', () =
   assert.equal(resolved.timezoneId, 'Europe/Paris')
   assert.deepEqual(resolved.windowSize, { width: 1600, height: 900 })
   assert.equal(resolved.viewport, null)
-  assert.deepEqual(resolved.launchArgs, ['--window-size=1600,900', '--workspace-arg', '--disable-webrtc'])
+  assert.deepEqual(resolved.launchArgs, ['--workspace-arg', '--window-size=1600,900', '--disable-webrtc'])
+})
+
+test('resolveWorkspaceLaunchConfig replaces existing window-size arg instead of duplicating it', () => {
+  const paths = createWorkspaceDirectories('profile-window-size-dedupe')
+  const profile = buildProfile('profile-window-size-dedupe', {
+    paths,
+    workspace: {
+      resolvedEnvironment: {
+        browserFamily: 'chrome',
+        browserMajorVersionRange: '147',
+        systemLanguage: 'en-US',
+        browserLanguage: 'fr-FR',
+        timezone: 'Europe/Paris',
+        resolution: '1600x900',
+        fontStrategy: 'system',
+        webrtcPolicy: 'disabled',
+        ipv6Policy: 'ipv6',
+        downloadsDir: paths.downloadsDir,
+        launchArgs: ['--window-size=1280,720', '--workspace-arg'],
+      },
+    },
+  })
+  const resolved = resolveWorkspaceLaunchConfig(profile, false)
+
+  assert.equal(resolved.launchArgs.includes('--window-size=1280,720'), false)
+  assert.equal(resolved.launchArgs.filter((item) => item.startsWith('--window-size=')).length, 1)
+  assert.equal(resolved.launchArgs.includes('--window-size=1600,900'), true)
+  assert.equal(resolved.launchArgs.includes('--workspace-arg'), true)
+  assert.equal(resolved.launchArgs.includes('--disable-webrtc'), true)
 })
 
 test('runLocalIsolationPreflight passes with canonical workspace launch paths and runtime lock', () => {
@@ -349,4 +379,61 @@ test('environment purpose remains advisory for linkedin operation profiles', () 
 
   assert.equal(result.level, 'warn')
   assert.match(result.messages.join(' '), /不建议直接进入日常运营/)
+})
+
+test('linkedin register profiles allow stable custom media devices under proxy-aware WebRTC', () => {
+  const profile = buildProfile('profile-linkedin-stable')
+  profile.environmentPurpose = 'register'
+  profile.fingerprintConfig.basicSettings.platform = 'linkedin'
+  profile.fingerprintConfig.webrtcMode = 'proxy-aware'
+  profile.fingerprintConfig.commonSettings.syncTabs = false
+  profile.fingerprintConfig.proxySettings.proxyMode = 'custom'
+  profile.fingerprintConfig.proxySettings.host = '127.0.0.1'
+  profile.fingerprintConfig.proxySettings.port = 8080
+  profile.fingerprintConfig.advanced.mediaDevicesMode = 'custom'
+  profile.fingerprintConfig.advanced.canvasMode = 'custom'
+  profile.fingerprintConfig.advanced.webglImageMode = 'custom'
+  profile.fingerprintConfig.advanced.audioContextMode = 'custom'
+  profile.fingerprintConfig.advanced.clientRectsMode = 'off'
+
+  const result = validateProfileReadiness(profile, null)
+
+  assert.doesNotMatch(result.messages.join(' '), /媒体设备/)
+  assert.doesNotMatch(result.messages.join(' '), /高噪声随机扰动/)
+})
+
+test('tiktok warns when media devices are fully disabled', () => {
+  const profile = buildProfile('profile-tiktok-media-off')
+  profile.environmentPurpose = 'nurture'
+  profile.fingerprintConfig.basicSettings.platform = 'tiktok'
+  profile.fingerprintConfig.advanced.mediaDevicesMode = 'off'
+
+  const result = validateProfileReadiness(profile, null)
+
+  assert.equal(result.level, 'warn')
+  assert.match(result.messages.join(' '), /媒体设备/)
+})
+
+test('registration risk increases when legacy random noise and default WebRTC are enabled', () => {
+  const stableProfile = buildProfile('profile-risk-stable')
+  stableProfile.environmentPurpose = 'register'
+  stableProfile.fingerprintConfig.webrtcMode = 'proxy-aware'
+  stableProfile.fingerprintConfig.advanced.canvasMode = 'custom'
+  stableProfile.fingerprintConfig.advanced.webglImageMode = 'custom'
+  stableProfile.fingerprintConfig.advanced.audioContextMode = 'custom'
+  stableProfile.fingerprintConfig.advanced.clientRectsMode = 'off'
+
+  const noisyProfile = buildProfile('profile-risk-noisy')
+  noisyProfile.environmentPurpose = 'register'
+  noisyProfile.fingerprintConfig.webrtcMode = 'default'
+  noisyProfile.fingerprintConfig.advanced.canvasMode = 'random'
+  noisyProfile.fingerprintConfig.advanced.webglImageMode = 'random'
+  noisyProfile.fingerprintConfig.advanced.audioContextMode = 'random'
+  noisyProfile.fingerprintConfig.advanced.clientRectsMode = 'random'
+
+  const stableRisk = assessRegistrationRisk(stableProfile, { level: 'pass', messages: [] })
+  const noisyRisk = assessRegistrationRisk(noisyProfile, { level: 'pass', messages: [] })
+
+  assert.equal(noisyRisk.score > stableRisk.score, true)
+  assert.match(noisyRisk.factors.join(' '), /默认 WebRTC|高噪声随机扰动/)
 })

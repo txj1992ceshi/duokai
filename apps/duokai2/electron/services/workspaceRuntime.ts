@@ -1,5 +1,6 @@
 import path from 'node:path'
 import type { ProfileRecord, ResolvedWorkspaceLaunchConfig } from '../../src/shared/types'
+import { applyWebRtcModeToLaunchArgs } from './webrtc'
 
 function parseLocale(language: string): string {
   return language || 'en-US'
@@ -28,13 +29,11 @@ function buildRuntimeArgs(
     .filter((item) => !item.startsWith('--window-size='))
 
   args.push(`--window-size=${windowSize.width},${windowSize.height}`)
-  if (webrtcMode === 'disabled') {
-    args.push('--disable-webrtc')
-  }
+  const runtimeArgs = applyWebRtcModeToLaunchArgs(args, webrtcMode)
   if (disableGpu) {
-    args.push('--disable-gpu')
+    runtimeArgs.push('--disable-gpu')
   }
-  return Array.from(new Set(args))
+  return Array.from(new Set(runtimeArgs))
 }
 
 export function normalizeWorkspacePath(input: string): string {

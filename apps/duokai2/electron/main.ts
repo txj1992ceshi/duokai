@@ -115,6 +115,15 @@ import {
   getLocalRuntimeInfo,
 } from './services/localRuntimeLauncher'
 import { checkStandaloneProxyEgress } from './services/proxyCheck'
+import {
+  buildPlatformSmokeArtifactBaseName,
+  buildPlatformSmokeProfileInput,
+  evaluatePlatformSmokeSuccess,
+  parseSmokeRequireProxy,
+  resolvePlatformSmokeScenario,
+  type PlatformSmokeProbeResult,
+  type PlatformSmokeScenario,
+} from './services/platformSmoke'
 import type {
   AuthUser,
   CloudPhoneBulkActionPayload,
@@ -129,7 +138,6 @@ import type {
   DesktopAuthState,
   DesktopWindowFrameMetrics,
   ExportBundle,
-  FingerprintConfig,
   GlobalConfigSnapshot,
   LogLevel,
   ProfileBulkActionPayload,
@@ -6484,12 +6492,14 @@ async function runProxyPreflight(
 function buildInjectedFeatures(profile: ProfileRecord): string[] {
   const features: string[] = []
   const advanced = profile.fingerprintConfig.advanced
+  if (advanced.fontMode === 'system' || advanced.fontMode === 'random') features.push('fonts')
   if (advanced.canvasMode !== 'off') features.push('canvas')
   if (advanced.webglImageMode !== 'off' || advanced.webglMetadataMode !== 'off') features.push('webgl')
   if (advanced.audioContextMode !== 'off') features.push('audio')
   if (advanced.clientRectsMode !== 'off') features.push('clientRects')
   if (advanced.mediaDevicesMode !== 'off') features.push('mediaDevices')
   if (advanced.speechVoicesMode !== 'off') features.push('speechVoices')
+  if (advanced.deviceInfoMode === 'custom') features.push('deviceInfo')
   return features
 }
 
@@ -7308,7 +7318,15 @@ type SmokeResultPayload = {
   startedAt: string
   finishedAt?: string
   outputDir: string
+  scenarioId?: string
+  artifactLabel?: string
   smokeMode: 'ci'
+  artifacts?: {
+    screenshotPath?: string
+    probePath?: string
+    logsPath?: string
+    auditPath?: string
+  }
   steps: SmokeStepResult[]
 }
 
@@ -7330,71 +7348,366 @@ async function writeSmokeArtifacts(result: SmokeResultPayload): Promise<void> {
   if (existsSync(AUDIT_LOG_PATH)) {
     const auditContent = await readFile(AUDIT_LOG_PATH, 'utf8').catch(() => '')
     if (auditContent) {
-      await writeFile(path.join(outputDir, SMOKE_AUDIT_FILE), auditContent, 'utf8')
+      const auditPath = path.join(outputDir, SMOKE_AUDIT_FILE)
+      await writeFile(auditPath, auditContent, 'utf8')
+      result.artifacts = {
+        ...result.artifacts,
+        auditPath,
+      }
+      await writeFile(path.join(outputDir, SMOKE_RESULT_FILE), JSON.stringify(result, null, 2), 'utf8')
     }
   }
 }
 
-async function waitForRuntimeOutcome(
+async function waitForSmokeRuntimeReady(
   profileId: string,
   timeoutMs = 45_000,
 ): Promise<{
   profile: ProfileRecord | null
+  context: BrowserContext | null
   runtimeStatus: ReturnType<typeof getRuntimeStatusSnapshot>
   elapsedMs: number
 }> {
   const startedAt = Date.now()
   while (Date.now() - startedAt < timeoutMs) {
     const profile = requireDatabase().getProfileById(profileId)
+    const context = runtimeContexts.get(profileId) || null
     const runtimeStatus = getRuntimeStatusSnapshot()
+    if (!profile) {
+      return { profile: null, context, runtimeStatus, elapsedMs: Date.now() - startedAt }
+    }
+    const hasStartupNavigation = Boolean(profile.startupNavigation?.checkedAt)
     const isActive =
       runtimeStatus.runningProfileIds.includes(profileId) ||
       runtimeStatus.startingProfileIds.includes(profileId) ||
       runtimeStatus.queuedProfileIds.includes(profileId)
-    if (!profile) {
-      return { profile: null, runtimeStatus, elapsedMs: Date.now() - startedAt }
+
+    if (context && hasStartupNavigation) {
+      return { profile, context, runtimeStatus, elapsedMs: Date.now() - startedAt }
     }
-    if (!isActive && profile.status !== 'queued' && profile.status !== 'starting') {
-      return { profile, runtimeStatus, elapsedMs: Date.now() - startedAt }
+
+    if (!isActive && (profile.status === 'error' || hasStartupNavigation)) {
+      return { profile, context, runtimeStatus, elapsedMs: Date.now() - startedAt }
     }
-    await new Promise((resolve) => setTimeout(resolve, 1000))
+
+    await new Promise((resolve) => setTimeout(resolve, 750))
   }
+
   return {
     profile: requireDatabase().getProfileById(profileId),
+    context: runtimeContexts.get(profileId) || null,
     runtimeStatus: getRuntimeStatusSnapshot(),
     elapsedMs: timeoutMs,
   }
 }
 
-function buildSmokeFingerprint(proxy: ProxyRecord | null, startupUrl: string): FingerprintConfig {
-  const fingerprint = createDefaultFingerprint()
-  const defaultTimezone = String(process.env.DUOKAI_SMOKE_TIMEZONE || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC').trim()
-  fingerprint.basicSettings.platform = 'custom'
-  fingerprint.basicSettings.customPlatformUrl = startupUrl
-  fingerprint.timezone = defaultTimezone || 'UTC'
-  fingerprint.advanced.autoTimezoneFromIp = false
-  if (proxy) {
-    fingerprint.proxySettings.proxyMode = 'custom'
-    fingerprint.proxySettings.proxyType = proxy.type
-    fingerprint.proxySettings.host = proxy.host
-    fingerprint.proxySettings.port = proxy.port
-    fingerprint.proxySettings.username = proxy.username
-    fingerprint.proxySettings.password = proxy.password
-  }
-  return fingerprint
+async function collectPlatformSmokeProbe(
+  page: import('playwright').Page,
+  scenario: PlatformSmokeScenario,
+): Promise<PlatformSmokeProbeResult & Record<string, unknown>> {
+  return page.evaluate(
+    async ({ selectors }) => {
+      type RuntimeGlobal = {
+        document?: {
+          title?: string
+          readyState?: string
+          createElement(tagName: string): {
+            width?: number
+            height?: number
+            getContext(contextId: string): Record<string, unknown> | null
+            toDataURL?(): string
+          }
+          querySelectorAll(selector: string): { length: number }
+          fonts?: {
+            check?(font: string): boolean
+          }
+        }
+        location?: {
+          href?: string
+          hostname?: string
+        }
+        navigator?: Record<string, unknown>
+        Intl?: typeof Intl
+        speechSynthesis?: {
+          getVoices?(): Array<{ lang?: string }>
+        }
+        OfflineAudioContext?: new (
+          numberOfChannels: number,
+          length: number,
+          sampleRate: number,
+        ) => {
+          destination: unknown
+          createOscillator(): {
+            type: string
+            frequency: { value: number }
+            connect(target: unknown): void
+            start(when: number): void
+          }
+          createDynamicsCompressor(): { connect(target: unknown): void }
+          startRendering(): Promise<{
+            getChannelData(channel: number): Float32Array
+          }>
+        }
+        webkitOfflineAudioContext?: RuntimeGlobal['OfflineAudioContext']
+        __BITBROWSER_CLONE_INJECTED__?: unknown
+      }
+
+      const runtimeGlobal = globalThis as unknown as RuntimeGlobal
+      const runtimeDocument = runtimeGlobal.document
+      const runtimeNavigator = (runtimeGlobal.navigator || {}) as Record<string, unknown>
+
+      function stableHash(value: unknown): string {
+        const text = JSON.stringify(value)
+        let hash = 0
+        for (let index = 0; index < text.length; index += 1) {
+          hash = (hash * 31 + text.charCodeAt(index)) >>> 0
+        }
+        return hash.toString(16).padStart(8, '0')
+      }
+
+      function safeTextMeasure(font: string, text: string): number | null {
+        try {
+          if (!runtimeDocument?.createElement) {
+            return null
+          }
+          const canvas = runtimeDocument.createElement('canvas')
+          const context = canvas.getContext('2d') as { font: string; measureText(text: string): { width: number } } | null
+          if (!context) {
+            return null
+          }
+          context.font = font
+          return Number(context.measureText(text).width.toFixed(3))
+        } catch {
+          return null
+        }
+      }
+
+      function collectCanvasSummary() {
+        try {
+          if (!runtimeDocument?.createElement) {
+            return null
+          }
+          const canvas = runtimeDocument.createElement('canvas')
+          canvas.width = 180
+          canvas.height = 48
+          const context = canvas.getContext('2d') as
+            | {
+                fillStyle: string
+                fillRect(x: number, y: number, width: number, height: number): void
+                font: string
+                fillText(text: string, x: number, y: number): void
+              }
+            | null
+          if (!context) {
+            return null
+          }
+          context.fillStyle = '#10243f'
+          context.fillRect(0, 0, canvas.width, canvas.height)
+          context.font = '16px "Segoe UI", Arial, sans-serif'
+          context.fillStyle = '#f5f7fb'
+          context.fillText('Duokai smoke', 12, 28)
+          const dataUrl = canvas.toDataURL?.() || ''
+          return {
+            length: dataUrl.length,
+            hash: stableHash(dataUrl.slice(0, 256)),
+          }
+        } catch (error) {
+          return {
+            error: error instanceof Error ? error.message : String(error),
+          }
+        }
+      }
+
+      function collectWebglSummary() {
+        try {
+          if (!runtimeDocument?.createElement) {
+            return null
+          }
+          const canvas = runtimeDocument.createElement('canvas')
+          const context =
+            (canvas.getContext('webgl') as { getParameter(parameter: number): unknown } | null) ||
+            (canvas.getContext('experimental-webgl') as { getParameter(parameter: number): unknown } | null) ||
+            (canvas.getContext('webgl2') as { getParameter(parameter: number): unknown } | null)
+          if (!context) {
+            return null
+          }
+          return {
+            vendor: context.getParameter(37445),
+            renderer: context.getParameter(37446),
+          }
+        } catch (error) {
+          return {
+            error: error instanceof Error ? error.message : String(error),
+          }
+        }
+      }
+
+      async function collectAudioSummary() {
+        try {
+          const OfflineAudioContextCtor =
+            runtimeGlobal.OfflineAudioContext ||
+            runtimeGlobal.webkitOfflineAudioContext
+          if (!OfflineAudioContextCtor) {
+            return null
+          }
+          const context = new OfflineAudioContextCtor(1, 2048, 44100)
+          const oscillator = context.createOscillator()
+          const compressor = context.createDynamicsCompressor()
+          oscillator.type = 'triangle'
+          oscillator.frequency.value = 880
+          oscillator.connect(compressor)
+          compressor.connect(context.destination)
+          oscillator.start(0)
+          const buffer = await context.startRendering()
+          const sample = Array.from(buffer.getChannelData(0).slice(0, 48), (value: number) => Number(value.toFixed(7)))
+          return {
+            hash: stableHash(sample),
+            sampleCount: sample.length,
+          }
+        } catch (error) {
+          return {
+            error: error instanceof Error ? error.message : String(error),
+          }
+        }
+      }
+
+      const selectorMatches = Object.fromEntries(
+        selectors.map((item: { id: string; selector: string }) => [
+          item.id,
+          runtimeDocument?.querySelectorAll(item.selector).length || 0,
+        ]),
+      )
+
+      const navigatorUserAgentData = (runtimeNavigator.userAgentData || null) as
+        | {
+            brands: Array<Record<string, unknown>>
+            mobile: boolean
+            platform: string
+            getHighEntropyValues?(hints: string[]): Promise<Record<string, unknown>>
+          }
+        | null
+      const userAgentData =
+        navigatorUserAgentData ?
+          {
+            brands: navigatorUserAgentData.brands.map((item) => ({ ...item })),
+            mobile: navigatorUserAgentData.mobile,
+            platform: navigatorUserAgentData.platform,
+            highEntropy:
+              typeof navigatorUserAgentData.getHighEntropyValues === 'function' ?
+                await navigatorUserAgentData
+                  .getHighEntropyValues([
+                    'architecture',
+                    'bitness',
+                    'fullVersionList',
+                    'model',
+                    'platformVersion',
+                    'uaFullVersion',
+                    'wow64',
+                    'formFactors',
+                  ])
+                  .catch((error: unknown) => ({
+                    error: error instanceof Error ? error.message : String(error),
+                  }))
+              : null,
+          }
+        : null
+
+      const mediaDevices =
+        runtimeNavigator.mediaDevices &&
+        typeof (runtimeNavigator.mediaDevices as { enumerateDevices?: unknown }).enumerateDevices === 'function' ?
+          await (
+            runtimeNavigator.mediaDevices as {
+              enumerateDevices(): Promise<Array<{ label?: string; kind?: string }>>
+            }
+          ).enumerateDevices().catch(() => [])
+        : []
+      const voices =
+        runtimeGlobal.speechSynthesis?.getVoices ?
+          runtimeGlobal.speechSynthesis.getVoices()
+        : []
+
+      return {
+        success: true,
+        finalUrl: String(runtimeGlobal.location?.href || ''),
+        finalHost: String(runtimeGlobal.location?.hostname || ''),
+        title: String(runtimeDocument?.title || ''),
+        readyState: String(runtimeDocument?.readyState || ''),
+        selectorMatches,
+        navigator: {
+          userAgent: String(runtimeNavigator.userAgent || ''),
+          language: String(runtimeNavigator.language || ''),
+          languages: Array.from((runtimeNavigator.languages as string[] | undefined) || []),
+          platform: String(runtimeNavigator.platform || ''),
+          vendor: String(runtimeNavigator.vendor || ''),
+          webdriver: Boolean(runtimeNavigator.webdriver),
+          deviceMemory: (runtimeNavigator.deviceMemory as number | undefined) ?? null,
+          hardwareConcurrency: (runtimeNavigator.hardwareConcurrency as number | undefined) ?? null,
+          maxTouchPoints: (runtimeNavigator.maxTouchPoints as number | undefined) ?? null,
+          pdfViewerEnabled:
+            'pdfViewerEnabled' in runtimeNavigator ?
+              (runtimeNavigator as { pdfViewerEnabled?: boolean }).pdfViewerEnabled ?? null
+            : null,
+        },
+        timezone: runtimeGlobal.Intl?.DateTimeFormat().resolvedOptions().timeZone || '',
+        clientHints: userAgentData,
+        mediaDevices: {
+          count: mediaDevices.length,
+          labelsKnown: mediaDevices.filter((item: { label?: string }) => item.label).length,
+          kinds: Array.from(new Set(mediaDevices.map((item: { kind?: string }) => item.kind || 'unknown'))).sort(),
+        },
+        speechVoices: {
+          count: voices.length,
+          primaryLang: voices[0]?.lang || '',
+          langs: Array.from(
+            new Set(voices.map((item: { lang?: string }) => item.lang || '').filter(Boolean)),
+          ).slice(0, 8),
+        },
+        fonts: {
+          checks: {
+            segoeUi: runtimeDocument?.fonts?.check?.('16px "Segoe UI"') ?? null,
+            sfProText: runtimeDocument?.fonts?.check?.('16px "SF Pro Text"') ?? null,
+            arial: runtimeDocument?.fonts?.check?.('16px Arial') ?? null,
+            pingfang: runtimeDocument?.fonts?.check?.('16px "PingFang SC"') ?? null,
+            yahei: runtimeDocument?.fonts?.check?.('16px "Microsoft YaHei"') ?? null,
+          },
+          widths: {
+            segoeUi: safeTextMeasure('16px "Segoe UI", Arial, sans-serif', 'Duokai smoke baseline'),
+            sfProText: safeTextMeasure('16px "SF Pro Text", Helvetica, sans-serif', 'Duokai smoke baseline'),
+            arial: safeTextMeasure('16px Arial, sans-serif', 'Duokai smoke baseline'),
+            menlo: safeTextMeasure('16px Menlo, monospace', 'Duokai smoke baseline'),
+          },
+        },
+        canvas: collectCanvasSummary(),
+        webgl: collectWebglSummary(),
+        audio: await collectAudioSummary(),
+        injectedFeatures: runtimeGlobal.__BITBROWSER_CLONE_INJECTED__ ?? null,
+      }
+    },
+    { selectors: scenario.selectorDiagnostics },
+  )
 }
 
 async function ensureSmokeProxyAndProfile(): Promise<{
+  scenario: PlatformSmokeScenario
   proxy: ProxyRecord | null
   profile: ProfileRecord | null
+  errorMessage?: string
+  startupUrl: string
 }> {
   const database = requireDatabase()
+  const scenario = resolvePlatformSmokeScenario(
+    process.env.DUOKAI_SMOKE_SCENARIO,
+    parseSmokeRequireProxy(process.env.DUOKAI_SMOKE_REQUIRE_PROXY),
+  )
   const smokeProxyHost = String(process.env.DUOKAI_SMOKE_PROXY_HOST || '').trim()
   const smokeProxyPort = Number(process.env.DUOKAI_SMOKE_PROXY_PORT || 0)
-  const smokeStartupUrl = String(process.env.DUOKAI_SMOKE_STARTUP_URL || 'https://example.com').trim()
+  const smokeStartupUrl = String(process.env.DUOKAI_SMOKE_STARTUP_URL || scenario.startupUrl).trim() || scenario.startupUrl
   const smokeProxyName = String(process.env.DUOKAI_SMOKE_PROXY_NAME || 'CI Desktop Smoke Proxy').trim()
-  const smokeProfileName = String(process.env.DUOKAI_SMOKE_PROFILE_NAME || 'CI Desktop Smoke Profile').trim()
+  const smokeProfileName = String(process.env.DUOKAI_SMOKE_PROFILE_NAME || `${scenario.label}`).trim()
   const smokeProxyType = String(process.env.DUOKAI_SMOKE_PROXY_TYPE || 'https').trim()
+  const defaultTimezone = String(
+    process.env.DUOKAI_SMOKE_TIMEZONE || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+  ).trim()
   const proxy =
     smokeProxyHost && smokeProxyPort > 0
       ? (() => {
@@ -7414,35 +7727,49 @@ async function ensureSmokeProxyAndProfile(): Promise<{
         })()
       : null
 
+  if (scenario.requiresProxy && !proxy) {
+    return {
+      scenario,
+      proxy,
+      profile: null,
+      startupUrl: smokeStartupUrl,
+      errorMessage: `Smoke scenario "${scenario.id}" requires a proxy, but DUOKAI_SMOKE_PROXY_HOST / DUOKAI_SMOKE_PROXY_PORT were not provided.`,
+    }
+  }
+
   const existingProfile = database.listProfiles().find((item) => item.name === smokeProfileName)
   if (existingProfile) {
     database.deleteProfile(existingProfile.id)
   }
   const profilePayload = createProfilePayload(
-    {
-      id: randomUUID(),
-      name: smokeProfileName,
-      proxyId: null,
-      groupName: 'CI Smoke',
-      tags: ['ci', 'windows-smoke'],
-      notes: 'Generated by desktop smoke harness',
-      fingerprintConfig: buildSmokeFingerprint(proxy, smokeStartupUrl),
-    },
+    buildPlatformSmokeProfileInput(scenario, proxy, {
+      profileId: randomUUID(),
+      profileName: smokeProfileName,
+      startupUrlOverride: smokeStartupUrl,
+      timezone: defaultTimezone || undefined,
+    }),
     createDefaultFingerprint,
   )
 
   const profile = database.createProfile(profilePayload)
 
-  return { proxy, profile }
+  return { scenario, proxy, profile, startupUrl: smokeStartupUrl }
 }
 
 async function runDesktopSmokeScenario(): Promise<void> {
+  const scenario = resolvePlatformSmokeScenario(
+    process.env.DUOKAI_SMOKE_SCENARIO,
+    parseSmokeRequireProxy(process.env.DUOKAI_SMOKE_REQUIRE_PROXY),
+  )
+  const artifactLabel = String(process.env.DUOKAI_SMOKE_ARTIFACT_LABEL || '').trim()
   const result: SmokeResultPayload = {
     success: false,
     platform: process.platform,
     appVersion: app.getVersion(),
     startedAt: new Date().toISOString(),
     outputDir: resolveSmokeOutputDir(),
+    scenarioId: scenario.id,
+    artifactLabel: artifactLabel || undefined,
     smokeMode: 'ci',
     steps: [],
   }
@@ -7461,6 +7788,13 @@ async function runDesktopSmokeScenario(): Promise<void> {
       directoryInfo.chromiumExecutable ? 'Chromium executable resolved' : 'Chromium executable missing',
       directoryInfo,
     )
+    pushSmokeStep(result.steps, 'smoke.scenario', 'passed', `Resolved smoke scenario "${scenario.id}"`, {
+      platform: scenario.platform,
+      environmentPurpose: scenario.environmentPurpose,
+      startupUrl: scenario.startupUrl,
+      expectedHosts: scenario.expectedHosts,
+      requiresProxy: scenario.requiresProxy,
+    })
 
     const smokeIdentifier = String(process.env.DUOKAI_SMOKE_IDENTIFIER || '').trim()
     const smokePassword = String(process.env.DUOKAI_SMOKE_PASSWORD || '')
@@ -7486,17 +7820,19 @@ async function runDesktopSmokeScenario(): Promise<void> {
       pushSmokeStep(result.steps, 'auth.login', 'skipped', 'Missing DUOKAI_SMOKE_IDENTIFIER / DUOKAI_SMOKE_PASSWORD')
     }
 
-    const { proxy, profile } = await ensureSmokeProxyAndProfile()
+    const { proxy, profile, errorMessage, startupUrl } = await ensureSmokeProxyAndProfile()
     pushSmokeStep(
       result.steps,
       'smoke.setup',
-      profile ? 'passed' : 'skipped',
-      profile ? `Using profile "${profile.name}"` : 'No profile available for runtime smoke',
+      errorMessage ? 'failed' : profile ? 'passed' : 'skipped',
+      errorMessage || (profile ? `Using profile "${profile.name}"` : 'No profile available for runtime smoke'),
       {
         profileId: profile?.id || null,
         proxyId: proxy?.id || null,
         proxyServer: proxy ? buildProxyServer(proxy) : null,
         proxyType: proxy?.type || null,
+        startupUrl,
+        scenarioId: scenario.id,
       },
     )
 
@@ -7533,28 +7869,38 @@ async function runDesktopSmokeScenario(): Promise<void> {
     if (profile) {
       try {
         await performRuntimeLaunch(profile.id)
-        const outcome = await waitForRuntimeOutcome(profile.id)
+        const outcome = await waitForSmokeRuntimeReady(profile.id)
         const latestProfile = outcome.profile
         const logs = requireDatabase().listLogs().slice(-20)
         const metadata = latestProfile?.fingerprintConfig.runtimeMetadata || null
+        const outputDir = resolveSmokeOutputDir()
+        const artifactBaseName = buildPlatformSmokeArtifactBaseName(scenario, artifactLabel)
+        const logsPath = path.join(outputDir, `${artifactBaseName}-logs.json`)
+        await writeFile(logsPath, JSON.stringify(logs, null, 2), 'utf8')
+        result.artifacts = {
+          ...result.artifacts,
+          logsPath,
+        }
         const launchPassed = Boolean(
           latestProfile &&
-            (latestProfile.status === 'running' ||
-              latestProfile.status === 'stopped' ||
-              (metadata?.lastProxyCheckSuccess === true && metadata.launchValidationStage === 'idle')),
+            outcome.context &&
+            latestProfile.startupNavigation?.checkedAt &&
+            latestProfile.status !== 'error' &&
+            (metadata?.launchValidationStage === 'idle' || latestProfile.startupNavigation?.success),
         )
         pushSmokeStep(
           result.steps,
           'runtime.launch',
           launchPassed ? 'passed' : 'failed',
           latestProfile
-            ? `Runtime finished with profile status "${latestProfile.status}" after ${outcome.elapsedMs}ms`
+            ? `Runtime reached smoke-ready state with profile status "${latestProfile.status}" after ${outcome.elapsedMs}ms`
             : 'Profile disappeared during runtime smoke',
           {
             elapsedMs: outcome.elapsedMs,
             runtimeStatus: outcome.runtimeStatus,
             profileStatus: latestProfile?.status || null,
             profileId: latestProfile?.id || profile.id,
+            startupNavigation: latestProfile?.startupNavigation || null,
             lastProxyCheckSuccess: metadata?.lastProxyCheckSuccess ?? null,
             lastProxyCheckMessage: metadata?.lastProxyCheckMessage || '',
             lastResolvedIp: metadata?.lastResolvedIp || '',
@@ -7563,6 +7909,54 @@ async function runDesktopSmokeScenario(): Promise<void> {
             logs,
           },
         )
+
+        if (launchPassed && outcome.context && latestProfile) {
+          const page =
+            outcome.context.pages()[outcome.context.pages().length - 1] ||
+            outcome.context.pages()[0] ||
+            (await outcome.context.newPage())
+          const screenshotPath = path.join(outputDir, `${artifactBaseName}-page.png`)
+          const probePath = path.join(outputDir, `${artifactBaseName}-probe.json`)
+          await page.waitForLoadState('domcontentloaded', { timeout: 10_000 }).catch(() => {})
+          await page.screenshot({
+            path: screenshotPath,
+            fullPage: false,
+          })
+          result.artifacts = {
+            ...result.artifacts,
+            screenshotPath,
+          }
+          pushSmokeStep(result.steps, 'runtime.screenshot', 'passed', 'Captured scenario screenshot', {
+            screenshotPath,
+          })
+
+          const probe = await collectPlatformSmokeProbe(page, scenario)
+          await writeFile(probePath, JSON.stringify(probe, null, 2), 'utf8')
+          result.artifacts = {
+            ...result.artifacts,
+            screenshotPath,
+            probePath,
+          }
+          const probeEvaluation = evaluatePlatformSmokeSuccess({
+            scenario,
+            launchPassed,
+            startupNavigation: latestProfile.startupNavigation,
+            probe: probe as PlatformSmokeProbeResult,
+          })
+          pushSmokeStep(
+            result.steps,
+            'runtime.probe',
+            probeEvaluation.success ? 'passed' : 'failed',
+            probeEvaluation.success
+              ? `Platform probe matched ${scenario.expectedHosts.join(', ')}`
+              : probeEvaluation.reasons.join('; '),
+            {
+              probePath,
+              probe,
+            },
+          )
+        }
+
         if (runtimeContexts.has(profile.id)) {
           await stopRuntime(profile.id)
         }

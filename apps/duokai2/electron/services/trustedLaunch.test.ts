@@ -18,6 +18,7 @@ function buildSnapshot(overrides?: Partial<TrustedLaunchSnapshot>): TrustedLaunc
     verifiedLanguage: 'en-US',
     verifiedGeolocation: '37.77,-122.42',
     verifiedHostEnvironment: 'macOS',
+    // Keep an older Chromium major here to represent a previously verified historical snapshot.
     verifiedChromiumMajor: '136',
     verifiedDesktopAppVersion: '0.1.0',
     httpsCheckPassed: true,
@@ -33,6 +34,7 @@ function buildContext() {
     configFingerprintHash: 'config-hash',
     proxyFingerprintHash: 'proxy-hash',
     currentDesktopAppVersion: '0.1.0',
+    // Match the historical snapshot major above so this test keeps exercising reuse semantics.
     currentChromiumMajor: '136',
     currentHostEnvironment: 'macOS',
     currentCanonicalRoot: '/tmp/workspaces/profile-1',

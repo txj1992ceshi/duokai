@@ -5,6 +5,7 @@ import path from 'node:path'
 import { app } from 'electron'
 import { chromium } from 'playwright'
 import type { ProxyRecord, WebRtcMode } from '../../src/shared/types'
+import { applyWebRtcModeToLaunchArgs } from './webrtc'
 
 export function parseLocale(language: string): string {
   return language || 'en-US'
@@ -29,13 +30,11 @@ export function buildRuntimeArgs(
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean)
-  if (webrtcMode === 'disabled') {
-    args.push('--disable-webrtc')
-  }
+  const runtimeArgs = applyWebRtcModeToLaunchArgs(args, webrtcMode)
   if (disableGpu) {
-    args.push('--disable-gpu')
+    runtimeArgs.push('--disable-gpu')
   }
-  return Array.from(new Set(args))
+  return Array.from(new Set(runtimeArgs))
 }
 
 export function buildProxyServer(proxy: ProxyRecord): string {

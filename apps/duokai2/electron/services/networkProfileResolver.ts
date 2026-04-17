@@ -1,5 +1,6 @@
 import type { ProfileRecord } from '../../src/shared/types'
 import type { ProxyCheckResult } from './proxyCheck'
+import { syncWorkspaceWithFingerprintConfig } from './factories'
 
 export function applyNetworkDerivedFingerprint(
   profile: ProfileRecord,
@@ -14,6 +15,10 @@ export function applyNetworkDerivedFingerprint(
     fingerprintConfig.advanced.autoLanguageFromIp && check.languageHint
       ? check.languageHint
       : fingerprintConfig.language
+  const nextInterfaceLanguage =
+    fingerprintConfig.advanced.autoInterfaceLanguageFromIp && check.languageHint
+      ? check.languageHint
+      : fingerprintConfig.advanced.interfaceLanguage
   const nextTimezone =
     fingerprintConfig.advanced.autoTimezoneFromIp && check.timezone
       ? check.timezone
@@ -31,8 +36,19 @@ export function applyNetworkDerivedFingerprint(
       timezone: nextTimezone,
       advanced: {
         ...fingerprintConfig.advanced,
+        interfaceLanguage: nextInterfaceLanguage,
         geolocation: nextGeolocation,
       },
     },
+    workspace: syncWorkspaceWithFingerprintConfig(profile.workspace, {
+      ...fingerprintConfig,
+      language: nextLanguage,
+      timezone: nextTimezone,
+      advanced: {
+        ...fingerprintConfig.advanced,
+        interfaceLanguage: nextInterfaceLanguage,
+        geolocation: nextGeolocation,
+      },
+    }),
   }
 }

@@ -8,6 +8,7 @@ import type {
   ProfileRecord,
   SimpleFingerprintMode,
 } from '../../src/shared/types'
+import { resolveFontBaseline } from './desktopRealism'
 
 export const DEVICE_PROFILE_VERSION = 1
 export const DEFAULT_ENVIRONMENT_PURPOSE: EnvironmentPurpose = 'operation'
@@ -66,7 +67,7 @@ function resolveOperatingSystem(config: FingerprintConfig): string {
 function resolveBrowserVersion(config: FingerprintConfig): string {
   const configured = String(config.advanced.browserVersion || '').trim()
   const inferred = inferBrowserVersionFromUserAgent(config.userAgent)
-  return inferred || configured || '136'
+  return configured || inferred || '147'
 }
 
 function resolvePlatformValue(config: FingerprintConfig, operatingSystem: string): string {
@@ -88,7 +89,7 @@ function resolvePlatformValue(config: FingerprintConfig, operatingSystem: string
 
 function resolveInterfaceLanguage(config: FingerprintConfig): string {
   if (config.advanced.autoInterfaceLanguageFromIp) {
-    return config.language || 'en-US'
+    return config.advanced.interfaceLanguage || config.language || 'en-US'
   }
   return config.advanced.interfaceLanguage || config.language || 'en-US'
 }
@@ -99,9 +100,10 @@ export function buildDeviceProfileSupportMatrix(
   const activeOrPartial = (
     mode: FontMode | SimpleFingerprintMode | 'enabled' | 'disabled',
   ): 'active' | 'partial' => (mode === 'system' || mode === 'disabled' || mode === 'off' ? 'partial' : 'active')
+  const fontBaseline = resolveFontBaseline(config)
 
   return {
-    fonts: config.advanced.fontMode === 'system' ? 'partial' : 'placeholder',
+    fonts: fontBaseline.supportedFamilies.length > 0 ? 'active' : 'partial',
     mediaDevices: activeOrPartial(config.advanced.mediaDevicesMode),
     speechVoices: activeOrPartial(config.advanced.speechVoicesMode),
     canvas: activeOrPartial(config.advanced.canvasMode),
@@ -110,7 +112,7 @@ export function buildDeviceProfileSupportMatrix(
     clientRects: activeOrPartial(config.advanced.clientRectsMode),
     geolocation:
       config.advanced.autoGeolocationFromIp || config.advanced.geolocation.trim().length > 0 ? 'active' : 'partial',
-    deviceInfo: config.advanced.deviceInfoMode === 'custom' ? 'partial' : 'placeholder',
+    deviceInfo: config.advanced.deviceInfoMode === 'custom' ? 'active' : 'partial',
     sslFingerprint: config.advanced.sslFingerprintMode === 'enabled' ? 'placeholder' : 'placeholder',
     pluginFingerprint: config.advanced.customPluginFingerprint === 'enabled' ? 'placeholder' : 'placeholder',
   }

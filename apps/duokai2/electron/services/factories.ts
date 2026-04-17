@@ -386,6 +386,38 @@ export function syncFingerprintConfigWithWorkspaceEnvironment(
   }
 }
 
+export function syncWorkspaceWithFingerprintConfig(
+  workspace: WorkspaceDescriptor | null | undefined,
+  fingerprintConfig: FingerprintConfig,
+): WorkspaceDescriptor | null | undefined {
+  if (!workspace) {
+    return workspace
+  }
+
+  const resolvedEnvironment = createResolvedWorkspaceEnvironment(
+    fingerprintConfig,
+    workspace.paths,
+  )
+  const templateId = workspace.templateBinding.templateId || 'workspace-default'
+  const templateRevision = workspace.templateBinding.templateRevision || 'workspace-default'
+
+  return {
+    ...workspace,
+    resolvedEnvironment,
+    templateBinding: {
+      ...workspace.templateBinding,
+      templateId,
+      templateRevision,
+      templateFingerprintHash: buildWorkspaceTemplateFingerprintHash(
+        templateId,
+        templateRevision,
+        resolvedEnvironment,
+        workspace.paths,
+      ),
+    },
+  }
+}
+
 function detectHostOperatingSystem(): string {
   switch (process.platform) {
     case 'darwin':
@@ -398,7 +430,7 @@ function detectHostOperatingSystem(): string {
 }
 
 function buildDesktopUserAgent(operatingSystem: string, browserVersion: string): string {
-  const majorVersion = String(browserVersion || '136').trim() || '136'
+  const majorVersion = String(browserVersion || '147').trim() || '147'
   const os = operatingSystem.toLowerCase()
   if (os.includes('mac')) {
     return `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${majorVersion}.0.0.0 Safari/537.36`
@@ -407,6 +439,19 @@ function buildDesktopUserAgent(operatingSystem: string, browserVersion: string):
     return `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${majorVersion}.0.0.0 Safari/537.36`
   }
   return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${majorVersion}.0.0.0 Safari/537.36`
+}
+
+function syncBrowserIdentity(config: FingerprintConfig): FingerprintConfig {
+  const browserVersion = String(config.advanced.browserVersion || '').trim() || '147'
+  return {
+    ...config,
+    userAgent: buildDesktopUserAgent(config.advanced.operatingSystem, browserVersion),
+    advanced: {
+      ...config.advanced,
+      browserKernelVersion: browserVersion,
+      browserVersion,
+    },
+  }
 }
 
 export function createDefaultFingerprint(): FingerprintConfig {
@@ -449,32 +494,32 @@ export function createDefaultFingerprint(): FingerprintConfig {
 
   const advanced: ProfileAdvancedFingerprintSettings = {
     browserKernel: 'chrome',
-    browserKernelVersion: '140',
+    browserKernelVersion: '147',
     deviceMode: 'desktop',
     operatingSystem: detectHostOperatingSystem(),
     operatingSystemVersion: '',
-    browserVersion: '136',
+    browserVersion: '147',
     autoLanguageFromIp: true,
-    autoInterfaceLanguageFromIp: false,
+    autoInterfaceLanguageFromIp: true,
     interfaceLanguage: '',
     autoTimezoneFromIp: true,
     autoGeolocationFromIp: true,
-    geolocationPermission: 'ask',
+    geolocationPermission: 'allow',
     geolocation: '',
     windowWidth: 1280,
     windowHeight: 720,
     resolutionMode: 'system',
     fontMode: 'system',
-    canvasMode: 'random',
-    webglImageMode: 'random',
+    canvasMode: 'custom',
+    webglImageMode: 'custom',
     webglMetadataMode: 'custom',
     webglVendor: 'Google Inc. (NVIDIA)',
     webglRenderer: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3090 Ti Direct3D11 vs_5_0 ps_5_0, D3D11-31.0.15.4633)',
-    audioContextMode: 'random',
-    mediaDevicesMode: 'off',
-    speechVoicesMode: 'random',
+    audioContextMode: 'custom',
+    mediaDevicesMode: 'custom',
+    speechVoicesMode: 'custom',
     doNotTrackEnabled: false,
-    clientRectsMode: 'random',
+    clientRectsMode: 'off',
     deviceInfoMode: 'custom',
     deviceName: 'DESKTOP-U09K1H5',
     hostIp: '172.25.254.247',
@@ -559,7 +604,7 @@ export function createDefaultFingerprint(): FingerprintConfig {
     language: DEFAULT_ENVIRONMENT_LANGUAGE,
     timezone: '',
     resolution: '1440x900',
-    webrtcMode: 'default',
+    webrtcMode: 'proxy-aware',
     basicSettings,
     proxySettings,
     commonSettings,
@@ -592,13 +637,19 @@ export function applyPlatformTemplate(
   }
 
   if (preset.key === 'linkedin') {
-    const browserVersion = '136'
+    const browserVersion = '146'
     const operatingSystem = 'Windows'
     return {
       recommendedPurpose: preset.recommendedPurpose,
       fingerprint: {
-        ...fingerprint,
-        userAgent: buildDesktopUserAgent(operatingSystem, browserVersion),
+        ...syncBrowserIdentity({
+          ...fingerprint,
+          advanced: {
+            ...fingerprint.advanced,
+            browserVersion,
+            operatingSystem,
+          },
+        }),
         basicSettings: {
           ...fingerprint.basicSettings,
           platform: 'linkedin',
@@ -607,47 +658,56 @@ export function applyPlatformTemplate(
           ...fingerprint.commonSettings,
           pageMode: 'local',
           blockImages: false,
+          syncTabs: false,
           memorySaver: true,
         },
         advanced: {
           ...fingerprint.advanced,
           deviceMode: 'desktop',
           operatingSystem,
+          browserKernelVersion: browserVersion,
           browserVersion,
           autoLanguageFromIp: true,
-          autoInterfaceLanguageFromIp: false,
+          autoInterfaceLanguageFromIp: true,
           autoTimezoneFromIp: true,
           autoGeolocationFromIp: true,
-          geolocationPermission: 'ask',
+          geolocationPermission: 'allow',
           windowWidth: 1440,
           windowHeight: 900,
           resolutionMode: 'system',
           fontMode: 'system',
-          canvasMode: 'random',
-          webglImageMode: 'random',
+          canvasMode: 'custom',
+          webglImageMode: 'custom',
           webglMetadataMode: 'custom',
           webglVendor: 'Google Inc. (Intel)',
           webglRenderer: 'ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)',
-          audioContextMode: 'random',
-          mediaDevicesMode: 'off',
-          speechVoicesMode: 'random',
-          clientRectsMode: 'random',
+          audioContextMode: 'custom',
+          mediaDevicesMode: 'custom',
+          speechVoicesMode: 'custom',
+          clientRectsMode: 'off',
           cpuMode: 'system',
           cpuCores: 8,
           memoryGb: 8,
         },
         resolution: '1440x900',
+        webrtcMode: 'proxy-aware',
       },
     }
   }
 
-  const browserVersion = '136'
+  const browserVersion = '147'
   const operatingSystem = 'Windows'
   return {
     recommendedPurpose: preset.recommendedPurpose,
     fingerprint: {
-      ...fingerprint,
-      userAgent: buildDesktopUserAgent(operatingSystem, browserVersion),
+      ...syncBrowserIdentity({
+        ...fingerprint,
+        advanced: {
+          ...fingerprint.advanced,
+          browserVersion,
+          operatingSystem,
+        },
+      }),
       basicSettings: {
         ...fingerprint.basicSettings,
         platform: 'tiktok',
@@ -662,30 +722,32 @@ export function applyPlatformTemplate(
         ...fingerprint.advanced,
         deviceMode: 'desktop',
         operatingSystem,
+        browserKernelVersion: browserVersion,
         browserVersion,
         autoLanguageFromIp: true,
-        autoInterfaceLanguageFromIp: false,
+        autoInterfaceLanguageFromIp: true,
         autoTimezoneFromIp: true,
         autoGeolocationFromIp: true,
-        geolocationPermission: 'ask',
+        geolocationPermission: 'allow',
         windowWidth: 1600,
         windowHeight: 900,
         resolutionMode: 'system',
         fontMode: 'system',
-        canvasMode: 'random',
-        webglImageMode: 'random',
+        canvasMode: 'custom',
+        webglImageMode: 'custom',
         webglMetadataMode: 'custom',
         webglVendor: 'Google Inc. (Intel)',
         webglRenderer: 'ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)',
-        audioContextMode: 'random',
-        mediaDevicesMode: 'random',
-        speechVoicesMode: 'random',
-        clientRectsMode: 'random',
+        audioContextMode: 'custom',
+        mediaDevicesMode: 'custom',
+        speechVoicesMode: 'custom',
+        clientRectsMode: 'off',
         cpuMode: 'system',
         cpuCores: 8,
         memoryGb: 8,
       },
       resolution: '1600x900',
+      webrtcMode: 'proxy-aware',
     },
   }
 }
@@ -707,7 +769,7 @@ export function normalizeFingerprintConfig(input?: Partial<FingerprintConfig> | 
   const normalizedAutoTimezone = hasExplicitAutoTimezone
     ? Boolean(source.advanced?.autoTimezoneFromIp)
     : !(typeof source.timezone === 'string' && source.timezone.trim().length > 0)
-  return {
+  const normalized = {
     ...defaults,
     ...source,
     basicSettings: {
@@ -733,6 +795,7 @@ export function normalizeFingerprintConfig(input?: Partial<FingerprintConfig> | 
       ...(source.runtimeMetadata ?? {}),
     },
   }
+  return syncBrowserIdentity(normalized)
 }
 
 export function createDefaultCloudPhoneFingerprintSettings(): CloudPhoneFingerprintSettings {

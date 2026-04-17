@@ -61,7 +61,12 @@ test('createProfilePayload builds workspace resolvedEnvironment as runtime sourc
   assert.equal(payload.workspace?.templateBinding.templateRevision, 'legacy-profile-v1')
   assert.equal(payload.workspace?.resolvedEnvironment.browserLanguage, 'en-US')
   assert.equal(payload.workspace?.resolvedEnvironment.timezone, 'America/New_York')
-  assert.equal(payload.workspace?.resolvedEnvironment.resolution, '1600x900')
+  assert.equal(payload.workspace?.resolvedEnvironment.resolution, payload.fingerprintConfig.resolution)
+  assert.equal(
+    payload.workspace?.resolvedEnvironment.resolution,
+    `${payload.fingerprintConfig.advanced.windowWidth}x${payload.fingerprintConfig.advanced.windowHeight}`,
+  )
+  assert.equal(payload.fingerprintConfig.runtimeMetadata.hardwareProfileSource, 'generated')
 })
 
 test('normalizeWorkspaceDescriptor backfills empty runtime fields from fingerprint defaults', () => {
@@ -72,7 +77,7 @@ test('normalizeWorkspaceDescriptor backfills empty runtime fields from fingerpri
     resolution: '1600x900',
     advanced: {
       ...createDefaultFingerprint().advanced,
-      browserVersion: '137',
+      browserVersion: '147',
     },
   }
 

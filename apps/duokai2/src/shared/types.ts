@@ -7,7 +7,7 @@ export type LogLevel = 'info' | 'warn' | 'error'
 
 export type LogCategory = 'profile' | 'proxy' | 'runtime' | 'system' | 'cloud-phone'
 
-export type WebRtcMode = 'default' | 'disabled'
+export type WebRtcMode = 'default' | 'proxy-aware' | 'disabled'
 
 export type ProxyMode = 'direct' | 'custom' | 'manager' | 'api'
 export type BrowserPageMode = 'local' | 'hidden'

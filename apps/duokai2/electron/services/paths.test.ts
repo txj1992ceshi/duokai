@@ -69,7 +69,7 @@ test('createPortableWorkspaceDescriptor strips foreign absolute paths before cro
       },
       resolvedEnvironment: {
         browserFamily: 'chrome',
-        browserMajorVersionRange: '136',
+        browserMajorVersionRange: '147',
         systemLanguage: 'en-US',
         browserLanguage: 'en-US',
         timezone: 'Asia/Shanghai',
@@ -112,6 +112,7 @@ test('ensureWorkspaceLayoutForProfile migrates legacy profile dir once and resum
     notes: '',
     environmentPurpose: 'operation' as const,
     deviceProfile: {
+      // Keep an older Chromium major here to represent imported legacy runtime state.
       version: 1,
       deviceClass: 'desktop' as const,
       operatingSystem: 'macOS',
@@ -200,6 +201,7 @@ test('ensureWorkspaceLayoutForProfile repairs missing runtime fields for legacy 
     notes: '',
     environmentPurpose: 'operation' as const,
     deviceProfile: {
+      // Keep an older Chromium major here to represent imported legacy runtime state.
       version: 1,
       deviceClass: 'desktop' as const,
       operatingSystem: 'Windows',
