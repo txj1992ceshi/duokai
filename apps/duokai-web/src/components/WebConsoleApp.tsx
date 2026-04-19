@@ -1,6 +1,6 @@
 'use client'
 
-import { startTransition, useMemo, useState } from 'react'
+import { startTransition, useMemo, useState, useEffect } from 'react'
 import {
   Badge,
   Button,
@@ -447,129 +447,160 @@ export function WebConsoleApp() {
 
       return (
         <div className="space-y-8">
-          <div className="grid gap-5 xl:grid-cols-[1.1fr_1fr_1.9fr]">
-            <Card className="web-glass web-panel web-kpi-glow rounded-[30px] border-white/8 p-6">
-              <div className="flex items-center justify-between gap-6">
+          <div className="grid gap-5 grid-cols-1 lg:grid-cols-2 xl:grid-cols-3">
+            {/* 环境安全指数卡片 */}
+            <Card className="web-glass web-panel web-kpi-glow rounded-[30px] border-white/8 p-6 min-h-[320px] h-auto flex flex-col gap-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">环境安全指数</p>
-                  <div className="mt-5 flex items-center gap-5">
-                    <RingStat
-                      value={environmentSafetyScore}
-                      tone="sky"
-                      size={84}
-                      label={`${environmentSafetyScore}%`}
-                    />
-                    <div>
-                      <p className="text-4xl font-semibold tracking-tight text-sky-300">Excellent</p>
-                      <p className="mt-1 text-sm text-slate-500">No leaks found</p>
-                    </div>
-                  </div>
-                  <p className="mt-5 text-sm text-slate-400">
-                    当前指纹环境运行面稳定，浏览器实例和配置回传链路都由本地执行器接管。
-                  </p>
                 </div>
                 <Badge tone="success" className="px-3 py-1.5 text-xs">
                   {deviceStatus.status === 'online' ? 'RUNTIME ONLINE' : 'RUNTIME OFFLINE'}
                 </Badge>
               </div>
-              <div className="mt-6 grid gap-3 md:grid-cols-3">
-                <MetricCard label="运行时版本" value={deviceStatus.runtimeVersion} tone="sky" />
-                <MetricCard label="当前并发" value={`${deviceStatus.concurrentRunning}`} tone="emerald" />
-                <MetricCard label="消息桥版本" value={deviceStatus.messageBridgeVersion} tone="violet" />
+              
+              <div className="flex-1 min-h-0">
+                <div className="grid grid-cols-[96px,minmax(0,1fr)] items-center gap-5 max-[1399px]:grid-cols-1">
+                  <RingStat
+                    value={environmentSafetyScore}
+                    tone="sky"
+                    size={84}
+                    label={`${environmentSafetyScore}%`}
+                  />
+                  <div className="min-w-0">
+                    <p className="text-[clamp(1.75rem,2.2vw,3rem)] font-semibold tracking-tight text-sky-300 break-words">Excellent</p>
+                    <p className="mt-1 text-sm text-slate-500">No leaks found</p>
+                  </div>
+                </div>
+                
+                <p className="mt-5 text-sm text-slate-400 break-words [overflow-wrap:anywhere] leading-6">
+                  当前指纹环境运行面稳定，浏览器实例和配置回传链路都由本地执行器接管。
+                </p>
+              </div>
+              
+              <div className="mt-auto">
+                <div className="grid grid-cols-3 gap-3 max-[1199px]:grid-cols-2 max-[991px]:grid-cols-1">
+                  <MetricCard label="运行时版本" value={deviceStatus.runtimeVersion} tone="sky" />
+                  <MetricCard label="当前并发" value={`${deviceStatus.concurrentRunning}`} tone="emerald" />
+                  <MetricCard label="消息桥版本" value={deviceStatus.messageBridgeVersion} tone="violet" />
+                </div>
               </div>
             </Card>
-            <Card className="web-glass web-panel rounded-[30px] border-white/8 p-6">
-              <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">M4 内存占用 (REAL-TIME)</p>
-              <div className="mt-5 flex items-center justify-between gap-5">
-                <RingStat value={runtimeMemoryUsage} tone="rose" size={76} label={`${runtimeMemoryUsage}%`} />
-                <div className="text-right">
-                  <p className="text-4xl font-semibold tracking-tight text-white">{runtimeMemoryValue}</p>
-                  <p className="mt-1 text-sm text-slate-500">Matrix Overhead</p>
-                </div>
+            
+            {/* 内存占用卡片 */}
+            <Card className="web-glass web-panel rounded-[30px] border-white/8 p-6 min-h-[320px] h-auto flex flex-col gap-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">M4 内存占用 (REAL-TIME)</p>
               </div>
-              <div className="mt-6 space-y-3">
-                <RealtimeStrip label="消息桥接占比" value={64} tone="sky" />
-                <RealtimeStrip label="环境并发负载" value={58} tone="rose" />
+              
+              <div className="flex-1 min-h-0">
+                <div className="grid grid-cols-[96px,minmax(0,1fr)] items-center gap-5 max-[1399px]:grid-cols-1">
+                  <RingStat value={runtimeMemoryUsage} tone="rose" size={76} label={`${runtimeMemoryUsage}%`} />
+                  <div className="text-right min-w-0">
+                    <p className="text-[clamp(1.75rem,2.2vw,3rem)] font-semibold tracking-tight text-white break-words">{runtimeMemoryValue}</p>
+                    <p className="mt-1 text-sm text-slate-500">Matrix Overhead</p>
+                  </div>
+                </div>
+                
+                <div className="mt-6 space-y-3">
+                  <RealtimeStrip label="消息桥接占比" value={64} tone="sky" />
+                  <RealtimeStrip label="环境并发负载" value={58} tone="rose" />
+                </div>
               </div>
             </Card>
-            <Card className="web-glass web-panel rounded-[30px] border-white/8 p-6">
-              <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">本地 Runtime 吞吐率</p>
-              <div className="mt-6 flex items-center justify-between gap-4">
-                <div>
-                  <p className="text-2xl font-semibold text-white">Processing Task: #{bulkTasks[0]?.profileIds[0] ?? '882'}</p>
-                  <p className="mt-1 text-sm text-slate-500">实时汇总环境和消息接入队列。</p>
-                </div>
-                <div className="inline-flex items-center gap-2 rounded-full border border-emerald-400/20 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-300">
-                  <span className="web-dot-pulse h-2.5 w-2.5 rounded-full bg-emerald-400" />
-                  Stable
-                </div>
+            
+            {/* Runtime 吞吐率卡片 */}
+            <Card className="web-glass web-panel rounded-[30px] border-white/8 p-6 min-h-[320px] h-auto flex flex-col gap-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">本地 Runtime 吞吐率</p>
               </div>
-              <div className="mt-5">
-                <ProgressStat value={runtimeSuccessRate} tone="emerald" />
-              </div>
-              <div className="mt-5 grid gap-3 md:grid-cols-2">
-                <MiniResultCard label="Succeeded" value={String(successCount)} accent="emerald" />
-                <MiniResultCard label="Failed" value={String(failedCount)} accent="rose" />
+              
+              <div className="flex-1 min-h-0">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="text-[clamp(1.25rem,1.5vw,1.5rem)] font-semibold text-white break-words">Processing Task: #{bulkTasks[0]?.profileIds[0] ?? '882'}</p>
+                    <p className="mt-1 text-sm text-slate-500">实时汇总环境和消息接入队列。</p>
+                  </div>
+                  <div className="inline-flex items-center gap-2 rounded-full border border-emerald-400/20 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-300">
+                    <span className="web-dot-pulse h-2.5 w-2.5 rounded-full bg-emerald-400" />
+                    Stable
+                  </div>
+                </div>
+                
+                <div className="mt-5">
+                  <ProgressStat value={runtimeSuccessRate} tone="emerald" />
+                </div>
+                
+                <div className="mt-5 grid grid-cols-2 gap-3 max-[991px]:grid-cols-1">
+                  <MiniResultCard label="Succeeded" value={String(successCount)} accent="emerald" />
+                  <MiniResultCard label="Failed" value={String(failedCount)} accent="rose" />
+                </div>
               </div>
             </Card>
           </div>
 
-          <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
-            <Card className="web-glass web-panel rounded-[30px] border-white/8 p-6">
-              <div className="mb-6 flex items-center justify-between">
-                <div>
-                  <h3 className="text-xl font-semibold text-white">双核心工作负载</h3>
+          <div className="grid gap-6 grid-cols-1 lg:grid-cols-2">
+            {/* 双核心工作负载卡片 */}
+            <Card className="web-glass web-panel rounded-[30px] border-white/8 p-6 min-h-[320px] h-auto flex flex-col gap-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 className="text-[clamp(1rem,1.2vw,1.25rem)] font-semibold text-white break-words">双核心工作负载</h3>
                   <p className="mt-1 text-sm text-slate-400">同一首页同时追踪环境运行与消息群控状态。</p>
                 </div>
                 <Badge tone="primary" className="px-3 py-1 text-xs">
                   Matrix
                 </Badge>
               </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                {Object.entries(groupedEnvironmentCounts).map(([groupName, count]) => (
-                  <div key={groupName} className="web-panel web-panel-soft rounded-[24px] border border-white/8 bg-white/4 p-5">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-sm font-semibold text-white">{groupName}</p>
-                        <p className="mt-1 text-xs text-slate-400">环境实例数量</p>
+              
+              <div className="flex-1 min-h-0">
+                <div className="grid gap-4 md:grid-cols-2 max-[991px]:grid-cols-1">
+                  {Object.entries(groupedEnvironmentCounts).map(([groupName, count]) => (
+                    <div key={groupName} className="web-panel web-panel-soft rounded-[24px] border border-white/8 bg-white/4 p-5">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-white break-words">{groupName}</p>
+                          <p className="mt-1 text-xs text-slate-400">环境实例数量</p>
+                        </div>
+                        <div className="text-[clamp(1.5rem,2vw,2rem)] font-semibold text-sky-300 break-words">{count}</div>
                       </div>
-                      <div className="text-3xl font-semibold text-sky-300">{count}</div>
+                      <div className="mt-4">
+                        <ProgressStat value={Math.min(100, count * 22)} tone="sky" compact />
+                      </div>
+                    </div>
+                  ))}
+                  <div className="web-panel web-panel-soft rounded-[24px] border border-white/8 bg-white/4 p-5">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-white break-words">活跃会话</p>
+                        <p className="mt-1 text-xs text-slate-400">当前聚合消息联系人</p>
+                      </div>
+                      <div className="text-[clamp(1.5rem,2vw,2rem)] font-semibold text-cyan-300 break-words">{filteredContacts.length}</div>
                     </div>
                     <div className="mt-4">
-                      <ProgressStat value={Math.min(100, count * 22)} tone="sky" compact />
+                      <ProgressStat value={Math.min(100, filteredContacts.length * 28)} tone="amber" compact />
                     </div>
-                  </div>
-                ))}
-                <div className="web-panel web-panel-soft rounded-[24px] border border-white/8 bg-white/4 p-5">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-semibold text-white">活跃会话</p>
-                      <p className="mt-1 text-xs text-slate-400">当前聚合消息联系人</p>
-                    </div>
-                    <div className="text-3xl font-semibold text-cyan-300">{filteredContacts.length}</div>
-                  </div>
-                  <div className="mt-4">
-                    <ProgressStat value={Math.min(100, filteredContacts.length * 28)} tone="amber" compact />
                   </div>
                 </div>
               </div>
             </Card>
 
-            <Card className="web-glass web-panel rounded-[30px] border-white/8 p-6">
-              <div className="mb-6 flex items-center justify-between">
-                <div>
-                  <h3 className="text-xl font-semibold text-white">消息群控概览</h3>
+            {/* 消息群控概览卡片 */}
+            <Card className="web-glass web-panel rounded-[30px] border-white/8 p-6 min-h-[320px] h-auto flex flex-col gap-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 className="text-[clamp(1rem,1.2vw,1.25rem)] font-semibold text-white break-words">消息群控概览</h3>
                   <p className="mt-1 text-sm text-slate-400">未读渠道、AI 辅助动作和最近回复状态在这里预览。</p>
                 </div>
-                <Button variant="ghost" onClick={() => setActivePage('messageControl')}>
+                <Button variant="ghost" onClick={() => setActivePage('messageControl')} className="whitespace-nowrap">
                   进入消息群控
                 </Button>
               </div>
-              <div className="space-y-3">
+              
+              <div className="flex-1 min-h-0 space-y-3">
                 {messageChannels.filter((item) => item.key !== 'all').map((channel) => (
                   <div key={channel.key} className="web-panel web-panel-soft rounded-[22px] border border-white/6 bg-white/4 p-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-sm font-semibold text-white">{channel.label}</span>
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <span className="text-sm font-semibold text-white break-words">{channel.label}</span>
                       <Badge tone={channel.unreadCount > 0 ? 'warning' : 'neutral'}>
                         未读 {channel.unreadCount}
                       </Badge>
@@ -778,7 +809,7 @@ export function WebConsoleApp() {
                   ))}
                 </Select>
               </div>
-              <div className="web-toolbar-tight">
+              <div className="web-toolbar-tight flex flex-wrap gap-2">
                 <Button
                   size="sm"
                   variant="secondary"
@@ -796,8 +827,8 @@ export function WebConsoleApp() {
 
           <Card className="web-glass web-panel rounded-[28px] border-white/8 p-5">
             <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-              <div>
-                <p className="text-sm font-semibold text-white">环境批量动作栏</p>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-white break-words">环境批量动作栏</p>
                 <p className="mt-1 text-xs text-slate-400">已选择 {selectedEnvironmentIds.length} 个环境</p>
               </div>
               <div className="flex flex-wrap items-center gap-3">
@@ -815,7 +846,7 @@ export function WebConsoleApp() {
                   <Play size={16} />
                   批量启动
                 </Button>
-                <div className="web-toolbar-tight">
+                <div className="web-toolbar-tight flex flex-wrap gap-2">
                   <Button
                     size="sm"
                     variant="secondary"
@@ -862,18 +893,18 @@ export function WebConsoleApp() {
           </Card>
 
           <Card className="web-glass web-panel rounded-[28px] border-white/8 p-5">
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <div>
-                <p className="text-sm font-semibold text-white">最近批量任务</p>
+            <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-white break-words">最近批量任务</p>
                 <p className="mt-1 text-xs text-slate-400">环境批量控制已回归到 Environment Matrix 内部工作流。</p>
               </div>
               <Badge tone="primary">{bulkTasks.length} 条记录</Badge>
             </div>
-            <div className="grid gap-3 xl:grid-cols-2">
+            <div className="grid gap-3 grid-cols-1 md:grid-cols-2">
               {bulkTasks.map((task) => (
                 <div key={task.id} className="web-panel web-panel-soft rounded-[22px] border border-white/6 bg-white/4 p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-sm font-semibold text-white">{task.action}</p>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-sm font-semibold text-white break-words">{task.action}</p>
                     <Badge tone={bulkTaskTone(task.status)}>{task.status.toUpperCase()}</Badge>
                   </div>
                   <p className="mt-2 text-xs text-slate-400">涉及 {task.profileIds.length} 个环境</p>
@@ -883,10 +914,10 @@ export function WebConsoleApp() {
             </div>
           </Card>
 
-          <div className="grid gap-4 xl:grid-cols-2">
+          <div className="grid gap-4 grid-cols-1 md:grid-cols-2">
             {filteredEnvironments.map((environment) => (
               <Card key={environment.id} className="web-glass web-panel rounded-[28px] border-white/8 p-5">
-                <div className="flex items-start justify-between gap-6">
+                <div className="flex flex-wrap items-start justify-between gap-6">
                   <div className="flex min-w-0 items-start gap-4">
                     <input
                       type="checkbox"
@@ -896,11 +927,11 @@ export function WebConsoleApp() {
                     />
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-3">
-                        <h3 className="text-lg font-semibold text-white">{environment.name}</h3>
+                        <h3 className="text-[clamp(1rem,1.2vw,1.25rem)] font-semibold text-white break-words">{environment.name}</h3>
                         <Badge tone={badgeToneForStatus(environment.status)}>{environment.status.toUpperCase()}</Badge>
                         <Badge tone={syncTone(environment.syncStatus)}>{environment.syncStatus.toUpperCase()}</Badge>
                       </div>
-                      <p className="mt-2 text-sm text-slate-400">{environment.platform}</p>
+                      <p className="mt-2 text-sm text-slate-400 break-words">{environment.platform}</p>
                       <div className="mt-3 flex flex-wrap gap-2">
                         <Badge tone="neutral">{environment.groupName}</Badge>
                         <Badge tone="primary">{environment.proxyLabel}</Badge>
@@ -911,7 +942,7 @@ export function WebConsoleApp() {
                       </div>
                     </div>
                   </div>
-                  <div className="web-toolbar-tight shrink-0">
+                  <div className="web-toolbar-tight shrink-0 flex flex-col gap-2">
                     <Button size="sm" variant="secondary" onClick={() => openEditEnvironment(environment)}>
                       编辑
                     </Button>
@@ -948,10 +979,10 @@ export function WebConsoleApp() {
       return (
         <div className="space-y-6">
           <Card className="web-glass web-panel rounded-[28px] border-white/8 p-5">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <p className="text-lg font-semibold text-white">手机环境工作台</p>
-                <p className="mt-2 text-sm text-slate-400">首期先对齐桌面端云手机工作区，并保留抽屉式编辑体验。</p>
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="min-w-0">
+                <p className="text-[clamp(1rem,1.2vw,1.25rem)] font-semibold text-white break-words">手机环境工作台</p>
+                <p className="mt-2 text-sm text-slate-400 break-words">首期先对齐桌面端云手机工作区，并保留抽屉式编辑体验。</p>
               </div>
               <Button variant="primary" onClick={openCreateCloudPhone}>
                 <Plus size={16} />
@@ -959,13 +990,13 @@ export function WebConsoleApp() {
               </Button>
             </div>
           </Card>
-          <div className="grid gap-4 xl:grid-cols-2">
+          <div className="grid gap-4 grid-cols-1 md:grid-cols-2">
             {cloudPhones.map((cloudPhone) => (
               <Card key={cloudPhone.id} className="web-glass web-panel rounded-[28px] border-white/8 p-5">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <h3 className="text-lg font-semibold text-white">{cloudPhone.name}</h3>
-                    <p className="mt-2 text-sm text-slate-400">{cloudPhone.provider} / {cloudPhone.region}</p>
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <h3 className="text-[clamp(1rem,1.2vw,1.25rem)] font-semibold text-white break-words">{cloudPhone.name}</h3>
+                    <p className="mt-2 text-sm text-slate-400 break-words">{cloudPhone.provider} / {cloudPhone.region}</p>
                     <div className="mt-3">
                       <Badge tone={cloudPhone.status === 'running' ? 'success' : cloudPhone.status === 'idle' ? 'neutral' : 'danger'}>
                         {cloudPhone.status.toUpperCase()}
@@ -989,14 +1020,14 @@ export function WebConsoleApp() {
     if (activePage === 'proxy') {
       return (
         <div className="space-y-6">
-          <div className="grid gap-4 xl:grid-cols-3">
+          <div className="grid gap-4 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
             {proxies.map((proxy) => (
               <Card key={proxy.id} className="web-glass web-panel rounded-[28px] border-white/8 p-5">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <p className="text-lg font-semibold text-white">{proxy.name}</p>
-                    <p className="mt-2 font-mono text-sm text-sky-300">{proxy.endpoint}</p>
-                    <p className="mt-2 text-sm text-slate-400">{proxy.type}</p>
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="text-[clamp(1rem,1.2vw,1.25rem)] font-semibold text-white break-words">{proxy.name}</p>
+                    <p className="mt-2 font-mono text-sm text-sky-300 break-words">{proxy.endpoint}</p>
+                    <p className="mt-2 text-sm text-slate-400 break-words">{proxy.type}</p>
                   </div>
                   <Badge tone={proxy.status === 'online' ? 'success' : 'danger'}>
                     {proxy.status === 'online' ? `${proxy.latencyMs}ms` : 'Offline'}
@@ -1136,12 +1167,12 @@ export function WebConsoleApp() {
 
   return (
     <div className="flex min-h-screen bg-transparent text-[var(--web-text)]">
-      <aside className="web-glass web-scroll sticky top-0 flex h-screen w-[288px] shrink-0 flex-col overflow-y-auto border-r border-white/8 px-5 py-6">
-        <div className="flex items-center gap-3 px-3">
+      <aside className="web-glass web-scroll sticky top-0 flex h-screen w-[288px] shrink-0 flex-col overflow-y-auto border-r border-white/8 px-5 py-6 transition-all duration-300 ease-in-out max-[1199px]:w-[88px] max-[1199px]:px-2">
+        <div className="flex items-center gap-3 px-3 max-[1199px]:justify-center">
           <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-sky-500/20 text-sky-300 shadow-[0_0_24px_rgba(56,189,248,0.16)]">
             <LayoutGrid size={24} />
           </div>
-          <div>
+          <div className="max-[1199px]:hidden">
             <p className="text-xs font-semibold uppercase tracking-[0.34em] text-slate-500">Matrix Edition</p>
             <h1 className="mt-1 text-xl font-semibold tracking-tight text-white">Duokai Web</h1>
           </div>
@@ -1150,7 +1181,7 @@ export function WebConsoleApp() {
         <div className="mt-8 space-y-1">
           {(['command', 'operations', 'system'] as const).map((section) => (
             <div key={section} className="space-y-1">
-              <div className="px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.28em] text-slate-600">
+              <div className="px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.28em] text-slate-600 max-[1199px]:hidden">
                 {section === 'command' ? 'Command Center' : section === 'operations' ? 'Environment' : 'Admin & Logs'}
               </div>
               {consolePages
@@ -1169,7 +1200,7 @@ export function WebConsoleApp() {
                   >
                     <span className="flex items-center gap-3 text-sm font-medium">
                       {iconForPage(item.key)}
-                      {item.label}
+                      <span className="max-[1199px]:hidden">{item.label}</span>
                     </span>
                     {item.badge ? (
                       <span
@@ -1177,7 +1208,7 @@ export function WebConsoleApp() {
                           item.badge === 'Live'
                             ? 'bg-emerald-500/14 text-emerald-300'
                             : 'bg-slate-700/70 text-slate-300'
-                        }`}
+                        } max-[1199px]:hidden`}
                       >
                         {item.badge}
                       </span>
@@ -1188,17 +1219,17 @@ export function WebConsoleApp() {
           ))}
         </div>
 
-        <Card className="mt-auto rounded-[28px] border-white/8 bg-white/6 p-4 shadow-none">
-          <div className="flex items-center gap-3">
+        <Card className="mt-auto rounded-[28px] border-white/8 bg-white/6 p-4 shadow-none max-[1199px]:p-2">
+          <div className="flex items-center gap-3 max-[1199px]:justify-center">
             <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-sky-500/20 text-sm font-semibold text-sky-300">
               M4
             </div>
-            <div>
+            <div className="max-[1199px]:hidden">
               <p className="text-sm font-semibold text-white">本地执行器在线</p>
               <p className="mt-1 text-xs text-slate-400">GitHub Releases / {deviceStatus.runtimeVersion}</p>
             </div>
           </div>
-          <Button className="mt-4 w-full" variant="secondary">
+          <Button className="mt-4 w-full max-[1199px]:hidden" variant="secondary">
             设备说明
           </Button>
         </Card>
@@ -1206,18 +1237,18 @@ export function WebConsoleApp() {
 
       <main className="flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-10 border-b border-white/8 bg-[rgba(5,11,24,0.72)] px-8 py-5 backdrop-blur-2xl">
-          <div className="flex items-center justify-between gap-6">
-            <div>
+          <div className="flex flex-wrap items-start justify-between gap-6">
+            <div className="min-w-0">
               <p className="text-xs font-semibold uppercase tracking-[0.32em] text-slate-500">{pageMeta[activePage].title}</p>
-              <h2 className="mt-2 text-3xl font-semibold tracking-tight text-white">{pageMeta[activePage].title}</h2>
-              <p className="mt-2 max-w-3xl text-sm text-slate-400">{pageMeta[activePage].subtitle}</p>
+              <h2 className="mt-2 text-[clamp(1.5rem,2.2vw,2.5rem)] font-semibold tracking-tight text-white break-words">{pageMeta[activePage].title}</h2>
+              <p className="mt-2 max-w-3xl text-sm text-slate-400 break-words [overflow-wrap:anywhere] leading-6">{pageMeta[activePage].subtitle}</p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
-              <div className="web-chip web-chip-active text-xs font-semibold uppercase tracking-[0.18em]">
+              <div className="web-chip web-chip-active text-xs font-semibold uppercase tracking-[0.18em] whitespace-nowrap">
                 <span className="web-dot-pulse h-2.5 w-2.5 rounded-full bg-emerald-400" />
                 Local Runtime Online
               </div>
-              <div className="web-chip text-xs font-semibold uppercase tracking-[0.18em]">
+              <div className="web-chip text-xs font-semibold uppercase tracking-[0.18em] whitespace-nowrap">
                 {environments.filter((item) => item.status === 'running').length} 环境运行中
               </div>
             </div>
@@ -1366,10 +1397,32 @@ function RingStat({
   size: number
   label: string
 }) {
+  const [animatedValue, setAnimatedValue] = useState(0)
   const radius = 32
   const circumference = 2 * Math.PI * radius
-  const strokeDashoffset = circumference - (Math.max(0, Math.min(100, value)) / 100) * circumference
+  const strokeDashoffset = circumference - (Math.max(0, Math.min(100, animatedValue)) / 100) * circumference
   const stroke = tone === 'sky' ? '#38bdf8' : '#fb4f70'
+  const progress = Math.max(0, Math.min(100, value))
+
+  useEffect(() => {
+    const duration = 1000 // 动画持续时间
+    const steps = 60 // 动画步数，增加步数可以使动画更流畅
+    const stepDuration = duration / steps
+    let currentStep = 0
+
+    const timer = setInterval(() => {
+      currentStep++
+      const progress = Math.min(currentStep / steps, 1)
+      const easeProgress = 1 - Math.pow(1 - progress, 3) // 缓动函数
+      setAnimatedValue(easeProgress * value)
+      
+      if (currentStep >= steps) {
+        clearInterval(timer)
+      }
+    }, stepDuration)
+
+    return () => clearInterval(timer)
+  }, [value])
 
   return (
     <div className="relative shrink-0" style={{ width: size, height: size }}>
@@ -1384,6 +1437,7 @@ function RingStat({
           stroke={stroke}
           strokeDasharray={circumference}
           strokeDashoffset={strokeDashoffset}
+          strokeLinecap="round"
         />
       </svg>
       <div className="absolute inset-0 flex items-center justify-center text-xl font-semibold text-white">{label}</div>
@@ -1419,7 +1473,15 @@ function ProgressStat({
         </div>
       ) : null}
       <div className={`web-progress-track ${compact ? 'h-2.5' : 'h-3'}`}>
-        <div className={`web-progress-fill ${fillClass}`} style={{ width: `${clamped}%` }} />
+        <div 
+          className={`web-progress-fill ${fillClass}`} 
+          style={{ 
+            width: '0%',
+            animation: 'progressAnimation 1s ease-out forwards',
+            animationDelay: `${Math.random() * 0.3}s`,
+            '--progress': `${clamped}%`
+          }} 
+        />
       </div>
     </div>
   )

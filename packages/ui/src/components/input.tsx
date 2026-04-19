@@ -20,8 +20,8 @@ export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElem
   return (
     <input
       className={cn(
-        'h-11 w-full rounded-2xl border border-[var(--duokai-border)] bg-[var(--duokai-surface)] px-4 text-sm text-[var(--duokai-text)] shadow-[0_1px_2px_rgba(15,23,42,0.04)]',
-        'placeholder:text-slate-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:ring-offset-2 focus:ring-offset-slate-50',
+        'h-11 w-full rounded-2xl border border-white/8 bg-[rgba(25,36,53,0.72)] px-4 text-sm text-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]',
+        'placeholder:text-slate-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:ring-offset-2 focus:ring-offset-[var(--duokai-surface)]',
         className,
       )}
       {...props}
@@ -33,8 +33,8 @@ export function Textarea({ className, ...props }: TextareaHTMLAttributes<HTMLTex
   return (
     <textarea
       className={cn(
-        'min-h-[112px] w-full rounded-2xl border border-[var(--duokai-border)] bg-[var(--duokai-surface)] px-4 py-3 text-sm text-[var(--duokai-text)] shadow-[0_1px_2px_rgba(15,23,42,0.04)]',
-        'placeholder:text-slate-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:ring-offset-2 focus:ring-offset-slate-50',
+        'min-h-[112px] w-full rounded-2xl border border-white/8 bg-[rgba(25,36,53,0.72)] px-4 py-3 text-sm text-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]',
+        'placeholder:text-slate-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:ring-offset-2 focus:ring-offset-[var(--duokai-surface)]',
         className,
       )}
       {...props}
@@ -241,11 +241,11 @@ export function Select({
   }
 
   const triggerClasses = cn(
-    'flex h-11 w-full items-center justify-between gap-3 rounded-2xl border border-[color-mix(in_srgb,var(--duokai-border)_100%,var(--duokai-text-muted)_20%)] bg-[color-mix(in_srgb,var(--duokai-surface)_86%,var(--duokai-surface-muted)_14%)] px-4 text-left text-sm text-[var(--duokai-text)] shadow-[0_1px_2px_rgba(15,23,42,0.06),inset_0_0_0_1px_rgba(255,255,255,0.03)] transition-[border-color,box-shadow,background-color]',
+    'flex h-11 w-full items-center justify-between gap-3 rounded-2xl border border-white/8 bg-[rgba(25,36,53,0.72)] px-4 text-left text-sm text-white shadow-[0_1px_2px_rgba(15,23,42,0.06),inset_0_0_0_1px_rgba(255,255,255,0.03)] transition-[border-color,box-shadow,background-color]',
     open
       ? 'border-blue-500 bg-[var(--duokai-surface-elevated)] shadow-[0_0_0_1px_rgba(59,130,246,0.28),0_0_0_4px_rgba(59,130,246,0.1)]'
       : 'hover:border-[color-mix(in_srgb,var(--duokai-border)_100%,var(--duokai-text-muted)_32%)] hover:bg-[var(--duokai-surface-elevated)]',
-    'focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:ring-offset-2 focus:ring-offset-slate-50',
+    'focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:ring-offset-2 focus:ring-offset-[var(--duokai-surface)]',
     disabled ? 'cursor-not-allowed bg-[var(--duokai-surface-muted)] text-[var(--duokai-text-muted)]' : 'cursor-pointer',
     className,
   )

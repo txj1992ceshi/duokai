@@ -41,9 +41,9 @@ export function Button({
     <motion.button
       type={type}
       className={cn(
-        'inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-xl font-medium transition-[background-color,color,border-color,box-shadow,transform] disabled:cursor-not-allowed disabled:opacity-50',
+        'inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-2xl font-medium transition-[background-color,color,border-color,box-shadow,transform] disabled:cursor-not-allowed disabled:opacity-50',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--duokai-primary)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--duokai-surface)]',
-        variantClasses[variant],
+        variant === 'secondary' ? 'border border-white/8 bg-[rgba(25,36,53,0.72)] hover:bg-[rgba(34,48,70,0.86)]' : variantClasses[variant],
         sizeClasses[size],
         className,
       )}

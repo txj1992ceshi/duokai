@@ -389,6 +389,24 @@ textarea {
   }
 }
 
+@keyframes ringAnimation {
+  from {
+    stroke-dashoffset: 201.06; /* 2 * Math.PI * 32 */
+  }
+  to {
+    stroke-dashoffset: calc(201.06 - (201.06 * var(--progress) / 100));
+  }
+}
+
+@keyframes progressAnimation {
+  from {
+    width: 0%;
+  }
+  to {
+    width: var(--progress);
+  }
+}
+
 .web-grid-bg {
   background-image:
     linear-gradient(rgba(148, 163, 184, 0.06) 1px, transparent 1px),
