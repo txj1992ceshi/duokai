@@ -13,7 +13,9 @@
     "build:desktop": "npm run build --workspace apps/duokai2",
     "lint:desktop": "npm run lint --workspace apps/duokai2",
     "dev:admin": "npm run dev --workspace duokai-admin",
-    "dev:dashboard": "npm run dev --workspace fingerprint-dashboard",
-    "dev:api": "npm run dev --workspace duokai-api"
+    "dev:dashboard": "npm run dev --workspace apps/duokai-web",
+    "dev:api": "npm run dev --workspace duokai-api",
+    "dev:web": "npm run dev --workspace apps/duokai-web",
+    "dev:legacy-dashboard": "npm run dev --workspace fingerprint-dashboard"
   }
 }

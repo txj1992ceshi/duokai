@@ -31,7 +31,7 @@
 - `前台_首次安装并启动_Windows.bat`
 
 默认打开：
-- 功能前端 `http://localhost:3001`
+- Duokai Web 前端 `http://localhost:3001`
 
 ### 后台
 
@@ -53,7 +53,7 @@
 
 ## 端口约定
 
-- 前台功能端：`3001`
+- Duokai Web 前端：`3001`
 - 后台管理端：`3000`
 - API：`3100`
 - Runtime：`3101`

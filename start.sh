@@ -14,7 +14,7 @@ set -e
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 API_DIR="$ROOT_DIR/duokai-api"
 ENGINE_DIR="$ROOT_DIR/fingerprint-dashboard/stealth-engine"
-FRONTEND_DIR="$ROOT_DIR/fingerprint-dashboard"
+FRONTEND_DIR="$ROOT_DIR/apps/duokai-web"
 
 kill_if_listening() {
   local port="$1"
@@ -105,7 +105,7 @@ for i in $(seq 1 30); do
 done
 
 # ── Step 7: Start Frontend (background) ─────────────────────────────────────
-echo "🖥️  Starting Frontend on port 3001..."
+echo "🖥️  Starting Duokai Web on port 3001..."
 (cd "$FRONTEND_DIR" && PORT=3001 npm run dev) &
 FRONTEND_PID=$!
 echo "   Frontend PID: $FRONTEND_PID"

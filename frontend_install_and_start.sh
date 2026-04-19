@@ -19,8 +19,8 @@ cd duokai-api && npm install --quiet
 cd ..
 
 echo ""
-echo "📦 正在安装功能前端依赖..."
-cd fingerprint-dashboard && npm install --quiet
+echo "📦 正在安装 Duokai Web 前端依赖..."
+cd apps/duokai-web && npm install --quiet
 cd ..
 
 echo ""

@@ -30,18 +30,18 @@ if %errorlevel% neq 0 (
 popd
 
 echo [3/5] Installing frontend dependencies...
-pushd "fingerprint-dashboard"
+pushd "apps\duokai-web"
 call npm.cmd install
 if %errorlevel% neq 0 (
     popd
     exit /b %errorlevel%
 )
+popd
 
 echo [4/5] Installing stealth engine dependencies...
-pushd "stealth-engine"
+pushd "fingerprint-dashboard\stealth-engine"
 call npm.cmd install
 if %errorlevel% neq 0 (
-    popd
     popd
     exit /b %errorlevel%
 )
@@ -50,11 +50,9 @@ echo [5/5] Installing Playwright Chromium...
 call node_modules\.bin\playwright.cmd install chromium
 if %errorlevel% neq 0 (
     popd
-    popd
     exit /b %errorlevel%
 )
 
-popd
 popd
 
 echo [DONE] Installation completed successfully.

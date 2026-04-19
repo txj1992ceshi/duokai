@@ -9,7 +9,7 @@ if not exist "duokai-api\node_modules" (
     exit /b 1
 )
 
-if not exist "fingerprint-dashboard\node_modules" (
+if not exist "apps\duokai-web\node_modules" (
     echo [ERROR] Frontend dependencies were not found.
     echo [INFO] Run install_windows.bat first.
     pause
@@ -31,7 +31,7 @@ echo [2/3] Starting runtime terminal...
 start "duokai-runtime" cmd /k "cd /d \"%~dp0fingerprint-dashboard\stealth-engine\" && set RUNTIME_PORT=3101 && set DASHBOARD_URL=http://127.0.0.1:3100 && node server.js"
 
 echo [3/3] Starting frontend terminal...
-start "duokai-frontend" cmd /k "cd /d \"%~dp0fingerprint-dashboard\" && set PORT=3001 && npm.cmd run dev"
+start "duokai-frontend" cmd /k "cd /d \"%~dp0apps\duokai-web\" && set PORT=3001 && npm.cmd run dev"
 
 echo [OPEN] Opening frontend in browser...
 start "" powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 8; Start-Process 'http://localhost:3001'"
