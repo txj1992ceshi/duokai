@@ -1400,22 +1400,24 @@ function RingStat({
   const [animatedValue, setAnimatedValue] = useState(0)
   const radius = 32
   const circumference = 2 * Math.PI * radius
-  const strokeDashoffset = circumference - (Math.max(0, Math.min(100, animatedValue)) / 100) * circumference
+  const clampedValue = Math.max(0, Math.min(100, animatedValue))
+  const strokeDashoffset = circumference - (clampedValue / 100) * circumference
+
   const stroke = tone === 'sky' ? '#38bdf8' : '#fb4f70'
-  const progress = Math.max(0, Math.min(100, value))
+  const glowStroke = tone === 'sky' ? 'rgba(56, 189, 248, 0.18)' : 'rgba(251, 79, 112, 0.18)'
 
   useEffect(() => {
-    const duration = 1000 // 动画持续时间
-    const steps = 60 // 动画步数，增加步数可以使动画更流畅
+    const duration = 1000
+    const steps = 60
     const stepDuration = duration / steps
     let currentStep = 0
 
     const timer = setInterval(() => {
       currentStep++
       const progress = Math.min(currentStep / steps, 1)
-      const easeProgress = 1 - Math.pow(1 - progress, 3) // 缓动函数
+      const easeProgress = 1 - Math.pow(1 - progress, 3)
       setAnimatedValue(easeProgress * value)
-      
+
       if (currentStep >= steps) {
         clearInterval(timer)
       }
@@ -1428,6 +1430,19 @@ function RingStat({
     <div className="relative shrink-0" style={{ width: size, height: size }}>
       <svg className="web-ring-svg h-full w-full" viewBox="0 0 84 84" aria-hidden="true">
         <circle className="web-ring-track" cx="42" cy="42" r={radius} strokeWidth="6" />
+
+        <circle
+          className="web-ring-glow"
+          cx="42"
+          cy="42"
+          r={radius}
+          strokeWidth="10"
+          stroke={glowStroke}
+          strokeDasharray={circumference}
+          strokeDashoffset={strokeDashoffset}
+          strokeLinecap="round"
+        />
+
         <circle
           className="web-ring-value"
           cx="42"
@@ -1440,7 +1455,10 @@ function RingStat({
           strokeLinecap="round"
         />
       </svg>
-      <div className="absolute inset-0 flex items-center justify-center text-xl font-semibold text-white">{label}</div>
+
+      <div className="absolute inset-0 flex items-center justify-center text-xl font-semibold text-white">
+        {label}
+      </div>
     </div>
   )
 }

@@ -352,19 +352,32 @@ textarea {
 }
 
 .web-ring-svg {
+  display: block;
+  overflow: visible;
   transform: rotate(-90deg);
 }
 
 .web-ring-track {
   fill: none;
   stroke: rgba(71, 85, 105, 0.4);
+  shape-rendering: geometricPrecision;
+  vector-effect: non-scaling-stroke;
+}
+
+.web-ring-glow {
+  fill: none;
+  opacity: 1;
+  stroke-linecap: round;
+  shape-rendering: geometricPrecision;
+  vector-effect: non-scaling-stroke;
 }
 
 .web-ring-value {
   fill: none;
   stroke-linecap: round;
   transition: stroke-dashoffset 420ms ease;
-  filter: drop-shadow(0 0 14px rgba(56, 189, 248, 0.24));
+  shape-rendering: geometricPrecision;
+  vector-effect: non-scaling-stroke;
 }
 
 .web-dot-pulse {
