@@ -619,168 +619,172 @@ export function WebConsoleApp() {
 
     if (activePage === 'messageControl') {
       return (
-        <div className="grid min-h-[720px] gap-0 overflow-hidden rounded-[34px] border border-white/8 bg-[rgba(11,18,34,0.88)] shadow-[0_30px_80px_rgba(2,6,23,0.35)] xl:grid-cols-[320px_1fr]">
-          <aside className="web-glass flex min-h-full flex-col border-r border-white/8 bg-[rgba(14,20,38,0.88)] p-6">
-            <div className="mb-6 space-y-4">
-              <div className="web-toolbar rounded-[24px] p-4">
-                <div className="space-y-3">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">当前视图</p>
-                  <div className="w-full">
-                    <Select
-                      value={selectedChannel}
-                      onChange={(event) => setSelectedChannel(event.target.value as MessageChannelKey)}
-                      className="h-11 rounded-[18px] border-white/10 bg-[rgba(22,31,51,0.9)] px-3 text-xs font-semibold uppercase tracking-[0.16em] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
-                    >
-                      {messageChannels.map((channel) => (
-                        <option key={channel.key} value={channel.key}>
-                          {channel.label}
-                        </option>
-                      ))}
-                    </Select>
-                  </div>
-                  <div className="flex items-center gap-4 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-                    <span>未读 {selectedChannelInfo?.unreadCount ?? 0}</span>
-                    <span className="web-summary-sep" />
-                    <span>{filteredContacts.length} 会话</span>
-                  </div>
-                </div>
-              </div>
-              <Input
-                value={messageSearchQuery}
-                onChange={(event) => setMessageSearchQuery(event.target.value)}
-                placeholder="搜索联系人..."
-              />
-            </div>
-            <div className="web-scroll flex-1 space-y-3 overflow-y-auto">
-              {filteredContacts.map((contact) => (
-                <button
-                  key={contact.id}
-                  type="button"
-                  onClick={() => setSelectedContactId(contact.id)}
-                  className={`web-panel flex w-full items-start gap-3 rounded-[22px] border p-4 text-left transition-all ${
-                    activeContact?.id === contact.id
-                      ? 'border-sky-400/30 bg-sky-500/12 shadow-[0_18px_30px_rgba(14,165,233,0.14)]'
-                      : 'border-white/6 bg-white/4 hover:border-white/12 hover:bg-white/6'
-                  }`}
-                >
-                  <div className="relative flex h-11 w-11 items-center justify-center rounded-full bg-sky-500/20 font-semibold text-sky-200">
-                    {contact.avatar}
-                    <span className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-[rgba(14,20,38,1)] ${
-                      contact.presence === 'active'
-                        ? 'bg-emerald-400'
-                        : contact.presence === 'idle'
-                          ? 'bg-amber-400'
-                          : 'bg-slate-500'
-                    }`} />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="truncate text-sm font-semibold text-white">{contact.name}</p>
-                      <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">{contact.lastMessageAt}</span>
-                    </div>
-                    <p className="mt-2 truncate text-sm text-slate-300">{contact.lastMessage}</p>
-                    <div className="mt-3 flex items-center gap-2">
-                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${channelTone(contact.channel)}`}>
-                        {contact.channel.toUpperCase()}
-                      </span>
-                      {contact.unreadCount > 0 ? (
-                        <span className="rounded-full bg-sky-500/16 px-2 py-0.5 text-[10px] font-semibold text-sky-300">
-                          未读 {contact.unreadCount}
-                        </span>
-                      ) : null}
+        <div className="web-message-shell">
+          <div className="web-message-scale">
+            <div className="web-message-frame grid gap-0 overflow-hidden rounded-[30px] border border-white/8 bg-[rgba(11,18,34,0.88)] shadow-[0_30px_80px_rgba(2,6,23,0.35)] xl:grid-cols-[320px_1fr]">
+              <aside className="web-message-sidebar web-glass flex min-h-0 h-full flex-col border-r border-white/8 bg-[rgba(14,20,38,0.88)] p-5">
+                <div className="mb-5 space-y-4">
+                  <div className="web-toolbar rounded-[20px] p-3">
+                    <div className="space-y-2">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-slate-500">当前视图</p>
+                      <div className="w-full">
+                        <Select
+                          value={selectedChannel}
+                          onChange={(event) => setSelectedChannel(event.target.value as MessageChannelKey)}
+                          className="h-10 rounded-[16px] border-white/10 bg-[rgba(22,31,51,0.9)] px-3 text-xs font-semibold uppercase tracking-[0.16em] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
+                        >
+                          {messageChannels.map((channel) => (
+                            <option key={channel.key} value={channel.key}>
+                              {channel.label}
+                            </option>
+                          ))}
+                        </Select>
+                      </div>
+                      <div className="flex items-center gap-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                        <span>未读 {selectedChannelInfo?.unreadCount ?? 0}</span>
+                        <span className="web-summary-sep" />
+                        <span>{filteredContacts.length} 会话</span>
+                      </div>
                     </div>
                   </div>
-                </button>
-              ))}
-            </div>
-          </aside>
-
-          <section className="flex min-h-full flex-col bg-[rgba(10,16,30,0.88)]">
-            <header className="flex items-center justify-between border-b border-white/8 bg-white/4 px-8 py-6">
-              <div className="flex items-center gap-4">
-                <div className="relative flex h-12 w-12 items-center justify-center rounded-full bg-sky-500/20 font-semibold text-sky-200">
-                  {activeContact?.avatar ?? 'NA'}
-                  <span className="absolute bottom-0 right-0 h-3.5 w-3.5 rounded-full border-2 border-[rgba(10,16,30,1)] bg-emerald-400" />
-                </div>
-                <div>
-                  <h3 className="text-base font-semibold text-white">{activeContact?.name ?? '未选择联系人'}</h3>
-                  <div className="mt-2 flex items-center gap-2">
-                    {activeContact ? (
-                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${channelTone(activeContact.channel)}`}>
-                        {activeContact.channel.toUpperCase()}
-                      </span>
-                    ) : null}
-                    <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-400">
-                      {activeContact?.presence === 'active' ? 'Active Now' : activeContact?.presence ?? 'idle'}
-                    </span>
-                    <span className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
-                      Sync Stable
-                    </span>
-                  </div>
-                </div>
-              </div>
-              <div className="flex gap-3">
-                <button className="web-icon-button h-12 w-12">
-                  <Video size={18} />
-                </button>
-                <button className="web-icon-button h-12 w-12">
-                  <PhoneCall size={18} />
-                </button>
-              </div>
-            </header>
-
-            <div className="web-scroll flex-1 space-y-6 overflow-y-auto px-8 py-8">
-              {activeThread?.messages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`flex ${message.direction === 'outgoing' ? 'justify-end' : 'justify-start'}`}
-                >
-                  <div
-                    className={`max-w-[68%] rounded-[22px] px-5 py-4 text-sm leading-6 ${
-                      message.direction === 'outgoing'
-                        ? 'web-message-bubble-out rounded-br-[8px] text-white'
-                        : 'web-message-bubble-in rounded-bl-[8px] text-slate-100'
-                    }`}
-                  >
-                    <p className="m-0">{message.text}</p>
-                    <div className="mt-3 flex items-center justify-between gap-3 text-[10px] uppercase tracking-[0.18em] text-white/60">
-                      <span>{message.senderLabel}</span>
-                      <span>{message.createdAt}</span>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="border-t border-white/8 bg-[rgba(13,20,36,0.92)] px-8 py-6">
-              <div className="mb-4 flex flex-wrap items-center gap-3">
-                {messageAssistActions.map((action) => (
-                  <button
-                    key={action.key}
-                    type="button"
-                    onClick={() => runAssistAction(action.label)}
-                    className="web-chip text-[11px] font-semibold"
-                  >
-                    {action.label}
-                  </button>
-                ))}
-              </div>
-              <div className="web-toolbar rounded-[24px] p-3">
-                <div className="flex items-center gap-3">
-                  <Sparkles size={16} className="text-sky-300" />
-                  <input
-                    value={draftMessage}
-                    onChange={(event) => setDraftMessage(event.target.value)}
-                    placeholder="AI 助手已准备就绪，输入回复内容..."
-                    className="flex-1 bg-transparent text-sm text-white outline-none placeholder:text-slate-500"
+                  <Input
+                    value={messageSearchQuery}
+                    onChange={(event) => setMessageSearchQuery(event.target.value)}
+                    placeholder="搜索联系人..."
                   />
-                  <Button variant="primary" size="sm" onClick={sendMessage}>
-                    SEND
-                  </Button>
                 </div>
-              </div>
+                <div className="web-scroll flex-1 min-h-0 space-y-3 overflow-y-auto">
+                  {filteredContacts.map((contact) => (
+                    <button
+                      key={contact.id}
+                      type="button"
+                      onClick={() => setSelectedContactId(contact.id)}
+                      className={`web-panel flex w-full items-start gap-3 rounded-[18px] border p-3 text-left transition-all ${
+                        activeContact?.id === contact.id
+                          ? 'border-sky-400/30 bg-sky-500/12 shadow-[0_18px_30px_rgba(14,165,233,0.14)]'
+                          : 'border-white/6 bg-white/4 hover:border-white/12 hover:bg-white/6'
+                      }`}
+                    >
+                      <div className="relative flex h-10 w-10 items-center justify-center rounded-full bg-sky-500/20 font-semibold text-sky-200">
+                        {contact.avatar}
+                        <span className={`absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-[rgba(14,20,38,1)] ${
+                          contact.presence === 'active'
+                            ? 'bg-emerald-400'
+                            : contact.presence === 'idle'
+                              ? 'bg-amber-400'
+                              : 'bg-slate-500'
+                        }`} />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="truncate text-[13px] font-semibold text-white">{contact.name}</p>
+                          <span className="text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-500">{contact.lastMessageAt}</span>
+                        </div>
+                        <p className="mt-1.5 truncate text-[13px] text-slate-300">{contact.lastMessage}</p>
+                        <div className="mt-2 flex items-center gap-2">
+                          <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${channelTone(contact.channel)}`}>
+                            {contact.channel.toUpperCase()}
+                          </span>
+                          {contact.unreadCount > 0 ? (
+                            <span className="rounded-full bg-sky-500/16 px-1.5 py-0.5 text-[9px] font-semibold text-sky-300">
+                              未读 {contact.unreadCount}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </aside>
+
+              <section className="web-message-main flex min-h-0 h-full flex-col bg-[rgba(10,16,30,0.88)]">
+                <header className="shrink-0 flex items-center justify-between border-b border-white/8 bg-white/4 px-6 py-3">
+                  <div className="flex items-center gap-3">
+                    <div className="relative flex h-10 w-10 items-center justify-center rounded-full bg-sky-500/20 font-semibold text-sky-200">
+                      {activeContact?.avatar ?? 'NA'}
+                      <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-[rgba(10,16,30,1)] bg-emerald-400" />
+                    </div>
+                    <div>
+                      <h3 className="text-[13px] font-semibold text-white">{activeContact?.name ?? '未选择联系人'}</h3>
+                      <div className="mt-1 flex items-center gap-2">
+                        {activeContact ? (
+                          <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${channelTone(activeContact.channel)}`}>
+                            {activeContact.channel.toUpperCase()}
+                          </span>
+                        ) : null}
+                        <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-emerald-400">
+                          {activeContact?.presence === 'active' ? 'Active Now' : activeContact?.presence ?? 'idle'}
+                        </span>
+                        <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
+                          Sync Stable
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button className="web-icon-button h-10 w-10">
+                      <Video size={16} />
+                    </button>
+                    <button className="web-icon-button h-10 w-10">
+                      <PhoneCall size={16} />
+                    </button>
+                  </div>
+                </header>
+
+                <div className="web-message-thread web-scroll flex-1 min-h-0 space-y-5 overflow-y-auto px-6 py-5">
+                  {activeThread?.messages.map((message) => (
+                    <div
+                      key={message.id}
+                      className={`flex ${message.direction === 'outgoing' ? 'justify-end' : 'justify-start'}`}
+                    >
+                      <div
+                        className={`max-w-[68%] rounded-[18px] px-4 py-3 text-[13px] leading-5 ${
+                          message.direction === 'outgoing'
+                            ? 'web-message-bubble-out rounded-br-[6px] text-white'
+                            : 'web-message-bubble-in rounded-bl-[6px] text-slate-100'
+                        }`}
+                      >
+                        <p className="m-0">{message.text}</p>
+                        <div className="mt-2 flex items-center justify-between gap-3 text-[9px] uppercase tracking-[0.18em] text-white/60">
+                          <span>{message.senderLabel}</span>
+                          <span>{message.createdAt}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="web-message-compose shrink-0 border-t border-white/8 bg-[rgba(13,20,36,0.92)] px-6 py-4">
+                  <div className="web-message-shortcuts mb-3 flex flex-wrap items-center gap-2">
+                    {messageAssistActions.map((action) => (
+                      <button
+                        key={action.key}
+                        type="button"
+                        onClick={() => runAssistAction(action.label)}
+                        className="web-chip web-message-shortcut-chip text-[10px] font-semibold"
+                      >
+                        {action.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="web-toolbar rounded-[20px] p-2.5">
+                    <div className="flex items-center gap-3">
+                      <Sparkles size={14} className="text-sky-300" />
+                      <input
+                        value={draftMessage}
+                        onChange={(event) => setDraftMessage(event.target.value)}
+                        placeholder="AI 助手已准备就绪，输入回复内容..."
+                        className="flex-1 bg-transparent text-[13px] text-white outline-none placeholder:text-slate-500"
+                      />
+                      <Button variant="primary" size="sm" onClick={sendMessage}>
+                        SEND
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </section>
             </div>
-          </section>
+          </div>
         </div>
       )
     }
@@ -1236,12 +1240,26 @@ export function WebConsoleApp() {
       </aside>
 
       <main className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-10 border-b border-white/8 bg-[rgba(5,11,24,0.72)] px-8 py-5 backdrop-blur-2xl">
+        <header className={activePage === 'messageControl'
+          ? 'sticky top-0 z-10 border-b border-white/8 bg-[rgba(5,11,24,0.72)] px-7 py-3 backdrop-blur-2xl'
+          : 'sticky top-0 z-10 border-b border-white/8 bg-[rgba(5,11,24,0.72)] px-8 py-5 backdrop-blur-2xl'}>
           <div className="flex flex-wrap items-start justify-between gap-6">
-            <div className="min-w-0">
-              <p className="text-xs font-semibold uppercase tracking-[0.32em] text-slate-500">{pageMeta[activePage].title}</p>
-              <h2 className="mt-2 text-[clamp(1.5rem,2.2vw,2.5rem)] font-semibold tracking-tight text-white break-words">{pageMeta[activePage].title}</h2>
-              <p className="mt-2 max-w-3xl text-sm text-slate-400 break-words [overflow-wrap:anywhere] leading-6">{pageMeta[activePage].subtitle}</p>
+            <div className={activePage === 'messageControl' ? 'web-page-heading-compact min-w-0' : 'min-w-0'}>
+              {activePage === 'messageControl' ? null : (
+                <p className="text-xs font-semibold uppercase tracking-[0.32em] text-slate-500">{pageMeta[activePage].title}</p>
+              )}
+
+              <h2 className={activePage === 'messageControl'
+                ? 'mt-0 text-[clamp(1.125rem,1.6vw,1.8rem)] font-semibold tracking-tight text-white break-words'
+                : 'mt-2 text-[clamp(1.5rem,2.2vw,2.5rem)] font-semibold tracking-tight text-white break-words'}>
+                {pageMeta[activePage].title}
+              </h2>
+
+              <p className={activePage === 'messageControl'
+                ? 'mt-1 max-w-3xl text-[13px] text-slate-400 break-words [overflow-wrap:anywhere] leading-5'
+                : 'mt-2 max-w-3xl text-sm text-slate-400 break-words [overflow-wrap:anywhere] leading-6'}>
+                {pageMeta[activePage].subtitle}
+              </p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <div className="web-chip web-chip-active text-xs font-semibold uppercase tracking-[0.18em] whitespace-nowrap">
@@ -1497,7 +1515,7 @@ function ProgressStat({
             width: '0%',
             animation: 'progressAnimation 1s ease-out forwards',
             animationDelay: `${Math.random() * 0.3}s`,
-            '--progress': `${clamped}%`
+            ['--progress' as string]: `${clamped}%`
           }} 
         />
       </div>

@@ -427,3 +427,54 @@ textarea {
   background-size: 26px 26px;
   background-position: -1px -1px;
 }
+
+.web-message-shell {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  width: 100%;
+}
+
+.web-message-scale {
+  width: 111.111%;
+  height: 111.111%;
+  transform: scale(0.9);
+  transform-origin: top left;
+}
+
+.web-message-frame {
+  height: 100%;
+  min-height: 0;
+}
+
+.web-message-sidebar {
+  min-height: 0;
+}
+
+.web-message-main {
+  min-height: 0;
+}
+
+.web-message-thread {
+  min-height: 0;
+}
+
+.web-message-compose {
+  flex-shrink: 0;
+}
+
+.web-message-shortcuts {
+  gap: 8px;
+}
+
+.web-message-shortcut-chip {
+  min-height: 34px;
+  padding: 6px 12px;
+  font-size: 10px;
+  line-height: 1;
+  border-radius: 999px;
+}
+
+.web-page-heading-compact {
+  /* Compact heading for messageControl page */
+}
