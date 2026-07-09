@@ -31,7 +31,7 @@ export function Tabs({
   const context = useMemo(() => ({ value, onValueChange }), [onValueChange, value])
   return (
     <TabsContext.Provider value={context}>
-      <div className={cn('flex min-h-0 flex-col gap-4', className)}>{children}</div>
+      <div className={cn('flex min-h-0 flex-col gap-[calc(16px*var(--duokai-layout-scale))]', className)}>{children}</div>
     </TabsContext.Provider>
   )
 }
@@ -40,7 +40,7 @@ export function TabsList({ className, ...props }: HTMLAttributes<HTMLDivElement>
   return (
     <div
       className={cn(
-        'inline-flex w-full gap-2 rounded-2xl border border-[var(--duokai-border)] bg-[color-mix(in_srgb,var(--duokai-surface-muted)_86%,var(--duokai-surface)_14%)] p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.025)]',
+        'inline-flex w-full gap-[calc(8px*var(--duokai-layout-scale))] rounded-[var(--duokai-radius-md)] border border-[var(--duokai-border)] bg-[color-mix(in_srgb,var(--duokai-surface-muted)_86%,var(--duokai-surface)_14%)] p-[calc(4px*var(--duokai-layout-scale))] shadow-[inset_0_1px_0_rgba(255,255,255,0.025)]',
         className,
       )}
       {...props}
@@ -59,7 +59,7 @@ export function TabsTrigger({
     <button
       type="button"
       className={cn(
-        'flex-1 rounded-xl px-3 py-2 text-sm font-medium transition-[background-color,color,box-shadow,transform]',
+        'flex-1 rounded-[var(--duokai-radius-sm)] px-[var(--duokai-control-px-sm)] py-[calc(8px*var(--duokai-layout-scale))] text-[calc(0.875rem*var(--duokai-font-scale))] font-medium transition-[background-color,color,box-shadow,transform]',
         active
           ? 'bg-blue-600 text-white shadow-[0_10px_24px_rgba(37,99,235,0.28),inset_0_1px_0_rgba(255,255,255,0.08)]'
           : 'text-[var(--duokai-text-muted)] hover:bg-[var(--duokai-surface)] hover:text-[var(--duokai-text)]',

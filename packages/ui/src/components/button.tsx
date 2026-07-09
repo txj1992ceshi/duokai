@@ -17,10 +17,10 @@ const variantClasses: Record<ButtonVariant, string> = {
 }
 
 const sizeClasses: Record<ButtonSize, string> = {
-  sm: 'h-9 px-3 text-sm',
-  md: 'h-10 px-4 text-sm',
-  lg: 'h-11 px-5 text-sm',
-  icon: 'h-10 w-10 p-0',
+  sm: 'h-[var(--duokai-control-height-sm)] px-[var(--duokai-control-px-sm)] text-[calc(0.875rem*var(--duokai-font-scale))]',
+  md: 'h-[var(--duokai-control-height-md)] px-[var(--duokai-control-px-md)] text-[calc(0.875rem*var(--duokai-font-scale))]',
+  lg: 'h-[var(--duokai-control-height-lg)] px-[var(--duokai-control-px-lg)] text-[calc(0.875rem*var(--duokai-font-scale))]',
+  icon: 'h-[var(--duokai-control-height-md)] w-[var(--duokai-control-height-md)] p-0',
 }
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -41,9 +41,9 @@ export function Button({
     <motion.button
       type={type}
       className={cn(
-        'inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-2xl font-medium transition-[background-color,color,border-color,box-shadow,transform] disabled:cursor-not-allowed disabled:opacity-50',
+        'inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-[var(--duokai-radius-md)] font-medium transition-[background-color,color,border-color,box-shadow,transform] disabled:cursor-not-allowed disabled:opacity-50',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--duokai-primary)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--duokai-surface)]',
-        variant === 'secondary' ? 'border border-white/8 bg-[rgba(25,36,53,0.72)] hover:bg-[rgba(34,48,70,0.86)]' : variantClasses[variant],
+        variantClasses[variant],
         sizeClasses[size],
         className,
       )}

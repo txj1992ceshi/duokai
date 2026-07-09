@@ -165,7 +165,6 @@ const REMOTE_SYNC_EXCLUDED_SETTINGS = new Set([
   'controlPlaneDeviceId',
   'uiLanguage',
   'themeMode',
-  'uiScale',
 ])
 
 export class DatabaseService {
@@ -368,7 +367,6 @@ export class DatabaseService {
     const stmt = this.db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`)
     stmt.run('uiLanguage', 'zh-CN')
     stmt.run('themeMode', 'system')
-    stmt.run('uiScale', '90')
     stmt.run('defaultEnvironmentLanguage', DEFAULT_ENVIRONMENT_LANGUAGE)
     stmt.run('workspaceName', 'Bit Clone Workspace')
     stmt.run('defaultHomePage', 'https://example.com')

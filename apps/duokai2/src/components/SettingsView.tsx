@@ -218,6 +218,7 @@ export function SettingsView({
                 </div>
               </div>
             </div>
+
             <div className="grid gap-4 md:grid-cols-2">
               <Select
                 value={defaultEnvironmentLanguage}
@@ -243,7 +244,7 @@ export function SettingsView({
                   controlPlaneApiBase: event.target.value,
                 }))
               }
-              placeholder="http://duokai.duckdns.org"
+              placeholder="https://duokai-admin.junhuo.icu"
             />
             <div className="grid gap-4 md:grid-cols-2">
               <Input

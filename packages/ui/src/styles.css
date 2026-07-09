@@ -29,6 +29,13 @@
   --duokai-scrollbar-thumb-hover: rgba(100, 116, 139, 0.44);
 }
 
+
+:root[data-ui-scale='100'] { --duokai-ui-scale: 1; }
+:root[data-ui-scale='95'] { --duokai-ui-scale: 0.95; }
+:root[data-ui-scale='90'] { --duokai-ui-scale: 0.9; }
+:root[data-ui-scale='85'] { --duokai-ui-scale: 0.85; }
+:root[data-ui-scale='80'] { --duokai-ui-scale: 0.8; }
+
 .dark {
   --duokai-bg: #07111f;
   --duokai-surface: #101a2b;

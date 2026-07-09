@@ -117,3 +117,94 @@ select,
 textarea {
   font: inherit;
 }
+
+/* Theme color-scheme and native form controls. */
+:root:not(.dark),
+html:not(.dark),
+body:not(.dark) {
+  color-scheme: light;
+}
+
+.dark,
+.dark body {
+  color-scheme: dark;
+}
+
+:root:not(.dark) input,
+:root:not(.dark) select,
+:root:not(.dark) textarea,
+html:not(.dark) input,
+html:not(.dark) select,
+html:not(.dark) textarea {
+  background-color: var(--duokai-surface) !important;
+  color: var(--duokai-text) !important;
+  border-color: var(--duokai-border) !important;
+}
+
+:root:not(.dark) input:disabled,
+:root:not(.dark) select:disabled,
+:root:not(.dark) textarea:disabled,
+html:not(.dark) input:disabled,
+html:not(.dark) select:disabled,
+html:not(.dark) textarea:disabled {
+  background-color: color-mix(in srgb, var(--duokai-surface-muted) 75%, white) !important;
+  color: var(--duokai-text-muted) !important;
+  opacity: 1;
+}
+
+
+/* Dark theme compatibility for semi-transparent Tailwind light surfaces. */
+.dark .bg-white\/5,
+.dark .bg-white\/10,
+.dark .bg-white\/20,
+.dark .bg-white\/30,
+.dark .bg-white\/40,
+.dark .bg-white\/50,
+.dark .bg-white\/60,
+.dark .bg-white\/70,
+.dark .bg-white\/75,
+.dark .bg-white\/80,
+.dark .bg-white\/90 {
+  background-color: color-mix(in srgb, var(--duokai-surface) 88%, transparent) !important;
+}
+
+.dark .bg-slate-50\/5,
+.dark .bg-slate-50\/10,
+.dark .bg-slate-50\/20,
+.dark .bg-slate-50\/30,
+.dark .bg-slate-50\/40,
+.dark .bg-slate-50\/50,
+.dark .bg-slate-50\/60,
+.dark .bg-slate-50\/70,
+.dark .bg-slate-50\/75,
+.dark .bg-slate-50\/80,
+.dark .bg-slate-50\/90,
+.dark .bg-slate-100\/5,
+.dark .bg-slate-100\/10,
+.dark .bg-slate-100\/20,
+.dark .bg-slate-100\/30,
+.dark .bg-slate-100\/40,
+.dark .bg-slate-100\/50,
+.dark .bg-slate-100\/60,
+.dark .bg-slate-100\/70,
+.dark .bg-slate-100\/75,
+.dark .bg-slate-100\/80,
+.dark .bg-slate-100\/90,
+.dark .bg-slate-200,
+.dark .bg-slate-200\/50,
+.dark .bg-slate-200\/60,
+.dark .bg-slate-200\/70,
+.dark .bg-slate-200\/80 {
+  background-color: var(--duokai-surface-muted) !important;
+}
+
+.dark input:disabled,
+.dark select:disabled,
+.dark textarea:disabled,
+.dark button:disabled,
+.dark .disabled\:bg-slate-50:disabled,
+.dark .disabled\:bg-slate-100:disabled {
+  background-color: color-mix(in srgb, var(--duokai-surface-muted) 92%, transparent) !important;
+  color: var(--duokai-text-muted) !important;
+  opacity: 0.72;
+}

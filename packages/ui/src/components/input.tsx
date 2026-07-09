@@ -20,7 +20,7 @@ export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElem
   return (
     <input
       className={cn(
-        'h-11 w-full rounded-2xl border border-white/8 bg-[rgba(25,36,53,0.72)] px-4 text-sm text-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]',
+        'h-[var(--duokai-control-height-lg)] w-full rounded-[var(--duokai-radius-md)] border border-[var(--duokai-border)] bg-[var(--duokai-surface)] px-[var(--duokai-control-px-md)] text-[calc(0.875rem*var(--duokai-font-scale))] text-[var(--duokai-text)] shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition-[border-color,box-shadow,background-color,color]',
         'placeholder:text-slate-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:ring-offset-2 focus:ring-offset-[var(--duokai-surface)]',
         className,
       )}
@@ -33,7 +33,7 @@ export function Textarea({ className, ...props }: TextareaHTMLAttributes<HTMLTex
   return (
     <textarea
       className={cn(
-        'min-h-[112px] w-full rounded-2xl border border-white/8 bg-[rgba(25,36,53,0.72)] px-4 py-3 text-sm text-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]',
+        'min-h-[calc(112px*var(--duokai-layout-scale))] w-full rounded-[var(--duokai-radius-md)] border border-[var(--duokai-border)] bg-[var(--duokai-surface)] px-[var(--duokai-control-px-md)] py-[calc(12px*var(--duokai-layout-scale))] text-[calc(0.875rem*var(--duokai-font-scale))] text-[var(--duokai-text)] shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition-[border-color,box-shadow,background-color,color]',
         'placeholder:text-slate-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:ring-offset-2 focus:ring-offset-[var(--duokai-surface)]',
         className,
       )}
@@ -241,7 +241,7 @@ export function Select({
   }
 
   const triggerClasses = cn(
-    'flex h-11 w-full items-center justify-between gap-3 rounded-2xl border border-white/8 bg-[rgba(25,36,53,0.72)] px-4 text-left text-sm text-white shadow-[0_1px_2px_rgba(15,23,42,0.06),inset_0_0_0_1px_rgba(255,255,255,0.03)] transition-[border-color,box-shadow,background-color]',
+    'flex h-[var(--duokai-control-height-lg)] w-full items-center justify-between gap-3 rounded-[var(--duokai-radius-md)] border border-[var(--duokai-border)] bg-[var(--duokai-surface)] px-[var(--duokai-control-px-md)] text-left text-[calc(0.875rem*var(--duokai-font-scale))] text-[var(--duokai-text)] shadow-[0_1px_2px_rgba(15,23,42,0.06)] transition-[border-color,box-shadow,background-color,color]',
     open
       ? 'border-blue-500 bg-[var(--duokai-surface-elevated)] shadow-[0_0_0_1px_rgba(59,130,246,0.28),0_0_0_4px_rgba(59,130,246,0.1)]'
       : 'hover:border-[color-mix(in_srgb,var(--duokai-border)_100%,var(--duokai-text-muted)_32%)] hover:bg-[var(--duokai-surface-elevated)]',
@@ -319,7 +319,7 @@ export function Select({
               ref={menuRef}
               role="listbox"
               aria-disabled={disabled}
-              className="duokai-scrollbar fixed z-[80] max-h-64 overflow-auto rounded-2xl border border-[var(--duokai-border)] bg-[var(--duokai-surface)] p-1 shadow-[0_18px_48px_rgba(15,23,42,0.18)]"
+              className="duokai-scrollbar fixed z-[80] max-h-64 overflow-auto rounded-[var(--duokai-radius-md)] border border-[var(--duokai-border)] bg-[var(--duokai-surface)] p-1 shadow-[0_18px_48px_rgba(15,23,42,0.18)]"
               style={{
                 top: menuPositionRef.current.top,
                 left: menuPositionRef.current.left,
@@ -337,7 +337,7 @@ export function Select({
                     aria-selected={isSelected}
                     disabled={option.disabled}
                     className={cn(
-                      'flex w-full items-center rounded-xl px-3 py-2 text-left text-sm transition-colors',
+                      'flex w-full items-center rounded-[var(--duokai-radius-sm)] px-[var(--duokai-control-px-sm)] py-[calc(8px*var(--duokai-layout-scale))] text-left text-[calc(0.875rem*var(--duokai-font-scale))] transition-colors',
                       option.disabled
                         ? 'cursor-not-allowed text-slate-300'
                         : isSelected

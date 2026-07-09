@@ -146,6 +146,7 @@ function App() {
     })
   }, [localizeError, requireDesktopApi])
 
+
   useEffect(() => {
     const root = document.documentElement
     const media = window.matchMedia('(prefers-color-scheme: dark)')
