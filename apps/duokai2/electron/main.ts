@@ -185,8 +185,9 @@ const GOOGLE_PROXY_BYPASS_LIST = [
   '*.ggpht.com',
 ].join(';')
 const DEFAULT_CONTROL_PLANE_API_BASE = (
-  String(process.env.DUOKAI_API_BASE || '').trim() || 'http://duokai.duckdns.org'
+  String(process.env.DUOKAI_API_BASE || '').trim() || 'https://duokai-admin.junhuo.icu'
 ).replace(/\/$/, '')
+const LEGACY_CONTROL_PLANE_API_HOSTS = new Set(['duokai.duckdns.org'])
 const TRUSTED_SNAPSHOT_VERSION = 1
 const PROFILE_RUNTIME_LOCK_HEARTBEAT_MS = 30 * 1000
 const PROFILE_RUNTIME_LOCK_STALE_MS = 2 * 60 * 1000
@@ -3347,6 +3348,22 @@ async function downloadDesktopUpdate(): Promise<DesktopUpdateState> {
         message: updateState.assetName ? `正在下载更新 ${updateState.assetName}` : '正在下载更新',
       })
       await autoUpdater.downloadUpdate()
+      const downloadedState = updateState
+      if (downloadedState.status === 'downloaded' && downloadedState.canAutoInstall && !downloadedState.fallbackToManual) {
+        setUpdateState({
+          status: 'downloaded',
+          attentionRequired: false,
+          message: '更新已下载完成，正在退出并安装。',
+        })
+        setTimeout(() => {
+          try {
+            audit('update_auto_install_after_download', { downloadedFile: updateState.downloadedFile, platform: process.platform })
+            autoUpdater.quitAndInstall(false, true)
+          } catch (error) {
+            setAutoUpdateErrorState(error instanceof Error ? error.message : String(error))
+          }
+        }, 800)
+      }
       return updateState
     } catch (error) {
       return setAutoUpdateErrorState(error instanceof Error ? error.message : String(error))
@@ -3427,14 +3444,48 @@ function getSettingValue(key: string, fallback = ''): string {
   return requireDatabase().getSettings()[key] || fallback
 }
 
+function normalizeControlPlaneApiBase(value: string): string {
+  return String(value || '').trim().replace(/\/$/, '')
+}
+
+function isLegacyControlPlaneApiBase(value: string): boolean {
+  const normalized = normalizeControlPlaneApiBase(value)
+  if (!normalized) {
+    return false
+  }
+  try {
+    const url = /^https?:\/\//i.test(normalized)
+      ? new URL(normalized)
+      : new URL(`https://${normalized}`)
+    return LEGACY_CONTROL_PLANE_API_HOSTS.has(url.hostname.toLowerCase())
+  } catch {
+    return /(^|\/\/)duokai\.duckdns\.org(?::\d+)?(?:\/|$)/i.test(normalized)
+  }
+}
+
+function resolveControlPlaneApiBase(value: string): string {
+  const normalized = normalizeControlPlaneApiBase(value)
+  return isLegacyControlPlaneApiBase(normalized) ? DEFAULT_CONTROL_PLANE_API_BASE : normalized
+}
+
 function getControlPlaneApiBase(): string {
   if (sessionAuthApiBase) {
-    return sessionAuthApiBase.replace(/\/$/, '')
+    return resolveControlPlaneApiBase(sessionAuthApiBase)
   }
-  return (
-    getSettingValue(CONTROL_PLANE_API_BASE_KEY) ||
-    DEFAULT_CONTROL_PLANE_API_BASE
-  ).replace(/\/$/, '')
+
+  const settings = requireDatabase().getSettings()
+  const storedBase = normalizeControlPlaneApiBase(settings[CONTROL_PLANE_API_BASE_KEY] || '')
+  if (isLegacyControlPlaneApiBase(storedBase)) {
+    const migratedBase = normalizeControlPlaneApiBase(DEFAULT_CONTROL_PLANE_API_BASE)
+    requireDatabase().setSettings({
+      ...settings,
+      [CONTROL_PLANE_API_BASE_KEY]: migratedBase,
+    })
+    audit('control_plane_api_base_migrated', { from: storedBase, to: migratedBase })
+    return migratedBase
+  }
+
+  return (storedBase || DEFAULT_CONTROL_PLANE_API_BASE).replace(/\/$/, '')
 }
 
 function shouldRememberCredentials(): boolean {
@@ -4156,14 +4207,18 @@ function buildControlPlaneLoginCandidates(explicitApiBase?: string): string[] {
   ].filter(Boolean)
 
   for (const candidate of rawCandidates) {
-    candidates.add(candidate)
-    if (/^http:\/\//i.test(candidate)) {
-      candidates.add(candidate.replace(/^http:\/\//i, 'https://'))
-    } else if (/^https:\/\//i.test(candidate)) {
-      candidates.add(candidate.replace(/^https:\/\//i, 'http://'))
+    const normalizedCandidate = resolveControlPlaneApiBase(candidate)
+    if (!normalizedCandidate) {
+      continue
+    }
+    candidates.add(normalizedCandidate)
+    if (/^http:\/\//i.test(normalizedCandidate)) {
+      candidates.add(normalizedCandidate.replace(/^http:\/\//i, 'https://'))
+    } else if (/^https:\/\//i.test(normalizedCandidate)) {
+      // Do not downgrade a working HTTPS control-plane base to HTTP.
     } else {
-      candidates.add(`https://${candidate}`)
-      candidates.add(`http://${candidate}`)
+      candidates.add(`https://${normalizedCandidate}`)
+      candidates.add(`http://${normalizedCandidate}`)
     }
   }
 
@@ -4292,6 +4347,26 @@ function encodePowerShellCommand(script: string): string {
   return Buffer.from(script, 'utf16le').toString('base64')
 }
 
+function sanitizePowerShellErrorMessage(message: string): string {
+  const raw = String(message || '').trim()
+  if (!raw) {
+    return ''
+  }
+  const normalized = raw
+    .replace(/_x000D__x000A_/g, '\n')
+    .replace(/<S\s+S="Error">/g, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (raw.includes('#< CLIXML') || /Invoke-WebRequest|PowerShell|SSL\/TLS|安全通道|信任关系/i.test(normalized)) {
+    if (/SSL\/TLS|安全通道|信任关系|certificate|证书/i.test(normalized)) {
+      return '无法连接控制台服务：Windows TLS/证书信任校验失败。请确认控制台 API 地址为 https://duokai-admin.junhuo.icu，并检查系统证书与网络。'
+    }
+    return '无法连接控制台服务，请检查控制台 API 地址和网络连接。'
+  }
+  return normalized.slice(0, 1000)
+}
+
 async function requestJsonViaPowerShell(input: string, init: JsonRequestInit = {}): Promise<JsonResponse> {
   const headers = headersToObject(init.headers)
   const body = init.body || ''
@@ -4376,7 +4451,7 @@ $payload | ConvertTo-Json -Compress
       const stdout = Buffer.concat(stdoutChunks).toString('utf8').trim()
       const stderr = Buffer.concat(stderrChunks).toString('utf8').trim()
       if (code !== 0 && !stdout) {
-        reject(new Error(stderr || `PowerShell request failed with exit code ${code ?? -1}`))
+        reject(new Error(sanitizePowerShellErrorMessage(stderr) || `PowerShell request failed with exit code ${code ?? -1}`))
         return
       }
       try {
@@ -7195,11 +7270,19 @@ async function performDesktopLogin(payload: {
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error))
       audit('auth_login_failed', { apiBase, err: lastError.message })
+      const shouldTryNextCandidate =
+        /Hostname\/IP does not match certificate|certificate|证书|SSL\/TLS|安全通道|信任关系|基础连接已经关闭|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|Request timeout|socket hang up|network/i.test(
+          lastError.message,
+        )
+      if (!shouldTryNextCandidate) {
+        break
+      }
     }
   }
 
   if (lastError) {
-    throw new Error(`登录失败：${lastError.message}（已尝试：${attemptedBases.join(', ')}）`)
+    const errorMessage = sanitizePowerShellErrorMessage(lastError.message) || lastError.message
+    throw new Error(`登录失败：${errorMessage}（已尝试：${attemptedBases.join(', ')}）`)
   }
   throw new Error('登录失败')
 }
