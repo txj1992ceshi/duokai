@@ -26,6 +26,9 @@ const fs = require('fs');
 const args = process.argv.slice(2);
 const SCAN_MODE = args.includes('--scan');
 const HEADLESS  = args.includes('--headless');
+// Safe diagnostic baseline: use the browser's native fingerprint by default.
+// Legacy fingerprint overrides are only enabled when explicitly requested.
+const STEALTH_MODE = args.includes('--stealth');
 
 // Extract profileId
 let targetProfileId = null;
@@ -98,7 +101,10 @@ console.log('\n🚀 Launching browser...\n');
 // ─────────────────────────────────────────────────────────────────────────────
 // Determine user data directory (each profile gets its own isolated folder)
 // ─────────────────────────────────────────────────────────────────────────────
-const userDataDir = path.join(os.homedir(), '.antigravity-browser', 'profiles', profile.id);
+// Reuse the saved profile id so cookies, localStorage, IndexedDB and device trust
+// survive across launches. Falling back to the generated id is only for demos.
+const stableProfileId = savedProfile?.id || profile.id;
+const userDataDir = path.join(os.homedir(), '.antigravity-browser', 'profiles', stableProfileId);
 fs.mkdirSync(userDataDir, { recursive: true });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -112,30 +118,27 @@ const stealthScript = buildInjectionScript(profile.fingerprint);
 (async () => {
   const contextOptions = {
     headless: HEADLESS,
-    userAgent: profile.fingerprint.userAgent,
-    viewport: {
-      width:  profile.fingerprint.screenWidth,
-      height: profile.fingerprint.screenHeight,
-    },
-    locale: profile.fingerprint.languages[0],
-    timezoneId: profile.fingerprint.timezone,
     permissions: [],
-    isMobile: savedProfile?.isMobile || false,
-    hasTouch: savedProfile?.isMobile || false,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-blink-features=AutomationControlled',
-      '--disable-infobars',
-      `--window-size=${profile.fingerprint.screenWidth},${profile.fingerprint.screenHeight}`,
-      '--disable-quic',
-      '--disable-background-networking',
-      '--disable-component-update',
-      '--no-pings',
-      '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
-    ],
-    ignoreDefaultArgs: ['--enable-automation'],
   };
+
+  if (STEALTH_MODE) {
+    Object.assign(contextOptions, {
+      userAgent: profile.fingerprint.userAgent,
+      viewport: {
+        width: profile.fingerprint.screenWidth,
+        height: profile.fingerprint.screenHeight,
+      },
+      locale: profile.fingerprint.languages[0],
+      timezoneId: profile.fingerprint.timezone,
+      isMobile: savedProfile?.isMobile || false,
+      hasTouch: savedProfile?.isMobile || false,
+      args: [
+        `--window-size=${profile.fingerprint.screenWidth},${profile.fingerprint.screenHeight}`,
+        '--disable-quic',
+        '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+      ],
+    });
+  }
 
   // Attach proxy if configured
   if (profile.proxy) {
@@ -149,11 +152,14 @@ const stealthScript = buildInjectionScript(profile.fingerprint);
   // Use persistent context so cookies survive between sessions
   const context = await chromium.launchPersistentContext(userDataDir, contextOptions);
 
-  // Inject stealth scripts into ALL pages before they load
-  const seedNum = profile.id.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-  await context.addInitScript(stealthScript);
-  await context.addInitScript(buildFontInjectionScript(seedNum));
-  await context.addInitScript(buildMediaDevicesScript(seedNum));
+  // Keep the diagnostic baseline native. The legacy override layer remains
+  // available only for controlled internal testing via --stealth.
+  if (STEALTH_MODE) {
+    const seedNum = stableProfileId.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+    await context.addInitScript(stealthScript);
+    await context.addInitScript(buildFontInjectionScript(seedNum));
+    await context.addInitScript(buildMediaDevicesScript(seedNum));
+  }
 
   const page = await context.newPage();
 
@@ -167,6 +173,7 @@ const stealthScript = buildInjectionScript(profile.fingerprint);
     await page.goto('about:newtab');
     console.log('✅ Browser launched successfully!');
     console.log('   Profile data stored at:', userDataDir);
+  console.log('   Fingerprint mode:', STEALTH_MODE ? 'legacy override (--stealth)' : 'native baseline');
     console.log('   (Keep the browser open, press Ctrl+C to exit)\n');
   }
 
