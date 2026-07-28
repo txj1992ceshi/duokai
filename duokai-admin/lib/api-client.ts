@@ -1,7 +1,27 @@
 import { withAdminBasePath } from '@/lib/base-path';
 
-const API_BASE =
-  (process.env.NEXT_PUBLIC_DUOKAI_API_BASE || 'http://127.0.0.1:3100').replace(/\/$/, '');
+function resolveApiBase() {
+  const configured = String(process.env.NEXT_PUBLIC_DUOKAI_API_BASE || '').trim().replace(/\/$/, '');
+  const isHttpsPage = typeof window !== 'undefined' && window.location.protocol === 'https:';
+
+  // HTTPS deployments use the same-origin /api proxy to avoid mixed content.
+  // Keep the original local API default when developing over HTTP without an env file.
+  if (!configured) {
+    return isHttpsPage ? '' : 'http://127.0.0.1:3100';
+  }
+
+  if (/^http:\/\/45\.32\.44\.226\/?$/i.test(configured)) {
+    return '';
+  }
+
+  if (isHttpsPage && /^http:\/\//i.test(configured)) {
+    return '';
+  }
+
+  return configured;
+}
+
+const API_BASE = resolveApiBase();
 
 export function getAdminToken() {
   if (typeof window === 'undefined') return '';
