@@ -23,6 +23,7 @@ test('desktop package pins only the CloakBrowser engine contract', () => {
   assert.equal(packageJson.dependencies?.cloakbrowser, '0.5.2')
   assert.equal(packageJson.dependencies?.['playwright-core'], '1.58.2')
   assert.equal(packageJson.dependencies?.playwright, undefined)
+  assert.equal(existsSync(resolve(appRoot, 'package-lock.json')), false)
   assert.equal(packageJson.scripts?.['install:chromium'], undefined)
   assert.doesNotMatch(packageJson.scripts?.['prepare:desktop-assets'] ?? '', /playwright|chromium/i)
   assert.equal(packageJson.build?.extraResources, undefined)
@@ -33,6 +34,7 @@ test('production launch and proxy preflight contain no ordinary Chromium fallbac
   const main = read('electron/main.ts')
   const runtime = read('electron/services/runtime.ts')
   const proxyCheck = read('electron/services/proxyCheck.ts')
+  const viteConfig = read('vite.config.ts')
 
   assert.doesNotMatch(main, /from ['"]playwright['"]/)
   assert.doesNotMatch(main, /chromium\.launch(?:PersistentContext)?/)
@@ -43,6 +45,7 @@ test('production launch and proxy preflight contain no ordinary Chromium fallbac
 
   assert.doesNotMatch(runtime, /playwright|ms-playwright|Chromium/i)
   assert.doesNotMatch(proxyCheck, /from ['"]playwright['"]|chromium\.launch/)
+  assert.doesNotMatch(viteConfig, /['"]playwright['"]/)
   assert.match(proxyCheck, /fetchJsonThroughHttpProxy/)
   assert.match(proxyCheck, /'proxy_tunnel'/)
 })
