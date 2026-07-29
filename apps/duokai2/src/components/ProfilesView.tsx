@@ -87,6 +87,7 @@ export function ProfilesView({
   onCloneProfile,
   onLaunchProfile,
   onStopProfile,
+  onSetCloakPilotEnabled,
   onDeleteProfileById,
   onMoveProfileToNurture,
   onMoveProfileToOperation,
@@ -154,6 +155,7 @@ export function ProfilesView({
   onCloneProfile: (profileId: string) => void
   onLaunchProfile: (profileId: string) => void
   onStopProfile: (profileId: string) => void
+  onSetCloakPilotEnabled: (profileId: string, enabled: boolean) => void
   onDeleteProfileById: (profileId: string) => void | Promise<void>
   onMoveProfileToNurture: (profileId: string) => void
   onMoveProfileToOperation: (profileId: string) => void
@@ -377,6 +379,7 @@ export function ProfilesView({
                 onClone={onCloneProfile}
                 onLaunch={onLaunchProfile}
                 onStop={onStopProfile}
+                onSetCloakPilotEnabled={onSetCloakPilotEnabled}
                 onDelete={onDeleteProfileById}
                 onMoveToNurture={onMoveProfileToNurture}
                 onMoveToOperation={onMoveProfileToOperation}

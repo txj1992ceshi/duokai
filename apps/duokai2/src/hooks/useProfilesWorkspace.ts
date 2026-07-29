@@ -33,6 +33,7 @@ export function useProfilesWorkspace({
   cloneFingerprintConfig,
   defaultRuntimeMetadata,
   isBlankProfileForm,
+  getCloakPilotStatus,
   getProfileVisualState,
   getProfileStatusTone,
   getEnvironmentPurposeLabel,
@@ -55,6 +56,7 @@ export function useProfilesWorkspace({
   cloneFingerprintConfig: (config: FingerprintConfig) => FingerprintConfig
   defaultRuntimeMetadata: FingerprintConfig['runtimeMetadata']
   isBlankProfileForm: (form: ProfileFormState) => boolean
+  getCloakPilotStatus: (profile: ProfileRecord) => EnvironmentListItem['cloakPilot']
   getProfileVisualState: (profile: ProfileRecord) => ProfileRecord['status']
   getProfileStatusTone: (profile: ProfileRecord) => NonNullable<EnvironmentListItem['statusTone']>
   getEnvironmentPurposeLabel: (purpose: EnvironmentPurpose, locale: LocaleCode) => string
@@ -152,6 +154,7 @@ export function useProfilesWorkspace({
             identity: summarizeIdentitySignature(profile.deviceProfile, profile.fingerprintConfig),
             locale: summarizeLocaleSignature(profile.deviceProfile, profile.fingerprintConfig),
             hardware: summarizeHardwareSignature(profile.deviceProfile, profile.fingerprintConfig),
+            cloakPilot: getCloakPilotStatus(profile),
             status: visualStatus,
             statusTone: getProfileStatusTone(profile),
             launchPhaseLabel: getLaunchPhaseLabel(profile),
@@ -164,6 +167,7 @@ export function useProfilesWorkspace({
         }),
       })),
     [
+      getCloakPilotStatus,
       getEnvironmentPurposeLabel,
       getLaunchPhaseLabel,
       getProfileStatusTone,

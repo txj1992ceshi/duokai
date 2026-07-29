@@ -8,25 +8,36 @@
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite --force",
-    "clean": "rm -rf dist dist-electron release build-resources/ms-playwright",
-    "prepare:desktop-assets": "node scripts/prepare-desktop-assets.mjs && node scripts/prepare-playwright-browsers.mjs && electron-builder install-app-deps",
+    "clean": "rm -rf dist dist-electron release",
+    "prepare:desktop-assets": "node scripts/prepare-desktop-assets.mjs && electron-builder install-app-deps",
     "build": "npm run prepare:desktop-assets && tsc -b && vite build && ELECTRON_BUILDER_CACHE=.cache/electron-builder CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder -c electron-builder.config.cjs",
     "build:dir": "npm run prepare:desktop-assets && tsc -b && vite build && ELECTRON_BUILDER_CACHE=.cache/electron-builder CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder -c electron-builder.config.cjs --dir",
     "build:mac": "npm run prepare:desktop-assets && tsc -b && vite build && ELECTRON_BUILDER_CACHE=.cache/electron-builder CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder -c electron-builder.config.cjs --mac dmg zip --publish never",
     "build:win": "npm run prepare:desktop-assets && tsc -b && vite build && electron-builder -c electron-builder.config.cjs --win nsis zip --publish never",
     "smoke:win": "node scripts/run-desktop-smoke.mjs",
-    "install:chromium": "playwright install chromium",
+    "test:cloak-runtime": "node --test electron/services/profileMetadataBackfill.test.ts electron/services/environmentSyncMetadata.test.ts electron/services/environmentPushScope.test.ts electron/services/environmentPullIdempotence.test.ts electron/services/networkErrorRecovery.test.ts electron/services/runtimeScheduler.test.ts electron/services/runtimeContextLifecycle.test.ts electron/services/cloakBrowserIdentity.test.ts electron/services/cloakBrowserClientHints.test.ts electron/services/cloakBrowserRuntime.test.ts electron/services/cloakBrowserLiveness.test.ts electron/services/cloakBrowserPostTrustGate.test.ts electron/services/cloakBrowserFingerprint.test.ts electron/services/cloakBrowserNetwork.test.ts electron/services/cloakBrowserTrustedSnapshot.test.ts electron/services/cloakBrowserProductionIntegration.test.ts electron/services/referenceCountedAsyncResource.test.ts electron/services/proxyBridge.test.ts electron/services/cloakBrowserInstallPreflight.test.ts electron/services/cloakBrowserInstallationManager.test.ts electron/services/cloakBrowserSnapshotKeyLifecycle.test.ts electron/services/cloakBrowserTransactionRecovery.test.ts electron/services/cloakBrowserPilotGate.test.ts electron/services/cloakBrowserPilotConfig.test.ts electron/services/cloakBrowserProductionPilot.test.ts electron/services/cloakBrowserRolloutControl.test.ts electron/services/cloakBrowserCanaryRehearsal.test.ts electron/services/cloakBrowserSingleEnginePackaging.test.ts electron/services/cloakBrowserElectronCdpLaunch.test.ts electron/services/cloakBrowserStartupNavigation.test.ts electron/services/proxyFailureClassification.test.ts",
+    "test:cloak-electron-cdp": "node --test electron/services/cloakBrowserElectronCdpLaunch.test.ts",
+    "smoke:cloak-runtime": "node scripts/run-cloak-runtime-smoke.ts",
+    "smoke:cloak-fingerprint": "node scripts/run-cloak-fingerprint-smoke.ts",
+    "smoke:cloak-network": "node scripts/run-cloak-network-smoke.ts",
+    "smoke:cloak-trusted-snapshot": "node scripts/run-cloak-trusted-snapshot-smoke.ts",
+    "smoke:cloak-production-pilot": "node scripts/run-cloak-production-pilot-smoke.ts",
+    "smoke:cloak-installation": "node scripts/run-cloak-installation-smoke.ts",
+    "smoke:cloak-rollout-control": "node scripts/run-cloak-rollout-control-smoke.ts",
+    "smoke:cloak-canary-rehearsal": "node scripts/run-cloak-canary-rehearsal-smoke.ts",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:cloak-single-engine": "node --test electron/services/cloakBrowserSingleEnginePackaging.test.ts"
   },
   "dependencies": {
     "@duokai/ui": "file:../../packages/ui",
     "better-sqlite3": "^12.8.0",
+    "cloakbrowser": "0.5.2",
     "electron-updater": "^6.8.3",
     "framer-motion": "^12.6.3",
     "i18next": "^25.1.3",
     "lucide-react": "^0.511.0",
-    "playwright": "^1.58.2",
+    "playwright-core": "1.58.2",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-i18next": "^15.5.2",
@@ -66,20 +77,11 @@
       "dist-electron/**/*",
       "package.json"
     ],
-    "extraResources": [
-      {
-        "from": "build-resources/ms-playwright",
-        "to": "ms-playwright"
-      }
-    ],
     "mac": {
       "icon": "build-resources/icon.icns",
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
       "notarize": false,
-      "signIgnore": [
-        "Contents\\/Resources\\/ms-playwright\\/.*"
-      ],
       "target": [
         "dmg",
         "zip"

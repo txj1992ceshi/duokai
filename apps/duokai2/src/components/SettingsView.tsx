@@ -77,7 +77,10 @@ export function SettingsView({
   directoryInfo: {
     appDataDir: string
     profilesDir: string
-    chromiumExecutable?: string
+    browserEngine: 'cloakbrowser'
+    cloakBrowserVersion: string
+    cloakBrowserCacheDir: string
+    fallbackEngine: 'forbidden'
   } | null
   runtimeInfo: DesktopRuntimeInfo | null
   latestNetworkCheck: LatestNetworkCheck
@@ -589,7 +592,9 @@ export function SettingsView({
                 <div className="rounded-2xl border border-slate-200 px-4 py-3">
                   <div className="text-xs uppercase tracking-[0.12em] text-slate-400">{t.settings.chromiumBinary}</div>
                   <div className="mt-1 text-sm text-slate-700">
-                    {directoryInfo?.chromiumExecutable ?? t.settings.missingChromium}
+                    {directoryInfo
+                      ? `${directoryInfo.cloakBrowserVersion} · ${directoryInfo.cloakBrowserCacheDir}`
+                      : t.settings.missingChromium}
                   </div>
                 </div>
               </div>

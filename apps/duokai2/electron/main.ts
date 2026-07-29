@@ -7,6 +7,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
+import { readFileSync as readOriginalFileSync } from 'node:original-fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import dns from 'node:dns'
@@ -23,11 +24,11 @@ import {
   ipcMain,
   Menu,
   nativeTheme,
+  safeStorage,
   shell,
 } from 'electron'
 import type { MenuItemConstructorOptions, TitleBarOverlay } from 'electron'
-import { chromium } from 'playwright'
-import type { BrowserContext } from 'playwright'
+import type { BrowserContext, Page } from 'playwright-core'
 import electronUpdater from 'electron-updater'
 import type { ProgressInfo, UpdateDownloadedEvent, UpdateInfo } from 'electron-updater'
 import { DatabaseService } from './services/database'
@@ -35,6 +36,9 @@ import {
   createDeviceProfileFromFingerprint,
   DEFAULT_ENVIRONMENT_PURPOSE,
 } from './services/deviceProfile'
+import { resolveEnvironmentSyncMetadataUpdate } from './services/environmentSyncMetadata'
+import { resolveEnvironmentPushScope } from './services/environmentPushScope'
+import { shouldApplyPulledEnvironmentProfile } from './services/environmentPullIdempotence'
 import {
   createPortableWorkspaceDescriptor,
   createCloudPhonePayload,
@@ -58,12 +62,7 @@ import {
   getProfilePath,
   normalizeWorkspacePathsForProfile,
 } from './services/paths'
-import {
-  applyProxyCompatibilityArgs,
-  buildChromiumLaunchEnv,
-  buildProxyServer,
-  resolveChromiumExecutable,
-} from './services/runtime'
+import { buildProxyServer } from './services/runtime'
 import { resolveWorkspaceLaunchConfig } from './services/workspaceRuntime'
 import { runLocalIsolationPreflight } from './services/localIsolation'
 import {
@@ -71,21 +70,58 @@ import {
   createWorkspaceSnapshot,
   evaluateLastKnownGoodSnapshot,
   getWorkspaceSnapshotById,
-  doesWorkspaceSnapshotMatchProfile,
   listWorkspaceSnapshots,
   restoreWorkspaceSnapshot as restoreWorkspaceSnapshotRecord,
   rollbackWorkspaceToLastKnownGood as rollbackWorkspaceToLastKnownGoodRecord,
-  updateWorkspaceSnapshotValidation,
 } from './services/workspaceSnapshots'
 import {
   buildExportBundleV2,
   importWorkspaceSnapshotsFromBundle,
 } from './services/importExport'
-import { buildFingerprintInitScript } from './services/fingerprint'
 import { applyNetworkDerivedFingerprint } from './services/networkProfileResolver'
-import { resolveLaunchProxy } from './services/proxyBridge'
+import { closeAllProxyBridges, type LaunchProxyLease } from './services/proxyBridge'
+import { runCloakPackagedDiagnosticIfRequested } from './services/cloakBrowserPackagedDiagnostic'
+import {
+  configureElectronCdpFromLaunchRequest,
+  restoreCloakFailClosedAfterElectronCdpFailure,
+  updateElectronCdpLaunchReceipt,
+  waitForElectronCdpEndpoint,
+  type ElectronCdpLaunchConfiguration,
+} from './services/cloakBrowserElectronCdpLaunch'
+import { evaluateCloakPilotEligibility } from './services/cloakBrowserPilotGate'
+import { evaluateCloakClientHintsCoherence } from './services/cloakBrowserClientHints'
+import {
+  buildCloakPilotRuntimeProfile,
+  evaluateCloakPilotLocalEligibility,
+  getCloakPilotLocalConfigPath,
+  getDefaultCloakPilotCacheDir,
+  readCloakPilotLocalConfig,
+  setCloakPilotProfileEnabled,
+  type CloakPilotLocalEligibility,
+  type LoadedCloakPilotLocalConfig,
+} from './services/cloakBrowserPilotConfig'
+import {
+  runCloakProductionPilot,
+  type CloakProductionPilotResult,
+} from './services/cloakBrowserProductionPilot'
+import {
+  CloakRolloutGovernor,
+  getCloakRolloutControlPath,
+  getCloakRolloutHealthPath,
+  type CloakRolloutAdmissionLease,
+} from './services/cloakBrowserRolloutControl'
+import {
+  CloakBrowserLifecycleDiagnostics,
+  CloakPostTrustRolloutGate,
+  type CloakPostTrustGateOutcome,
+} from './services/cloakBrowserPostTrustGate'
+import {
+  CLOAK_PILOT_BINARY_SHA256,
+  CLOAK_PILOT_BROWSER_VERSION,
+} from './services/cloakBrowserInstallPreflight'
 import { listEgressPathCandidates } from './services/egressPaths'
 import { RuntimeScheduler } from './services/runtimeScheduler'
+import { convergeClosedRuntimeContext } from './services/runtimeContextLifecycle'
 import { AgentNetworkError, AgentService } from './services/agentService'
 import {
   classifyRecoverableGlobalNetworkError,
@@ -116,6 +152,10 @@ import {
 } from './services/localRuntimeLauncher'
 import { checkStandaloneProxyEgress } from './services/proxyCheck'
 import {
+  evaluateWithStableNavigation,
+  navigateToStableStartupUrl,
+} from './services/cloakBrowserStartupNavigation'
+import {
   buildPlatformSmokeArtifactBaseName,
   buildPlatformSmokeProfileInput,
   evaluatePlatformSmokeSuccess,
@@ -127,6 +167,7 @@ import {
 import type {
   AuthUser,
   CloudPhoneBulkActionPayload,
+  CloakPilotProfileStatus,
   CloudPhoneRecord,
   ConfigSyncResult,
   ControlPlaneStatus,
@@ -149,7 +190,6 @@ import type {
   StorageStateSyncResult,
   StorageStateSyncStatus,
   PendingSyncKind,
-  StartupNavigationReasonCode,
   StartupNavigationResult,
   DesktopUpdateState,
   TrustedIsolationCheck,
@@ -176,14 +216,6 @@ const DEFAULT_TIKTOK_REGISTER_IP_COOLDOWN_HOURS = 24
 const DEFAULT_TIKTOK_REGISTER_IP_MAX_PROFILES = 1
 const DEFAULT_NURTURE_MINIMUM_HOURS_AFTER_REGISTER = 24
 const DEFAULT_OPERATION_MINIMUM_HOURS_AFTER_NURTURE = 72
-const GOOGLE_PROXY_BYPASS_LIST = [
-  '*.google.com',
-  '*.google.com.*',
-  '*.gstatic.com',
-  '*.googleusercontent.com',
-  '*.googleapis.com',
-  '*.ggpht.com',
-].join(';')
 const DEFAULT_CONTROL_PLANE_API_BASE = (
   String(process.env.DUOKAI_API_BASE || '').trim() || 'https://duokai-admin.junhuo.icu'
 ).replace(/\/$/, '')
@@ -277,6 +309,15 @@ let sessionAuthToken = ''
 let sessionAuthUser: AuthUser | null = null
 
 const runtimeContexts = new Map<string, BrowserContext>()
+const runtimeProxyLeases = new Map<string, LaunchProxyLease>()
+const runtimeCloakPilots = new Map<string, CloakProductionPilotResult>()
+const runtimeCloakPostTrustGates = new Map<string, CloakPostTrustRolloutGate>()
+const runtimeCloakLifecycleDiagnostics = new Map<string, CloakBrowserLifecycleDiagnostics>()
+const runtimeCloakPilotStatuses = new Map<string, CloakPilotProfileStatus>()
+let loadedCloakPilotConfig: LoadedCloakPilotLocalConfig | null = null
+let cloakPilotConfigError = ''
+let cloakRolloutGovernor: CloakRolloutGovernor | null = null
+let activeElectronCdpLaunch: ElectronCdpLaunchConfiguration | null = null
 const runtimeLockHeartbeatTimers = new Map<string, NodeJS.Timeout>()
 const runtimeShutdownFinalizing = new Set<string>()
 const MAX_QUEUE = Number(process.env.MAX_QUEUE_LENGTH || 200)
@@ -903,6 +944,7 @@ async function syncConfigToControlPlaneOrThrow(
 
 async function pushEnvironmentProfilesToControlPlaneOrThrow(
   mode: EnvironmentMirrorSyncMode = 'manual-force-upload',
+  profileIds: string[] = [],
 ): Promise<{
   cloudProfileCount: number
   localMirroredProfileCount: number
@@ -910,19 +952,24 @@ async function pushEnvironmentProfilesToControlPlaneOrThrow(
   removedLocalMirrorCount: number
 }> {
   const localSnapshot = requireDatabase().exportRemoteConfigSnapshot(0)
+  const pushScope = resolveEnvironmentPushScope(
+    localSnapshot.profiles,
+    mode,
+    profileIds,
+  )
 
   if (agentService?.getState().enabled) {
     await agentService.pushConfigSnapshot({
-      profiles: localSnapshot.profiles,
+      profiles: pushScope.profiles,
       proxies: [],
       templates: [],
       cloudPhones: [],
       settings: {},
-    }, { mode: 'replace' })
+    }, { mode: pushScope.scoped ? 'merge' : 'replace' })
     return {
       cloudProfileCount: localSnapshot.profiles.length,
       localMirroredProfileCount: localSnapshot.profiles.length,
-      autoUploadedCount: localSnapshot.profiles.length,
+      autoUploadedCount: pushScope.profiles.length,
       removedLocalMirrorCount: 0,
     }
   }
@@ -936,7 +983,7 @@ async function pushEnvironmentProfilesToControlPlaneOrThrow(
     ? (remoteProfilesPayload.profiles as ProfileRecord[]).filter((profile) => Boolean(profile?.id))
     : []
   const remoteProfileIds = new Set(remoteProfiles.map((profile) => String(profile.id)))
-  const localProfiles = localSnapshot.profiles.map((profile) => ({
+  const localProfiles = pushScope.profiles.map((profile) => ({
     ...profile,
     workspace: createPortableWorkspaceDescriptor(
       profile.workspace ?? null,
@@ -947,14 +994,16 @@ async function pushEnvironmentProfilesToControlPlaneOrThrow(
   const localProfileIds = new Set(localProfiles.map((profile) => String(profile.id)))
 
   let deletedRemoteCount = 0
-  for (const remoteProfileId of remoteProfileIds) {
-    if (localProfileIds.has(remoteProfileId)) {
-      continue
+  if (pushScope.allowRemoteDeletion) {
+    for (const remoteProfileId of remoteProfileIds) {
+      if (localProfileIds.has(remoteProfileId)) {
+        continue
+      }
+      await requestControlPlane(`/api/config/profiles/${encodeURIComponent(remoteProfileId)}`, {
+        method: 'DELETE',
+      })
+      deletedRemoteCount += 1
     }
-    await requestControlPlane(`/api/config/profiles/${encodeURIComponent(remoteProfileId)}`, {
-      method: 'DELETE',
-    })
-    deletedRemoteCount += 1
   }
 
   let autoUploadedCount = 0
@@ -980,9 +1029,12 @@ async function pushEnvironmentProfilesToControlPlaneOrThrow(
     }
   }
 
+  const resultingCloudProfileIds = pushScope.allowRemoteDeletion
+    ? localProfileIds
+    : new Set([...remoteProfileIds, ...localProfileIds])
   return {
-    cloudProfileCount: localProfiles.length,
-    localMirroredProfileCount: localProfiles.length,
+    cloudProfileCount: resultingCloudProfileIds.size,
+    localMirroredProfileCount: localSnapshot.profiles.length,
     autoUploadedCount,
     removedLocalMirrorCount: deletedRemoteCount,
   }
@@ -1375,7 +1427,10 @@ async function flushSharedDataAutoPush(): Promise<void> {
   setLastConfigSyncResult(buildEnvironmentSyncInFlightResult('正在自动同步环境到云端'))
 
   try {
-    const resultPayload = await pushEnvironmentProfilesToControlPlaneOrThrow('auto-push')
+    const resultPayload = await pushEnvironmentProfilesToControlPlaneOrThrow(
+      'auto-push',
+      affectedProfileIds,
+    )
     const result = buildEnvironmentSyncPushSuccessResult(
       `已自动同步环境：云端 ${resultPayload.cloudProfileCount} 个环境，本地镜像 ${resultPayload.localMirroredProfileCount} 个，自动上传 ${resultPayload.autoUploadedCount} 个，移除云端旧镜像 ${resultPayload.removedLocalMirrorCount} 个`,
     )
@@ -1731,6 +1786,13 @@ function applyPulledProfileToLocalDatabase(
     const merged = applyRemoteProfileIndexToLocalProfile(localProfile, remoteProfile)
     clearMissingCloudIndexMarker(merged.profile)
     return merged
+  }
+
+  if (
+    mode === 'full-replace' &&
+    !shouldApplyPulledEnvironmentProfile(localProfile, remoteProfile)
+  ) {
+    return { profile: localProfile!, changed: false }
   }
 
   const nextProfile = requireDatabase().updateProfile({
@@ -2621,71 +2683,6 @@ async function rollbackWorkspaceSnapshotForProfile(profileId: string): Promise<P
   return gatedProfile
 }
 
-async function markWorkspaceSnapshotAsLastKnownGood(
-  profileId: string,
-  snapshotId: string,
-  validatedAt: string,
-): Promise<ProfileRecord | null> {
-  let profile = requireDatabase().getProfileById(profileId)
-  if (!profile?.workspace) {
-    return null
-  }
-  if (
-    profile.workspace.healthSummary.status !== 'healthy' ||
-    profile.workspace.consistencySummary.status === 'block'
-  ) {
-    return profile
-  }
-  const currentStorageStateJson = await readProfileStorageStateFromDisk(profileId)
-  const currentStorageState = {
-    version: Number(profile.fingerprintConfig.runtimeMetadata.lastStorageStateVersion || 0),
-    stateHash: currentStorageStateJson ? hashStorageState(currentStorageStateJson) : '',
-    updatedAt: profile.fingerprintConfig.runtimeMetadata.lastStorageStateSyncedAt || '',
-    deviceId: profile.fingerprintConfig.runtimeMetadata.lastStorageStateDeviceId || '',
-    source: getDesktopAuthState().authenticated ? 'desktop' : 'local-disk',
-  }
-  const currentSnapshots = await listWorkspaceSnapshots(profile)
-  const targetSnapshot = currentSnapshots.find((item) => item.snapshotId === snapshotId)
-  if (!targetSnapshot || !doesWorkspaceSnapshotMatchProfile(targetSnapshot, profile, currentStorageState)) {
-    return profile
-  }
-  const updatedSnapshot = await updateWorkspaceSnapshotValidation(profile, snapshotId, validatedAt)
-  if (!updatedSnapshot) {
-    return profile
-  }
-  profile = persistProfile({
-    ...profile,
-    workspace: {
-      ...profile.workspace,
-      snapshotSummary: {
-        ...profile.workspace.snapshotSummary,
-        lastSnapshotId: updatedSnapshot.snapshotId,
-        lastSnapshotAt: updatedSnapshot.createdAt,
-        lastKnownGoodSnapshotId: updatedSnapshot.snapshotId,
-        lastKnownGoodSnapshotAt: validatedAt,
-        lastKnownGoodStatus: 'valid',
-        lastKnownGoodInvalidatedAt: '',
-        lastKnownGoodInvalidationReason: '',
-      },
-    },
-  })
-  void syncWorkspaceSummaryToControlPlane(profile).catch((error) => {
-    audit('workspace_summary_mark_good_sync_failed', {
-      profileId,
-      snapshotId,
-      err: error instanceof Error ? error.message : String(error),
-    })
-  })
-  void syncWorkspaceSnapshotToControlPlane(updatedSnapshot).catch((error) => {
-    audit('workspace_snapshot_mark_good_sync_failed', {
-      profileId,
-      snapshotId,
-      err: error instanceof Error ? error.message : String(error),
-    })
-  })
-  return profile
-}
-
 async function refreshLastKnownGoodSnapshotStatus(profile: ProfileRecord): Promise<ProfileRecord> {
   if (!profile.workspace) {
     return profile
@@ -2762,11 +2759,18 @@ async function finalizeRuntimeShutdown(
 ): Promise<void> {
   const context = runtimeContexts.get(profileId)
   clearProfileStorageSyncTimer(profileId)
+  runtimeCloakLifecycleDiagnostics.get(profileId)?.markCloseIntent(reason)
   if (context) {
     runtimeShutdownFinalizing.add(profileId)
   }
 
   try {
+    if (reason !== 'liveness-failure') {
+      await failPendingCloakPostTrustGate(
+        profileId,
+        `post_trust_liveness_interrupted:${reason}`,
+      )
+    }
     if (context) {
       try {
         await saveProfileStorageStateToDisk(profileId, context)
@@ -2846,7 +2850,6 @@ async function finalizeRuntimeShutdown(
       }
     }
 
-    runtimeContexts.delete(profileId)
     try {
       if (context) {
         await context.close()
@@ -2856,6 +2859,18 @@ async function finalizeRuntimeShutdown(
         profileId,
         reason,
         err: error instanceof Error ? error.message : String(error),
+      })
+    }
+    runtimeContexts.delete(profileId)
+    const activePilot = runtimeCloakPilots.get(profileId)
+    runtimeCloakPilots.delete(profileId)
+    if (activePilot) {
+      await activePilot.session.close().catch((error) => {
+        audit('shutdown_cloak_session_close_failed', {
+          profileId,
+          reason,
+          err: error instanceof Error ? error.message : String(error),
+        })
       })
     }
 
@@ -2879,10 +2894,18 @@ async function finalizeRuntimeShutdown(
       })
     }
 
+    requireDatabase().setProfileStatus(profileId, 'stopped')
     scheduler.markStopped(profileId)
-    await updateProfileStatus(profileId, 'stopped')
+    await syncProfileStatusToControlPlane(profileId, 'stopped')
   } finally {
     runtimeShutdownFinalizing.delete(profileId)
+  }
+}
+
+async function waitForRuntimeStartsToSettle(timeoutMs = 2_500): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (scheduler.getStartingIds().length > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25))
   }
 }
 
@@ -2899,9 +2922,22 @@ async function gracefulShutdownHandler(signalOrErr?: unknown) {
   try {
     audit('process_shutdown_begin', { info: String(signalOrErr || '') })
     console.log('Graceful shutdown: saving sessions...')
+    const pendingLaunchIds = Array.from(
+      new Set([...scheduler.getQueuedIds(), ...scheduler.getStartingIds()]),
+    )
+    for (const profileId of pendingLaunchIds) {
+      scheduler.stop(profileId)
+    }
+    if (pendingLaunchIds.length > 0) {
+      audit('process_shutdown_launches_cancelled', { profileIds: pendingLaunchIds })
+      await waitForRuntimeStartsToSettle()
+    }
     for (const profileId of [...runtimeContexts.keys()]) {
       await finalizeRuntimeShutdown(profileId, 'graceful-shutdown')
     }
+    await closeAllProxyBridges()
+    runtimeProxyLeases.clear()
+    runtimeCloakPilots.clear()
   } catch (error) {
     console.error('graceful shutdown save failed', error)
   } finally {
@@ -3057,6 +3093,8 @@ const CAPABILITIES: DesktopRuntimeInfo['capabilities'] = [
   'proxies.update',
   'proxies.delete',
   'proxies.test',
+  'cloakPilot.getStatus',
+  'cloakPilot.setProfileEnabled',
   'runtime.launch',
   'runtime.stop',
   'runtime.open-platform',
@@ -4839,101 +4877,19 @@ function resolveProfileStartupUrl(profile: Pick<ProfileRecord, 'fingerprintConfi
   )
 }
 
-function classifyStartupNavigationError(error: unknown): StartupNavigationReasonCode {
-  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase()
-  if (message.includes('timeout') || message.includes('timed out')) {
-    return 'timeout'
-  }
-  if (message.includes('proxy')) {
-    return 'proxy_error'
-  }
-  if (message.includes('dns') || message.includes('enotfound') || message.includes('eai_again')) {
-    return 'dns_error'
-  }
-  if (message.includes('ssl') || message.includes('tls') || message.includes('certificate')) {
-    return 'tls_error'
-  }
-  if (message.includes('redirect')) {
-    return 'redirect_unstable'
-  }
-  if (
-    message.includes('blocked') ||
-    message.includes('forbidden') ||
-    message.includes('denied') ||
-    message.includes('access denied')
-  ) {
-    return 'page_blocked'
-  }
-  if (message.includes('challenge') || message.includes('captcha') || message.includes('verify')) {
-    return 'challenge_or_gate'
-  }
-  if (
-    message.includes('net::') ||
-    message.includes('connection') ||
-    message.includes('socket') ||
-    message.includes('network')
-  ) {
-    return 'net_error'
-  }
-  return 'unknown'
-}
-
 async function navigateToStartupUrl(
-  page: import('playwright').Page,
+  page: import('playwright-core').Page,
   profileId: string,
   startupUrl: string,
 ): Promise<StartupNavigationResult> {
-  const checkedAt = new Date().toISOString()
-  const requestedUrl = startupUrl
-  try {
-    await page.goto(startupUrl, {
-      waitUntil: 'domcontentloaded',
-      timeout: 20_000,
-    })
-    return {
-      requestedUrl,
-      attemptedUrl: startupUrl,
-      finalUrl: page.url(),
-      success: true,
-      reasonCode: 'ok',
-      message: 'Startup page loaded successfully',
-      checkedAt,
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    audit('startup_navigation_retry', {
-      profileId,
-      startupUrl,
-      strategy: 'commit',
-      err: message,
-    })
-    try {
-      await page.goto(startupUrl, {
-        waitUntil: 'commit',
-        timeout: 15_000,
+  return await navigateToStableStartupUrl(page, startupUrl, {
+    onEvent: (event, detail) => {
+      audit(event, {
+        profileId,
+        ...detail,
       })
-      return {
-        requestedUrl,
-        attemptedUrl: startupUrl,
-        finalUrl: page.url(),
-        success: true,
-        reasonCode: 'ok',
-        message: 'Startup page loaded successfully after fallback navigation',
-        checkedAt,
-      }
-    } catch (retryError) {
-      const retryMessage = retryError instanceof Error ? retryError.message : String(retryError)
-      return {
-        requestedUrl,
-        attemptedUrl: startupUrl,
-        finalUrl: page.url(),
-        success: false,
-        reasonCode: classifyStartupNavigationError(retryError),
-        message: retryMessage,
-        checkedAt,
-      }
-    }
-  }
+    },
+  })
 }
 
 function mapLocalStatusToControlPlaneStatus(
@@ -5187,6 +5143,7 @@ type StorageStateUploadReason =
   | 'stop'
   | 'graceful-shutdown'
   | 'context-close'
+  | 'liveness-failure'
   | 'manual-upload'
 
 async function uploadProfileStorageStateToControlPlane(
@@ -5900,6 +5857,26 @@ async function updateProfileStatus(
   await syncProfileStatusToControlPlane(profileId, status)
 }
 
+function convergeRuntimeContextClose(
+  profileId: string,
+  context: BrowserContext,
+): ReturnType<typeof convergeClosedRuntimeContext<BrowserContext>> {
+  return convergeClosedRuntimeContext({
+    profileId,
+    context,
+    getCurrentContext: (candidateProfileId) => runtimeContexts.get(candidateProfileId),
+    removeCurrentContext: (candidateProfileId) => {
+      runtimeContexts.delete(candidateProfileId)
+    },
+    persistStopped: (candidateProfileId) => {
+      requireDatabase().setProfileStatus(candidateProfileId, 'stopped')
+    },
+    markSchedulerStopped: (candidateProfileId) => {
+      scheduler.markStopped(candidateProfileId)
+    },
+  })
+}
+
 function toCandidateProxy(
   proxy: ProxyRecord | null,
   candidateTransport?: ProxyEntryTransport,
@@ -6396,10 +6373,23 @@ function updateEnvironmentSyncMetadata(
   if (!profile) {
     return null
   }
+  const metadata = profile.fingerprintConfig.runtimeMetadata
+  const resolved = resolveEnvironmentSyncMetadataUpdate(
+    {
+      status: metadata.lastEnvironmentSyncStatus,
+      message: metadata.lastEnvironmentSyncMessage,
+      syncedAt: metadata.lastEnvironmentSyncAt,
+    },
+    patch,
+    new Date().toISOString(),
+  )
+  if (!resolved.changed) {
+    return profile
+  }
   return updateRuntimeMetadata(profile, {
-    lastEnvironmentSyncStatus: patch.status,
-    lastEnvironmentSyncMessage: patch.message,
-    lastEnvironmentSyncAt: patch.syncedAt ?? new Date().toISOString(),
+    lastEnvironmentSyncStatus: resolved.next.status,
+    lastEnvironmentSyncMessage: resolved.next.message,
+    lastEnvironmentSyncAt: resolved.next.syncedAt,
   })
 }
 
@@ -6564,26 +6554,224 @@ async function runProxyPreflight(
   return { proxy, check }
 }
 
-function buildInjectedFeatures(profile: ProfileRecord): string[] {
-  const features: string[] = []
-  const advanced = profile.fingerprintConfig.advanced
-  if (advanced.fontMode === 'system' || advanced.fontMode === 'random') features.push('fonts')
-  if (advanced.canvasMode !== 'off') features.push('canvas')
-  if (advanced.webglImageMode !== 'off' || advanced.webglMetadataMode !== 'off') features.push('webgl')
-  if (advanced.audioContextMode !== 'off') features.push('audio')
-  if (advanced.clientRectsMode !== 'off') features.push('clientRects')
-  if (advanced.mediaDevicesMode !== 'off') features.push('mediaDevices')
-  if (advanced.speechVoicesMode !== 'off') features.push('speechVoices')
-  if (advanced.deviceInfoMode === 'custom') features.push('deviceInfo')
-  return features
+function cloakPilotConfigFilePath(): string {
+  return getCloakPilotLocalConfigPath(app.getPath('userData'))
 }
 
-function parseGeolocation(value: string): { latitude: number; longitude: number } | undefined {
-  const [latitudeText, longitudeText] = value.split(',').map((item) => Number(item.trim()))
-  if (!Number.isFinite(latitudeText) || !Number.isFinite(longitudeText)) {
-    return undefined
+function getCloakRolloutGovernor(): CloakRolloutGovernor {
+  if (!cloakRolloutGovernor) {
+    const userDataDir = app.getPath('userData')
+    cloakRolloutGovernor = new CloakRolloutGovernor({
+      controlPath: getCloakRolloutControlPath(userDataDir),
+      healthPath: getCloakRolloutHealthPath(userDataDir),
+      getActiveProfileIds: () => runtimeCloakPilots.keys(),
+    })
   }
-  return { latitude: latitudeText, longitude: longitudeText }
+  return cloakRolloutGovernor
+}
+
+async function refreshCloakPilotLocalConfig(): Promise<LoadedCloakPilotLocalConfig | null> {
+  try {
+    loadedCloakPilotConfig = await readCloakPilotLocalConfig(cloakPilotConfigFilePath())
+    cloakPilotConfigError = ''
+    return loadedCloakPilotConfig
+  } catch (error) {
+    loadedCloakPilotConfig = null
+    cloakPilotConfigError = error instanceof Error ? error.message : String(error)
+    audit('cloak_pilot_config_invalid', { error: cloakPilotConfigError })
+    return null
+  }
+}
+
+function buildLegacyCloakPilotEligibility(
+  profile: ProfileRecord,
+): CloakPilotLocalEligibility | null {
+  const legacy = evaluateCloakPilotEligibility(profile)
+  if (!legacy.enabled) return null
+  const configHash = createHash('sha256')
+    .update(
+      JSON.stringify({
+        source: 'legacy-environment-gate',
+        profileId: profile.id,
+        allowlistedProfileIds: legacy.allowlistedProfileIds,
+      }),
+    )
+    .digest('hex')
+  return {
+    enabled: true,
+    reason: 'enabled',
+    profileId: profile.id,
+    enabledProfileIds: legacy.allowlistedProfileIds,
+    configHash,
+    configUpdatedAt: '',
+    cacheDir:
+      String(process.env.DUOKAI_CLOAK_PILOT_CACHE_DIR || '').trim() ||
+      getDefaultCloakPilotCacheDir(),
+    browserVersion: CLOAK_PILOT_BROWSER_VERSION,
+    binarySha256: CLOAK_PILOT_BINARY_SHA256,
+  }
+}
+
+async function resolveCloakPilotLocalEligibility(
+  profile: ProfileRecord,
+): Promise<CloakPilotLocalEligibility> {
+  const loaded = await refreshCloakPilotLocalConfig()
+  if (loaded) {
+    const local = evaluateCloakPilotLocalEligibility(profile.id, loaded)
+    if (local.enabled) return local
+    const legacy = buildLegacyCloakPilotEligibility(profile)
+    return legacy ?? local
+  }
+  const legacy = buildLegacyCloakPilotEligibility(profile)
+  if (legacy) return legacy
+  return {
+    enabled: false,
+    reason: 'profile_not_enabled',
+    profileId: profile.id,
+    enabledProfileIds: [],
+    configHash: createHash('sha256').update('invalid-cloak-pilot-config').digest('hex'),
+    configUpdatedAt: '',
+    cacheDir: getDefaultCloakPilotCacheDir(),
+    browserVersion: CLOAK_PILOT_BROWSER_VERSION,
+    binarySha256: CLOAK_PILOT_BINARY_SHA256,
+  }
+}
+
+function baseCloakPilotStatus(
+  profile: ProfileRecord,
+  eligibility?: CloakPilotLocalEligibility,
+): CloakPilotProfileStatus {
+  const localEligibility =
+    eligibility ??
+    (loadedCloakPilotConfig
+      ? evaluateCloakPilotLocalEligibility(profile.id, loadedCloakPilotConfig)
+      : null)
+  const enabled = Boolean(localEligibility?.enabled)
+  const current = runtimeCloakPilotStatuses.get(profile.id)
+  if (current && current.enabled === enabled) return current
+  return {
+    profileId: profile.id,
+    enabled,
+    state: cloakPilotConfigError ? 'invalid' : enabled ? 'unverified' : 'disabled',
+    reason: cloakPilotConfigError || localEligibility?.reason || 'config_not_loaded',
+    targetBrowserVersion: CLOAK_PILOT_BROWSER_VERSION,
+    targetBinarySha256: CLOAK_PILOT_BINARY_SHA256,
+    storedBrowserVersion: String(profile.fingerprintConfig.advanced.browserVersion || ''),
+    effectiveBrowserVersion: enabled ? CLOAK_PILOT_BROWSER_VERSION : '',
+    snapshotId: '',
+    lastTransitionAt: '',
+    lastError: cloakPilotConfigError,
+  }
+}
+
+function updateCloakPilotStatus(
+  profile: ProfileRecord,
+  patch: Partial<CloakPilotProfileStatus>,
+  eligibility?: CloakPilotLocalEligibility,
+): CloakPilotProfileStatus {
+  const next = {
+    ...baseCloakPilotStatus(profile, eligibility),
+    ...patch,
+    profileId: profile.id,
+    lastTransitionAt: patch.lastTransitionAt ?? new Date().toISOString(),
+  }
+  runtimeCloakPilotStatuses.set(profile.id, next)
+  return next
+}
+
+async function handleCloakPostTrustGateOutcome(
+  profileId: string,
+  gate: CloakPostTrustRolloutGate,
+  outcome: CloakPostTrustGateOutcome,
+): Promise<void> {
+  if (runtimeCloakPostTrustGates.get(profileId) !== gate) return
+  runtimeCloakPostTrustGates.delete(profileId)
+  audit(
+    outcome.recorded ? 'cloak_rollout_outcome_recorded' : 'cloak_rollout_outcome_skipped',
+    {
+      profileId,
+      success: outcome.success,
+      reason: outcome.reason,
+      recorded: outcome.recorded,
+      rolloutId: outcome.rolloutId,
+      batchId: outcome.batchId,
+      postTrustGate: true,
+      completedAt: outcome.completedAt,
+      durationMs: outcome.evidence?.durationMs ?? null,
+      sampleCount: outcome.evidence?.sampleCount ?? 0,
+      error: outcome.error,
+    },
+  )
+  audit(outcome.success ? 'cloak_post_trust_liveness_passed' : 'cloak_post_trust_liveness_failed', {
+    profileId,
+    rolloutId: outcome.rolloutId,
+    batchId: outcome.batchId,
+    reason: outcome.reason,
+    recorded: outcome.recorded,
+    completedAt: outcome.completedAt,
+    durationMs: outcome.evidence?.durationMs ?? null,
+    sampleCount: outcome.evidence?.sampleCount ?? 0,
+    error: outcome.error,
+  })
+
+  if (outcome.success) return
+  const currentProfile = requireDatabase().getProfileById(profileId)
+  if (currentProfile) {
+    updateCloakPilotStatus(currentProfile, {
+      enabled: true,
+      state: 'failed',
+      reason: 'post_trust_liveness_failed',
+      effectiveBrowserVersion: CLOAK_PILOT_BROWSER_VERSION,
+      lastError: outcome.error || outcome.reason,
+    })
+  }
+  if (runtimeContexts.has(profileId) && !runtimeShutdownFinalizing.has(profileId)) {
+    await finalizeRuntimeShutdown(profileId, 'liveness-failure')
+  }
+}
+
+function startCloakPostTrustGate(
+  profileId: string,
+  gate: CloakPostTrustRolloutGate,
+): void {
+  runtimeCloakPostTrustGates.set(profileId, gate)
+  audit('cloak_post_trust_liveness_started', {
+    profileId,
+    rolloutId: gate.rolloutId,
+    batchId: gate.batchId,
+    minimumDurationMs: 60_000,
+  })
+  void gate
+    .start()
+    .then(async (outcome) => {
+      await handleCloakPostTrustGateOutcome(profileId, gate, outcome)
+    })
+    .catch((error) => {
+      runtimeCloakPostTrustGates.delete(profileId)
+      audit('cloak_post_trust_liveness_handler_failed', {
+        profileId,
+        err: error instanceof Error ? error.message : String(error),
+      })
+      if (runtimeContexts.has(profileId) && !runtimeShutdownFinalizing.has(profileId)) {
+        void finalizeRuntimeShutdown(profileId, 'liveness-failure').catch((shutdownError) => {
+          audit('cloak_post_trust_handler_shutdown_failed', {
+            profileId,
+            err: shutdownError instanceof Error ? shutdownError.message : String(shutdownError),
+          })
+        })
+      }
+    })
+}
+
+async function failPendingCloakPostTrustGate(
+  profileId: string,
+  reason: string,
+  error?: unknown,
+): Promise<void> {
+  const gate = runtimeCloakPostTrustGates.get(profileId)
+  if (!gate) return
+  const outcome = await gate.fail(reason, error)
+  await handleCloakPostTrustGateOutcome(profileId, gate, outcome)
 }
 
 async function launchRuntimeNow(profileId: string): Promise<void> {
@@ -6595,7 +6783,9 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
   let profile = storedProfile
   let runtimeLockHeld = false
   let workspaceLaunch: ReturnType<typeof resolveWorkspaceLaunchConfig> | null = null
-  let suppressContextCloseSideEffects = false
+  let activeCloakPilotEligibility: CloakPilotLocalEligibility | null = null
+  let cloakRolloutLease: CloakRolloutAdmissionLease | null = null
+  let cloakRolloutAttemptStarted = false
 
   if (runtimeContexts.has(profileId)) {
     return
@@ -6660,6 +6850,79 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     }
     const proxy = resolveProfileProxy(profile, database)
     const validation = validateProfileReadiness(profile, proxy, undefined, undefined, getLifecyclePolicyContext())
+    const cloakPilotEligibility = await resolveCloakPilotLocalEligibility(profile)
+    activeCloakPilotEligibility = cloakPilotEligibility
+    const cloakPilotEnabled = cloakPilotEligibility.enabled
+    if (cloakPilotEnabled) {
+      cloakRolloutLease = await getCloakRolloutGovernor().requestAdmission(profileId)
+      const rolloutDecision = cloakRolloutLease.decision
+      audit('cloak_rollout_decision', {
+        profileId,
+        admitted: rolloutDecision.admitted,
+        wouldBlock: rolloutDecision.wouldBlock,
+        enforced: rolloutDecision.enforced,
+        reason: rolloutDecision.reason,
+        mode: rolloutDecision.mode,
+        rolloutId: rolloutDecision.rolloutId,
+        batchId: rolloutDecision.batchId,
+        controlHash: rolloutDecision.controlHash,
+        activeBatchSessions: rolloutDecision.activeBatchSessions,
+        maxConcurrentSessions: rolloutDecision.maxConcurrentSessions,
+        health: rolloutDecision.health,
+      })
+      if (!rolloutDecision.admitted) {
+        cloakRolloutLease.release()
+        cloakRolloutLease = null
+        updateCloakPilotStatus(
+          profile,
+          {
+            enabled: true,
+            state: 'failed',
+            reason: `rollout_${rolloutDecision.reason}`,
+            effectiveBrowserVersion: CLOAK_PILOT_BROWSER_VERSION,
+            lastError: `Cloak Pilot rollout gate blocked launch: ${rolloutDecision.reason}.`,
+          },
+          cloakPilotEligibility,
+        )
+        throw new Error(`Cloak Pilot rollout gate blocked launch: ${rolloutDecision.reason}.`)
+      }
+    }
+    updateCloakPilotStatus(
+      profile,
+      cloakPilotEnabled
+        ? {
+            enabled: true,
+            state: 'verifying',
+            reason: 'launch_requested',
+            effectiveBrowserVersion: CLOAK_PILOT_BROWSER_VERSION,
+            snapshotId: '',
+            lastError: '',
+          }
+        : {},
+      cloakPilotEligibility,
+    )
+    audit('cloak_pilot_eligibility', {
+      profileId,
+      enabled: cloakPilotEnabled,
+      reason: cloakPilotEligibility.reason,
+      configHash: cloakPilotEligibility.configHash,
+      configUpdatedAt: cloakPilotEligibility.configUpdatedAt,
+      source: loadedCloakPilotConfig?.config.enabledProfileIds.includes(profileId)
+        ? 'local-config'
+        : 'environment-gate',
+    })
+    if (!cloakPilotEnabled) {
+      const blockMessage =
+        `CloakBrowser single-engine launch blocked: ${cloakPilotEligibility.reason}. ` +
+        'Enable this profile for CloakBrowser and pass the rollout gate before launching.'
+      audit('cloak_single_engine_launch_blocked', {
+        profileId,
+        reason: cloakPilotEligibility.reason,
+        configHash: cloakPilotEligibility.configHash,
+        fallbackEngine: 'forbidden',
+      })
+      throw new Error(blockMessage)
+    }
     const configFingerprintHash = buildConfigFingerprintHash(profile)
     const proxyFingerprintHash = buildProxyFingerprintHash(profile, proxy)
     const existingSnapshot = profile.fingerprintConfig.runtimeMetadata.trustedLaunchSnapshot
@@ -6692,7 +6955,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     let effectiveProxyTransport = toEntryTransport(proxy)
     let usedTrustedSnapshot = false
 
-    if (existingSnapshot && !trustedSnapshotDecision.usable) {
+    if (!cloakPilotEnabled && existingSnapshot && !trustedSnapshotDecision.usable) {
     audit('trusted_snapshot_rejected', {
       profileId,
       status: trustedSnapshotDecision.status,
@@ -6719,7 +6982,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     void syncWorkspaceSummaryToControlPlane(profile).catch(() => {})
     }
 
-    if (trustedSnapshotDecision.usable) {
+    if (!cloakPilotEnabled && trustedSnapshotDecision.usable) {
     usedTrustedSnapshot = true
     audit('quick_check_start', { profileId })
     profile = updateRuntimeMetadata(profile, {
@@ -6843,7 +7106,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
 
     const finalConfigFingerprintHash = buildConfigFingerprintHash(profile)
     const finalProxyFingerprintHash = buildProxyFingerprintHash(profile, resolvedProxy)
-    if (!usedTrustedSnapshot) {
+    if (!cloakPilotEnabled && !usedTrustedSnapshot) {
     const refreshedSnapshot = buildTrustedLaunchSnapshot(
       profile,
       check,
@@ -6893,227 +7156,668 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     reason: runtimeHost.reason,
     })
 
-    const executablePath = resolveChromiumExecutable()
-
-  const launchOptions: Parameters<typeof chromium.launchPersistentContext>[1] = {
-    headless: false,
-    executablePath,
-    viewport: workspaceLaunch.viewport,
-    locale: workspaceLaunch.locale,
-    timezoneId: workspaceLaunch.timezoneId || DEFAULT_TIMEZONE_FALLBACK,
-    userAgent: fingerprint.userAgent,
-    ignoreHTTPSErrors: true,
-    geolocation: parseGeolocation(fingerprint.advanced.geolocation),
-    permissions:
-      fingerprint.advanced.geolocationPermission === 'allow' && parseGeolocation(fingerprint.advanced.geolocation)
-        ? ['geolocation']
-        : [],
-    args: workspaceLaunch.launchArgs,
-    acceptDownloads: true,
-    downloadsPath: workspaceLaunch.downloadsDir,
-  }
-
-  const launchProxy = await resolveLaunchProxy(resolvedProxy, {
-    egressPath:
-      check.egressPathType === 'direct'
-        ? undefined
-        : listEgressPathCandidates(getSettings()).find((item) => item.type === check.egressPathType),
-  })
-  if (resolvedProxy) {
-    const bypassArg = `--proxy-bypass-list=${GOOGLE_PROXY_BYPASS_LIST}`
-    if (!launchOptions.args?.some((arg) => arg.startsWith('--proxy-bypass-list='))) {
-      launchOptions.args = [...(launchOptions.args ?? []), bypassArg]
-    }
-    launchOptions.proxy = launchProxy.config ?? undefined
-  }
-  launchOptions.args = applyProxyCompatibilityArgs(launchOptions.args ?? [], resolvedProxy, {
-    bridgeActive: launchProxy.bridgeActive,
-  })
-  launchOptions.env = buildChromiumLaunchEnv()
-
-    const diagnostics = buildNetworkDiagnosticsSummary(runtimeHost, check)
-    rememberRuntimeNetworkDiagnostics({
-      level: diagnostics.level,
-      message: diagnostics.messages[0] || check.message || '',
-      checkedAt: check.checkedAt,
-      egressIp: check.ip,
-      country: check.country || check.region,
-      timezone: check.timezone,
-    })
-    audit('runtime_network_diagnostics', {
-      profileId,
-      level: diagnostics.level,
-      messages: diagnostics.messages,
-      message: diagnostics.messages[0] || check.message || '',
-      egressPathType: check.egressPathType,
-      checkedAt: check.checkedAt,
-      egressIp: check.ip,
-      country: check.country,
-      region: check.region,
-      timezone: check.timezone,
-    })
-
-    // Launch reads userDataDir and runtime config from workspace only. Legacy fingerprint fields are mirrors.
-    const context = await chromium.launchPersistentContext(userDataDir, launchOptions)
-    if (scheduler.isCancelled(profileId)) {
-      await context.close()
-      throw new Error('Launch cancelled')
-    }
-    runtimeContexts.set(profileId, context)
-    markProfileRuntimeLockRunning(profileId)
-    database.touchProfileLastStarted(profileId)
-    const injectedFeatures = buildInjectedFeatures(profile)
-    profile = updateRuntimeMetadata(profile, {
-    launchRetryCount: scheduler.getRetryCounts()[profileId] ?? 0,
-    injectedFeatures,
-    })
-    profile = persistTrustedLaunchSummary(profile, {
-      trustedSnapshotStatus: profile.fingerprintConfig.runtimeMetadata.trustedSnapshotStatus,
-      trustedLaunchVerifiedAt:
-        profile.fingerprintConfig.runtimeMetadata.trustedLaunchSnapshot?.verifiedAt || '',
-    })
-    void syncWorkspaceSummaryToControlPlane(profile).catch(() => {})
-    logEvent(
-    'info',
-    'runtime',
-    `Launched profile "${profile.name}"${resolvedProxy ? ` proxyType=${resolvedProxy.type}; host=${resolvedProxy.host}; port=${resolvedProxy.port}; egressPath=${check.egressPathType}; bridgeActive=${launchProxy.bridgeActive}; detail=${launchProxy.detail || 'none'}; upstream=${buildProxyServer(resolvedProxy)}` : ''}`,
-    profileId,
-    )
-    await context.addInitScript(buildFingerprintInitScript(profile.id, profile.fingerprintConfig))
-    let latestWorkspaceSnapshot: WorkspaceSnapshotRecord | null = null
-    try {
-    const existingSnapshots = await listWorkspaceSnapshotsForProfile(profileId)
-    const localStorageState = await readProfileStorageStateFromDisk(profileId)
-    const currentStorageState = {
-      version: Number(profile.fingerprintConfig.runtimeMetadata.lastStorageStateVersion || 0),
-      stateHash: localStorageState ? hashStorageState(localStorageState) : '',
-      updatedAt: profile.fingerprintConfig.runtimeMetadata.lastStorageStateSyncedAt || '',
-      deviceId: profile.fingerprintConfig.runtimeMetadata.lastStorageStateDeviceId || '',
-      source: getDesktopAuthState().authenticated ? 'desktop' : 'local-disk',
-    }
-    const matchedSnapshot = existingSnapshots.find((snapshot) =>
-      doesWorkspaceSnapshotMatchProfile(snapshot, profile, currentStorageState),
-    )
-    latestWorkspaceSnapshot = matchedSnapshot ?? (await createWorkspaceSnapshotForProfile(profileId))
-    } catch (error) {
-    audit('workspace_snapshot_create_failed', {
-      profileId,
-      err: error instanceof Error ? error.message : String(error),
-    })
-    }
-
-  const persistStateOnLastPageClose = (pageToWatch: import('playwright').Page) => {
-    pageToWatch.on('close', () => {
-      if (context.pages().length > 1) {
-        return
-      }
-      void saveProfileStorageStateToDiskSafely(profileId, context)
-    })
-  }
-
-    context.on('close', () => {
-    clearProfileStorageSyncTimer(profileId)
-    runtimeContexts.delete(profileId)
-    if (suppressContextCloseSideEffects) {
-      scheduler.markStopped(profileId)
-      void releaseProfileRuntimeLock(profileId)
-      return
-    }
-    if (!gracefulShutdownInFlight && !runtimeShutdownFinalizing.has(profileId)) {
-      if (hasPendingProfileConfigChanges(profileId)) {
-        void pushProfileConfigToControlPlane(profileId, 'runtime-context-close').catch(() => {})
-      }
-      const persistedProfile = requireDatabase().getProfileById(profileId)
-      if (persistedProfile?.workspace) {
-        void syncWorkspaceSummaryToControlPlane(persistedProfile).catch(() => {})
-        void createWorkspaceSnapshotForProfile(profileId).catch(() => {})
-      }
-      void uploadProfileStorageStateToControlPlane(profileId, { reason: 'context-close' })
-      void releaseProfileRuntimeLock(profileId)
-      scheduler.markStopped(profileId)
-      void syncProfileStatusToControlPlane(profileId, 'stopped')
-    }
-    logEvent('info', 'runtime', `Closed profile "${profile.name}"`, profileId)
-    })
-
-    const pages = context.pages()
-    const page = pages[0] ?? (await context.newPage())
-    persistStateOnLastPageClose(page)
-    context.on('page', (newPage) => {
-    persistStateOnLastPageClose(newPage)
-    })
-    if (fingerprint.commonSettings.blockImages) {
-    await page.route('**/*', async (route) => {
-      const request = route.request()
-      if (request.resourceType() === 'image') {
-        await route.abort()
-        return
-      }
-      await route.continue()
-    })
-    }
-    const startupUrl = resolveProfileStartupUrl(profile) || settings.defaultHomePage || 'https://example.com'
-    await applyStorageStateToContext(context, await readProfileStorageStateFromDisk(profileId))
-    const startupNavigation = await navigateToStartupUrl(page, profileId, startupUrl)
-    if (profile.environmentPurpose === 'register') {
-      profile = updateRuntimeMetadata(profile, {
-        lastRegisterLaunchAt: new Date().toISOString(),
-      })
-    }
-    recordProfileIpUsage(profile, check, startupNavigation)
-    const latestProfile = database.getProfileById(profileId) ?? profile
-    const latestSnapshot = latestProfile.fingerprintConfig.runtimeMetadata.trustedLaunchSnapshot
-    const nextSnapshot = latestSnapshot
-      ? {
-          ...latestSnapshot,
-          startupNavigationPassed: startupNavigation.success,
-          status: startupNavigation.success ? latestSnapshot.status : 'stale',
-          verificationLevel:
-            latestProfile.fingerprintConfig.runtimeMetadata.lastQuickCheckAt ? 'quick' : latestSnapshot.verificationLevel,
-          verifiedAt: new Date().toISOString(),
+    if (cloakPilotEnabled) {
+      const pilotRuntimeProfile = buildCloakPilotRuntimeProfile(profile, cloakPilotEligibility)
+      const pilotProfile = pilotRuntimeProfile.profile
+      const pilotFingerprint = pilotProfile.fingerprintConfig
+      const pilotStartupUrl =
+        resolveProfileStartupUrl(profile) || settings.defaultHomePage || 'https://example.com'
+      const pilotEgressPath =
+        check.egressPathType === 'direct'
+          ? undefined
+          : listEgressPathCandidates(getSettings()).find(
+              (item) => item.type === check.egressPathType,
+            )
+      let pilotStartupNavigation: StartupNavigationResult | null = null
+      let pilot: CloakProductionPilotResult | null = null
+      try {
+        cloakRolloutAttemptStarted = true
+        pilot = await runCloakProductionPilot({
+        profile: pilotProfile,
+        pilotCompatibility: pilotRuntimeProfile.compatibility,
+        proxy: resolvedProxy,
+        egress: {
+          ok: check.ok,
+          source: check.source,
+          ip: check.ip,
+          country: check.country,
+          region: check.region,
+          city: check.city,
+          timezone: check.timezone,
+          language: check.languageHint,
+          geolocation: check.geolocation,
+          egressPathType: check.egressPathType,
+          checkedAt: check.checkedAt,
+        },
+        egressPath: pilotEgressPath,
+        workspace: {
+          userDataDir,
+          downloadsDir: workspaceLaunch.downloadsDir,
+          viewport: workspaceLaunch.viewport,
+          locale: workspaceLaunch.locale,
+          timezoneId: workspaceLaunch.timezoneId || DEFAULT_TIMEZONE_FALLBACK,
+          launchArgs: pilotFingerprint.commonSettings.hardwareAcceleration
+            ? []
+            : ['--disable-gpu'],
+        },
+        cacheDir: cloakPilotEligibility.cacheDir,
+        expectedBinarySha256: cloakPilotEligibility.binarySha256,
+        desktopAppVersion: app.getVersion(),
+        hostEnvironment: detectDesktopHostEnvironment(),
+        appPath: app.getAppPath(),
+        resourcesPath: process.resourcesPath,
+        temporaryDirectory: os.tmpdir(),
+        signingKeyFilePath: path.join(
+          app.getPath('userData'),
+          'cloak-pilot',
+          'snapshot-signing-key.json',
+        ),
+        signedRecordPath: path.join(
+          userDataDir,
+          '.duokai-cloak-pilot',
+          'trusted-identity.json',
+        ),
+        transactionJournalPath: path.join(
+          userDataDir,
+          '.duokai-cloak-pilot',
+          'production-transaction.json',
+        ),
+        safeStorage,
+        rollbackInterruptedTrustedState: async (journal) => {
+          const current = database.getProfileById(profileId) ?? profile
+          const recoveryMessage =
+            `Recovered interrupted Cloak Pilot transaction ${journal.transactionId} ` +
+            `from stage ${journal.stage}; trusted state requires full re-verification.`
+          profile = persistTrustedLaunchSummary(
+            updateRuntimeMetadata(current, {
+              launchValidationStage: 'idle',
+              lastValidationLevel: 'block',
+              lastValidationMessages: Array.from(
+                new Set([
+                  ...current.fingerprintConfig.runtimeMetadata.lastValidationMessages,
+                  recoveryMessage,
+                ]),
+              ),
+              trustedSnapshotStatus: 'stale',
+              trustedLaunchSnapshot: null,
+            }),
+            {
+              trustedSnapshotStatus: 'stale',
+              trustedLaunchVerifiedAt: '',
+            },
+          )
+          audit('cloak_pilot_interrupted_transaction_recovered', {
+            profileId,
+            transactionId: journal.transactionId,
+            interruptedStage: journal.stage,
+            snapshotPersisted: journal.snapshotPersisted,
+            trustedStatePublished: journal.trustedStatePublished,
+          })
+        },
+        isCancelled: () => scheduler.isCancelled(profileId) || gracefulShutdownInFlight,
+        onTransition: (stage) => {
+          const state =
+            stage === 'trusted'
+              ? 'trusted'
+              : stage === 'rolling-back'
+                ? 'rolling-back'
+                : stage === 'rolled-back' || stage === 'failed'
+                  ? 'failed'
+                  : stage === 'unverified'
+                    ? 'unverified'
+                    : 'verifying'
+          updateCloakPilotStatus(
+            profile,
+            {
+              enabled: true,
+              state,
+              reason: stage,
+              effectiveBrowserVersion: CLOAK_PILOT_BROWSER_VERSION,
+              lastError: state === 'failed' ? `Cloak Pilot transaction ended at ${stage}.` : '',
+            },
+            cloakPilotEligibility,
+          )
+          audit('cloak_pilot_transition', {
+            profileId,
+            stage,
+            compatibilityReceiptHash: pilotRuntimeProfile.compatibility.receiptHash,
+          })
+        },
+        verifyStartup: async ({ context, fingerprintMapping, networkMapping }) => {
+          const pilotContext = context as unknown as BrowserContext
+          const pilotPage = (context.pages()[0] ?? (await context.newPage())) as unknown as Page
+          if (fingerprint.commonSettings.blockImages) {
+            await pilotPage.route('**/*', async (route) => {
+              if (route.request().resourceType() === 'image') {
+                await route.abort()
+                return
+              }
+              await route.continue()
+            })
+          }
+          await applyStorageStateToContext(
+            pilotContext,
+            await readProfileStorageStateFromDisk(profileId),
+          )
+          pilotStartupNavigation = await navigateToStartupUrl(
+            pilotPage,
+            profileId,
+            pilotStartupUrl,
+          )
+          const observed = await evaluateWithStableNavigation(
+            pilotPage,
+            () => pilotPage.evaluate(async () => {
+            const browserGlobal = globalThis as unknown as {
+              navigator: {
+                language: string
+                languages: readonly string[]
+                userAgent: string
+                platform: string
+                userAgentData?: {
+                  getHighEntropyValues(keys: string[]): Promise<Record<string, unknown>>
+                }
+                geolocation?: {
+                  getCurrentPosition(
+                    success: (position: {
+                      coords: { latitude: number; longitude: number }
+                    }) => void,
+                    failure: () => void,
+                    options: { timeout: number },
+                  ): void
+                }
+              }
+              RTCPeerConnection?: new (configuration: unknown) => {
+                close(): void
+                createDataChannel(label: string): void
+                createOffer(): Promise<unknown>
+                setLocalDescription(offer: unknown): Promise<void>
+                onicecandidate:
+                  | ((event: { candidate: { candidate: string } | null }) => void)
+                  | null
+              }
+            }
+            const highEntropyClientHints = browserGlobal.navigator.userAgentData
+              ? await browserGlobal.navigator.userAgentData.getHighEntropyValues([
+                  'architecture',
+                  'bitness',
+                  'platform',
+                  'platformVersion',
+                  'wow64',
+                ])
+              : null
+            const clientHints = highEntropyClientHints
+              ? {
+                  userAgent: browserGlobal.navigator.userAgent,
+                  navigatorPlatform: browserGlobal.navigator.platform,
+                  architecture: String(highEntropyClientHints.architecture || ''),
+                  bitness: String(highEntropyClientHints.bitness || ''),
+                  platform: String(highEntropyClientHints.platform || ''),
+                  platformVersion: String(highEntropyClientHints.platformVersion || ''),
+                  wow64: Boolean(highEntropyClientHints.wow64),
+                }
+              : null
+            const geolocation = await new Promise<{
+              latitude: number
+              longitude: number
+            } | null>((resolve) => {
+              if (!browserGlobal.navigator.geolocation) {
+                resolve(null)
+                return
+              }
+              const timer = setTimeout(() => resolve(null), 3_000)
+              browserGlobal.navigator.geolocation.getCurrentPosition(
+                (position) => {
+                  clearTimeout(timer)
+                  resolve({
+                    latitude: position.coords.latitude,
+                    longitude: position.coords.longitude,
+                  })
+                },
+                () => {
+                  clearTimeout(timer)
+                  resolve(null)
+                },
+                { timeout: 2_500 },
+              )
+            })
+            const candidates = await new Promise<string[]>((resolve) => {
+              const PeerConnection = browserGlobal.RTCPeerConnection
+              if (!PeerConnection) {
+                resolve([])
+                return
+              }
+              const values: string[] = []
+              const peer = new PeerConnection({ iceServers: [] })
+              const finish = () => {
+                peer.close()
+                resolve(values)
+              }
+              const timer = setTimeout(finish, 2_500)
+              peer.createDataChannel('duokai-cloak-pilot')
+              peer.onicecandidate = (event) => {
+                if (event.candidate?.candidate) {
+                  values.push(event.candidate.candidate)
+                } else if (!event.candidate) {
+                  clearTimeout(timer)
+                  finish()
+                }
+              }
+              void peer
+                .createOffer()
+                .then((offer) => peer.setLocalDescription(offer))
+                .catch(() => {
+                  clearTimeout(timer)
+                  finish()
+                })
+            })
+            return {
+              locale: browserGlobal.navigator.language,
+              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+              clientHints,
+              geolocation,
+              candidates,
+            }
+          }),
+            {
+              onEvent: (event, detail) => audit(event, { profileId, ...detail }),
+            },
+          )
+          const clientHintsCoherence = evaluateCloakClientHintsCoherence(
+            fingerprintMapping.clientHintsPolicy,
+            observed.clientHints,
+          )
+          if (!clientHintsCoherence.passed) {
+            audit('cloak_client_hints_coherence_failed', {
+              profileId,
+              mismatches: clientHintsCoherence.mismatches,
+              observed: observed.clientHints,
+            })
+            throw new Error(
+              `Cloak UA Client Hints coherence failed: ${clientHintsCoherence.mismatches.join('; ')}`,
+            )
+          }
+          const geolocationPassed = fingerprintMapping.geolocation
+            ? Boolean(
+                observed.geolocation &&
+                  Math.abs(
+                    observed.geolocation.latitude - fingerprintMapping.geolocation.latitude,
+                  ) < 0.1 &&
+                  Math.abs(
+                    observed.geolocation.longitude - fingerprintMapping.geolocation.longitude,
+                  ) < 0.1,
+              )
+            : true
+          const privateAddressPattern =
+            /(?:^|\s)(?:10\.|127\.|169\.254\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|fc[0-9a-f]{2}:|fd[0-9a-f]{2}:|fe80:)/i
+          const webRtcHostLeakAbsent = !observed.candidates.some((candidate) =>
+            privateAddressPattern.test(candidate),
+          )
+          const verifiedWebRtcIpObserved = Boolean(
+            networkMapping.verifiedWebRtcIp &&
+              observed.candidates.some((candidate) =>
+                candidate.includes(networkMapping.verifiedWebRtcIp),
+              ),
+          )
+          const webRtcCandidateObservation =
+            networkMapping.webrtcMode === 'disabled'
+              ? ('disabled' as const)
+              : verifiedWebRtcIpObserved
+                ? ('verified-ip-observed' as const)
+                : observed.candidates.length === 0
+                  ? ('no-candidates' as const)
+                  : !networkMapping.proxyRequired
+                    ? ('not-required' as const)
+                    : ('no-candidates' as const)
+          return {
+            startupNavigationPassed: Boolean(pilotStartupNavigation?.success),
+            persistentContextPassed: true,
+            localeTimezonePassed:
+              observed.locale === fingerprintMapping.locale &&
+              observed.timezone === fingerprintMapping.timezone,
+            geolocationPassed,
+            webRtcHostLeakAbsent:
+              webRtcHostLeakAbsent &&
+              (!networkMapping.proxyRequired ||
+                verifiedWebRtcIpObserved ||
+                observed.candidates.length === 0),
+            verifiedWebRtcIpObserved,
+            webRtcCandidateObservation,
+            detail: {
+              startupNavigation: pilotStartupNavigation,
+              observed,
+            },
+          }
+        },
+        publishTrustedState: async ({ record, startup }) => {
+          if (!pilotStartupNavigation?.success) {
+            throw new Error('Cloak Pilot cannot publish trust before startup navigation passes.')
+          }
+          const profileBeforePublication = database.getProfileById(profileId) ?? profile
+          profile = persistProfile({
+            ...updateRuntimeMetadata(database.getProfileById(profileId) ?? profile, {
+              launchValidationStage: 'idle',
+              lastValidationLevel: 'pass',
+              lastValidationMessages: [
+                `Cloak Pilot trusted record ${record.snapshot.snapshotId} signed at ${record.signature.signedAt}.`,
+              ],
+              injectedFeatures: [],
+            }),
+            startupNavigation: pilotStartupNavigation,
+          })
+          audit('cloak_pilot_trusted', {
+            profileId,
+            snapshotId: record.snapshot.snapshotId,
+            signedAt: record.signature.signedAt,
+            startupNavigationPassed: startup.startupNavigationPassed,
+            binarySha256: record.snapshot.runtimeIdentity.binarySha256,
+          })
+          return {
+            rollback: async () => {
+              profile = persistProfile(profileBeforePublication)
+            },
+          }
+        },
+        })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (cloakRolloutAttemptStarted && cloakRolloutLease) {
+          try {
+            const recorded = await cloakRolloutLease.recordFailure(message)
+            audit(
+              recorded ? 'cloak_rollout_outcome_recorded' : 'cloak_rollout_outcome_skipped',
+              {
+                profileId,
+                success: false,
+                reason: message,
+                recorded,
+                rolloutId: cloakRolloutLease.decision.rolloutId,
+                batchId: cloakRolloutLease.decision.batchId,
+              },
+            )
+          } catch (rolloutError) {
+            audit('cloak_rollout_outcome_write_failed', {
+              profileId,
+              originalError: message,
+              rolloutError:
+                rolloutError instanceof Error ? rolloutError.message : String(rolloutError),
+            })
+          }
+          cloakRolloutLease = null
         }
-      : latestSnapshot
-    const persisted = persistProfile({
-      ...updateRuntimeMetadata(latestProfile, {
-        launchValidationStage: 'idle',
-        trustedSnapshotStatus:
-          nextSnapshot?.status || latestProfile.fingerprintConfig.runtimeMetadata.trustedSnapshotStatus,
-        trustedLaunchSnapshot: nextSnapshot,
-      }),
-      startupNavigation,
-    })
-    if (!startupNavigation.success) {
+        const invalidEvidence = /signature|signed.*snapshot|trusted.*snapshot|compatibility receipt|rollout (?:control|health)/i.test(
+          message,
+        )
+        updateCloakPilotStatus(
+          profile,
+          {
+            enabled: true,
+            state: invalidEvidence ? 'invalid' : 'failed',
+            reason: invalidEvidence ? 'signed_evidence_invalid' : 'launch_failed',
+            effectiveBrowserVersion: CLOAK_PILOT_BROWSER_VERSION,
+            lastError: message,
+          },
+          cloakPilotEligibility,
+        )
+        audit('cloak_pilot_launch_rejected', {
+          profileId,
+          state: invalidEvidence ? 'invalid' : 'failed',
+          error: message,
+        })
+        throw error
+      }
+      if (!pilot) {
+        cloakRolloutLease?.release()
+        cloakRolloutLease = null
+        throw new Error('Cloak Pilot completed without a production session.')
+      }
+      const context = pilot.context as unknown as BrowserContext
+      if (scheduler.isCancelled(profileId) || gracefulShutdownInFlight) {
+        cloakRolloutLease?.release()
+        cloakRolloutLease = null
+        await pilot.session.close().catch(() => undefined)
+        throw new Error('Launch cancelled')
+      }
+      runtimeCloakPilots.set(profileId, pilot)
+      runtimeContexts.set(profileId, context)
+      const lifecycleDiagnostics = new CloakBrowserLifecycleDiagnostics({
+        profileId,
+        launchedAt: pilot.launch.launchedAt,
+      })
+      lifecycleDiagnostics.markTrusted()
+      runtimeCloakLifecycleDiagnostics.set(profileId, lifecycleDiagnostics)
+      const browser = context.browser()
+      browser?.on('disconnected', () => {
+        lifecycleDiagnostics.markBrowserDisconnected()
+        audit('cloak_browser_disconnected', {
+          profileId,
+          engine: 'cloakbrowser',
+          browserConnected: browser.isConnected(),
+          postTrustGatePending: Boolean(runtimeCloakPostTrustGates.get(profileId)?.pending),
+          processExitCodeAvailable: false,
+          processSignalAvailable: false,
+        })
+        void failPendingCloakPostTrustGate(
+          profileId,
+          'post_trust_browser_disconnected',
+        ).catch((error) => {
+          audit('cloak_post_trust_disconnect_failure_record_failed', {
+            profileId,
+            err: error instanceof Error ? error.message : String(error),
+          })
+        })
+      })
+      if (cloakRolloutLease) {
+        const postTrustGate = new CloakPostTrustRolloutGate({
+          profileId,
+          context: pilot.context,
+          lease: cloakRolloutLease,
+        })
+        cloakRolloutLease = null
+        cloakRolloutAttemptStarted = false
+        startCloakPostTrustGate(profileId, postTrustGate)
+      }
+      updateCloakPilotStatus(
+        profile,
+        {
+          enabled: true,
+          state: 'trusted',
+          reason: 'trusted',
+          effectiveBrowserVersion: pilot.preflight.browserVersion,
+          snapshotId: pilot.snapshot.snapshotId,
+          lastError: '',
+        },
+        cloakPilotEligibility,
+      )
+      markProfileRuntimeLockRunning(profileId)
+      database.touchProfileLastStarted(profileId)
+      audit('cloak_pilot_liveness_verified', {
+        profileId,
+        durationMs: pilot.liveness.durationMs,
+        sampleCount: pilot.liveness.sampleCount,
+        startedAt: pilot.liveness.startedAt,
+        completedAt: pilot.liveness.completedAt,
+      })
+      const diagnostics = buildNetworkDiagnosticsSummary(runtimeHost, check)
+      rememberRuntimeNetworkDiagnostics({
+        level: diagnostics.level,
+        message: diagnostics.messages[0] || check.message || '',
+        checkedAt: check.checkedAt,
+        egressIp: check.ip,
+        country: check.country || check.region,
+        timezone: check.timezone,
+      })
+      audit('runtime_network_diagnostics', {
+        profileId,
+        level: diagnostics.level,
+        messages: diagnostics.messages,
+        egressPathType: check.egressPathType,
+        checkedAt: check.checkedAt,
+        egressIp: check.ip,
+        country: check.country,
+        region: check.region,
+        timezone: check.timezone,
+        engine: 'cloakbrowser',
+      })
+      const persistStateOnLastPageClose = (pageToWatch: Page) => {
+        pageToWatch.on('close', () => {
+          let remainingPages = 0
+          try {
+            remainingPages = context.pages().length
+          } catch {
+            remainingPages = 0
+          }
+          lifecycleDiagnostics.markPageClosed(remainingPages)
+          if (remainingPages === 0) {
+            audit('cloak_last_page_closed', {
+              profileId,
+              postTrustGatePending: Boolean(runtimeCloakPostTrustGates.get(profileId)?.pending),
+            })
+          }
+          if (remainingPages > 1) return
+          void saveProfileStorageStateToDiskSafely(profileId, context)
+        })
+      }
+      for (const page of context.pages()) persistStateOnLastPageClose(page)
+      context.on('page', persistStateOnLastPageClose)
+      context.on('close', () => {
+        void (async () => {
+          let remainingPages: number | null = null
+          let browserConnected: boolean | null = null
+          try {
+            remainingPages = context.pages().length
+          } catch {
+            remainingPages = null
+          }
+          try {
+            browserConnected = browser?.isConnected() ?? null
+          } catch {
+            browserConnected = null
+          }
+          const diagnosis = lifecycleDiagnostics.diagnoseContextClose({
+            browserConnected,
+            remainingPages,
+          })
+          audit('cloak_context_close_diagnosed', {
+            ...diagnosis,
+            engine: 'cloakbrowser',
+            postTrustGatePending: Boolean(runtimeCloakPostTrustGates.get(profileId)?.pending),
+          })
+          const convergence = convergeRuntimeContextClose(profileId, context)
+          if (!convergence.converged) {
+            audit('runtime_context_close_ignored_stale', {
+              profileId,
+              engine: 'cloakbrowser',
+              closeClassification: diagnosis.classification,
+            })
+            return
+          }
+          runtimeCloakLifecycleDiagnostics.delete(profileId)
+          await failPendingCloakPostTrustGate(
+            profileId,
+            `post_trust_context_closed:${diagnosis.classification}`,
+          )
+          clearProfileStorageSyncTimer(profileId)
+          const activePilot = runtimeCloakPilots.get(profileId)
+          runtimeCloakPilots.delete(profileId)
+          void activePilot?.session.close().catch((error) => {
+            audit('cloak_session_close_after_context_failed', {
+              profileId,
+              err: error instanceof Error ? error.message : String(error),
+            })
+          })
+          if (!gracefulShutdownInFlight && !runtimeShutdownFinalizing.has(profileId)) {
+            void uploadProfileStorageStateToControlPlane(profileId, { reason: 'context-close' })
+          }
+          void releaseProfileRuntimeLock(profileId).catch((error) => {
+            audit('runtime_lock_release_after_context_close_failed', {
+              profileId,
+              engine: 'cloakbrowser',
+              err: error instanceof Error ? error.message : String(error),
+            })
+          })
+          logEvent('info', 'runtime', `Closed Cloak Pilot profile "${profile.name}"`, profileId)
+        })().catch((error) => {
+          audit('cloak_context_close_handler_failed', {
+            profileId,
+            err: error instanceof Error ? error.message : String(error),
+          })
+        })
+      })
+      if (profile.environmentPurpose === 'register') {
+        profile = updateRuntimeMetadata(profile, {
+          lastRegisterLaunchAt: new Date().toISOString(),
+        })
+      }
+      if (pilotStartupNavigation) {
+        recordProfileIpUsage(profile, check, pilotStartupNavigation)
+      }
+      void syncProfileLaunchTrustToControlPlane(profile)
+      void syncWorkspaceSummaryToControlPlane(profile).catch(() => {})
       logEvent(
-        'warn',
+        'info',
         'runtime',
-        `Profile launched, but default startup page failed to open: ${startupNavigation.message}`,
+        `Launched Cloak Pilot profile "${profile.name}"; snapshot=${pilot.snapshot.snapshotId}; binarySha256=${pilot.preflight.binarySha256}`,
         profileId,
       )
+      return
     }
-    audit(startupNavigation.success ? 'trusted_launch_confirmed' : 'trusted_launch_navigation_failed', {
-      profileId,
-      startupNavigationPassed: startupNavigation.success,
-      startupNavigationReasonCode: startupNavigation.reasonCode,
-      startupNavigationMessage: startupNavigation.message,
-      verifiedAt: nextSnapshot?.verifiedAt || '',
-      trustedSnapshotStatus: nextSnapshot?.status || latestProfile.fingerprintConfig.runtimeMetadata.trustedSnapshotStatus,
-      startupUrl,
-      finalUrl: startupNavigation.finalUrl,
-    })
-    if (startupNavigation.success && latestWorkspaceSnapshot) {
-      await runNonBlockingSyncSideEffect(profileId, 'workspaceSnapshot', async () => {
-        await markWorkspaceSnapshotAsLastKnownGood(
-          profileId,
-          latestWorkspaceSnapshot.snapshotId,
-          new Date().toISOString(),
-        )
-      })
-    }
-    void syncProfileLaunchTrustToControlPlane(persisted)
+
+
   } catch (error) {
+    if (activeCloakPilotEligibility?.enabled) {
+      const message = error instanceof Error ? error.message : String(error)
+      const invalidEvidence = /signature|signed.*snapshot|trusted.*snapshot|compatibility receipt|rollout (?:control|health)/i.test(
+        message,
+      )
+      const currentStatus = runtimeCloakPilotStatuses.get(profileId)
+      const nextState = invalidEvidence ? 'invalid' : 'failed'
+      const rolloutBlocked = /rollout gate blocked launch/i.test(message)
+      const nextReason = invalidEvidence
+        ? 'signed_evidence_invalid'
+        : rolloutBlocked
+          ? currentStatus?.reason || 'rollout_gate_blocked'
+          : 'launch_failed'
+      if (
+        currentStatus?.state !== nextState ||
+        currentStatus.reason !== nextReason ||
+        currentStatus.lastError !== message
+      ) {
+        updateCloakPilotStatus(
+          profile,
+          {
+            enabled: true,
+            state: nextState,
+            reason: nextReason,
+            effectiveBrowserVersion: CLOAK_PILOT_BROWSER_VERSION,
+            lastError: message,
+          },
+          activeCloakPilotEligibility,
+        )
+        audit('cloak_pilot_launch_rejected', {
+          profileId,
+          state: nextState,
+          error: message,
+          source: 'outer-launch-guard',
+        })
+      }
+    }
+    cloakRolloutLease?.release()
+    cloakRolloutLease = null
+    runtimeShutdownFinalizing.add(profileId)
+    runtimeCloakLifecycleDiagnostics.get(profileId)?.markCloseIntent('launch-error')
+    await failPendingCloakPostTrustGate(
+      profileId,
+      'post_trust_launch_finalization_failed',
+      error,
+    )
+    const activePilot = runtimeCloakPilots.get(profileId)
+    runtimeCloakPilots.delete(profileId)
+    await activePilot?.session.close().catch(() => undefined)
+    const activeProxyLease = runtimeProxyLeases.get(profileId)
+    runtimeProxyLeases.delete(profileId)
+    await activeProxyLease?.release().catch(() => undefined)
     const activeContext = runtimeContexts.get(profileId)
     if (activeContext) {
-      suppressContextCloseSideEffects = true
       runtimeContexts.delete(profileId)
       try {
         await activeContext.close()
@@ -7121,6 +7825,8 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
         // Ignore best-effort cleanup failures while surfacing the original launch error.
       }
     }
+    runtimeCloakLifecycleDiagnostics.delete(profileId)
+    runtimeShutdownFinalizing.delete(profileId)
     if (runtimeLockHeld && !runtimeContexts.has(profileId)) {
       await releaseProfileRuntimeLock(profileId)
     }
@@ -7133,6 +7839,7 @@ const scheduler = new RuntimeScheduler({
   getMaxActiveProfiles,
   getLaunchRetries: getMaxLaunchRetries,
   getRunningCount: () => runtimeContexts.size,
+  isRunning: (profileId) => runtimeContexts.has(profileId),
   onStart: launchRuntimeNow,
   onStatusChange: updateProfileStatus,
   onError: async (profileId, error) => {
@@ -7364,16 +8071,21 @@ async function updateProfileStartupTarget(
 }
 
 function getRuntimeStatusSnapshot() {
+  const profiles = requireDatabase().listProfiles()
   return {
     runningProfileIds: [...runtimeContexts.keys()],
     queuedProfileIds: scheduler.getQueuedIds(),
     startingProfileIds: scheduler.getStartingIds(),
     launchStages: Object.fromEntries(
-      requireDatabase()
-        .listProfiles()
-        .map((profile) => [profile.id, profile.fingerprintConfig.runtimeMetadata.launchValidationStage]),
+      profiles.map((profile) => [
+        profile.id,
+        profile.fingerprintConfig.runtimeMetadata.launchValidationStage,
+      ]),
     ),
     retryCounts: scheduler.getRetryCounts(),
+    cloakPilotProfiles: Object.fromEntries(
+      profiles.map((profile) => [profile.id, baseCloakPilotStatus(profile)]),
+    ),
   }
 }
 
@@ -7381,7 +8093,10 @@ function getProfilesDirectoryInfoPayload() {
   const info = getProfileDirectoryInfo(app)
   return {
     ...info,
-    chromiumExecutable: resolveChromiumExecutable(),
+    browserEngine: 'cloakbrowser' as const,
+    cloakBrowserVersion: CLOAK_PILOT_BROWSER_VERSION,
+    cloakBrowserCacheDir: getDefaultCloakPilotCacheDir(),
+    fallbackEngine: 'forbidden' as const,
   }
 }
 
@@ -7485,7 +8200,7 @@ async function waitForSmokeRuntimeReady(
 }
 
 async function collectPlatformSmokeProbe(
-  page: import('playwright').Page,
+  page: import('playwright-core').Page,
   scenario: PlatformSmokeScenario,
 ): Promise<PlatformSmokeProbeResult & Record<string, unknown>> {
   return page.evaluate(
@@ -7867,8 +8582,10 @@ async function runDesktopSmokeScenario(): Promise<void> {
     pushSmokeStep(
       result.steps,
       'profiles.getDirectoryInfo',
-      directoryInfo.chromiumExecutable ? 'passed' : 'failed',
-      directoryInfo.chromiumExecutable ? 'Chromium executable resolved' : 'Chromium executable missing',
+      directoryInfo.cloakBrowserVersion ? 'passed' : 'failed',
+      directoryInfo.cloakBrowserVersion
+        ? 'CloakBrowser fixed runtime configured; fallback forbidden'
+        : 'CloakBrowser fixed runtime metadata missing',
       directoryInfo,
     )
     pushSmokeStep(result.steps, 'smoke.scenario', 'passed', `Resolved smoke scenario "${scenario.id}"`, {
@@ -8625,6 +9342,55 @@ async function registerIpcHandlers(): Promise<void> {
     return testProxyById(proxyId)
   })
 
+  ipcMain.handle('cloakPilot.getStatus', async (_event, profileId: string) => {
+    const profile = requireDatabase().getProfileById(String(profileId || '').trim())
+    if (!profile) throw new Error('Profile not found')
+    await refreshCloakPilotLocalConfig()
+    return baseCloakPilotStatus(profile)
+  })
+  ipcMain.handle(
+    'cloakPilot.setProfileEnabled',
+    async (_event, profileIdInput: string, enabledInput: boolean) => {
+      const profileId = String(profileIdInput || '').trim()
+      const profile = requireDatabase().getProfileById(profileId)
+      if (!profile) throw new Error('Profile not found')
+      if (
+        runtimeContexts.has(profileId) ||
+        scheduler.getQueuedIds().includes(profileId) ||
+        scheduler.getStartingIds().includes(profileId)
+      ) {
+        throw new Error('Stop the environment before changing Cloak Pilot eligibility.')
+      }
+      loadedCloakPilotConfig = await setCloakPilotProfileEnabled(
+        cloakPilotConfigFilePath(),
+        profileId,
+        Boolean(enabledInput),
+      )
+      cloakPilotConfigError = ''
+      runtimeCloakPilotStatuses.delete(profileId)
+      const eligibility = evaluateCloakPilotLocalEligibility(profileId, loadedCloakPilotConfig)
+      const status = updateCloakPilotStatus(
+        profile,
+        {
+          enabled: eligibility.enabled,
+          state: eligibility.enabled ? 'unverified' : 'disabled',
+          reason: eligibility.reason,
+          effectiveBrowserVersion: eligibility.enabled ? eligibility.browserVersion : '',
+          snapshotId: '',
+          lastError: '',
+        },
+        eligibility,
+      )
+      audit('cloak_pilot_local_config_updated', {
+        profileId,
+        enabled: status.enabled,
+        configHash: eligibility.configHash,
+        configUpdatedAt: eligibility.configUpdatedAt,
+      })
+      return status
+    },
+  )
+
   ipcMain.handle('runtime.launch', async (_event, profileId: string) => performRuntimeLaunch(profileId))
   ipcMain.handle('runtime.stop', async (_event, profileId: string) => {
     ensureWritable('runtime.stop')
@@ -8875,10 +9641,54 @@ function initAgentService() {
 
 async function bootstrap(): Promise<void> {
   traceStartup('bootstrap_begin')
+  const electronCdpLaunch = configureElectronCdpFromLaunchRequest({
+    userDataDir: app.getPath('userData'),
+    commandLine: app.commandLine,
+    expectedExecutablePath: process.execPath,
+    resourcesPath: process.resourcesPath,
+    isPackaged: app.isPackaged,
+    readAppAsarFile: readOriginalFileSync,
+    processId: process.pid,
+  })
+  activeElectronCdpLaunch = electronCdpLaunch
+  traceStartup('electron_cdp_launch_request_checked', {
+    kind: electronCdpLaunch.kind,
+    requestPath: electronCdpLaunch.requestPath,
+    receiptPath: electronCdpLaunch.kind === 'none' ? '' : electronCdpLaunch.receiptPath,
+  })
+  if (electronCdpLaunch.kind === 'rejected') {
+    const failClosed = await restoreCloakFailClosedAfterElectronCdpFailure(app.getPath('userData'))
+    traceStartup('electron_cdp_launch_request_rejected', {
+      reason: electronCdpLaunch.reason,
+      failClosed,
+    })
+    activeElectronCdpLaunch = null
+    app.exit(72)
+    return
+  }
+
   await app.whenReady()
   traceStartup('app_ready', {
     userData: app.getPath('userData'),
     version: app.getVersion(),
+  })
+  const cloakPackagedDiagnostic = await runCloakPackagedDiagnosticIfRequested({
+    isPackaged: app.isPackaged,
+    appPath: app.getAppPath(),
+    resourcesPath: process.resourcesPath,
+    temporaryDirectory: os.tmpdir(),
+    safeStorage,
+    argv: process.argv,
+  })
+  if (cloakPackagedDiagnostic.handled) {
+    app.exit(cloakPackagedDiagnostic.success ? 0 : 1)
+    return
+  }
+  await refreshCloakPilotLocalConfig()
+  traceStartup('cloak_pilot_config_loaded', {
+    exists: loadedCloakPilotConfig?.exists ?? false,
+    enabledProfileCount: loadedCloakPilotConfig?.config.enabledProfileIds.length ?? 0,
+    error: cloakPilotConfigError,
   })
   db = new DatabaseService(app)
   traceStartup('database_initialized')
@@ -8911,6 +9721,42 @@ async function bootstrap(): Promise<void> {
   traceStartup('create_main_window_begin')
   await createMainWindow()
   traceStartup('create_main_window_succeeded')
+  if (electronCdpLaunch.kind === 'configured') {
+    const readiness = await waitForElectronCdpEndpoint({
+      debuggingAddress: electronCdpLaunch.request.debuggingAddress,
+      debuggingPort: electronCdpLaunch.request.debuggingPort,
+      timeoutMs: electronCdpLaunch.request.readinessTimeoutMs,
+    })
+    if (!readiness.ready) {
+      const reason = `Electron CDP endpoint did not become ready: ${readiness.lastError || 'unknown error'}`
+      const failClosed = await restoreCloakFailClosedAfterElectronCdpFailure(app.getPath('userData'))
+      updateElectronCdpLaunchReceipt(electronCdpLaunch.receiptPath, {
+        status: 'failed',
+        reason,
+        readiness,
+      })
+      traceStartup('electron_cdp_launch_readiness_failed', {
+        reason,
+        readiness,
+        failClosed,
+        pid: process.pid,
+      })
+      activeElectronCdpLaunch = null
+      app.exit(73)
+      return
+    }
+    updateElectronCdpLaunchReceipt(electronCdpLaunch.receiptPath, {
+      status: 'ready',
+      readiness,
+    })
+    traceStartup('electron_cdp_launch_ready', {
+      pid: process.pid,
+      port: electronCdpLaunch.request.debuggingPort,
+      attempts: readiness.attempts,
+      durationMs: readiness.durationMs,
+      browser: readiness.browser,
+    })
+  }
   traceStartup('control_plane_sync_deferred_manual')
   void flushPendingControlPlaneSyncTasks()
   if (supportsAutoUpdate()) {
@@ -8955,6 +9801,7 @@ async function bootstrap(): Promise<void> {
       audit('app_before_quit_end')
     })
   })
+  activeElectronCdpLaunch = null
 }
 
 app.on('window-all-closed', async () => {
@@ -8969,11 +9816,35 @@ app.on('window-all-closed', async () => {
   }
 })
 
-void bootstrap().catch((error) => {
+void bootstrap().catch(async (error) => {
   console.error('bootstrap failed', error)
+  const message = error instanceof Error ? error.message : String(error)
   traceStartup('bootstrap_failed', {
-    message: error instanceof Error ? error.message : String(error),
+    message,
     stack: error instanceof Error ? error.stack || '' : '',
   })
+  const electronCdpLaunch = activeElectronCdpLaunch
+  activeElectronCdpLaunch = null
+  if (electronCdpLaunch?.kind === 'configured') {
+    try {
+      const failClosed = await restoreCloakFailClosedAfterElectronCdpFailure(app.getPath('userData'))
+      updateElectronCdpLaunchReceipt(electronCdpLaunch.receiptPath, {
+        status: 'failed',
+        reason: `Electron bootstrap failed after CDP configuration: ${message}`,
+      })
+      traceStartup('electron_cdp_launch_bootstrap_failed_closed', {
+        message,
+        failClosed,
+        pid: process.pid,
+      })
+    } catch (cleanupError) {
+      traceStartup('electron_cdp_launch_bootstrap_cleanup_failed', {
+        message: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+      })
+    }
+    await gracefulShutdownHandler(error).catch(() => {})
+    app.exit(74)
+    return
+  }
   void gracefulShutdownHandler(error)
 })

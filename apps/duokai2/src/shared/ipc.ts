@@ -1,5 +1,6 @@
 import type {
   CloudPhoneBulkActionPayload,
+  CloakPilotProfileStatus,
   CloudPhoneDetails,
   CloudPhoneProviderHealth,
   CloudPhoneProviderSummary,
@@ -147,6 +148,10 @@ export interface DesktopApi {
     update: (input: UpdateProxyInput) => Promise<ProxyRecord>
     delete: (id: string) => Promise<void>
     test: (id: string) => Promise<ProxyTestResult>
+  }
+  cloakPilot: {
+    getStatus: (profileId: string) => Promise<CloakPilotProfileStatus>
+    setProfileEnabled: (profileId: string, enabled: boolean) => Promise<CloakPilotProfileStatus>
   }
   runtime: {
     launch: (profileId: string) => Promise<{ warningMessage?: string }>

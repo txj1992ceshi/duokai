@@ -122,6 +122,41 @@ function getSyncBadgeTone(statusClassName: NonNullable<EnvironmentListItem['sync
   }
 }
 
+function getCloakPilotBadge(status: EnvironmentListItem['cloakPilot'], isChinese: boolean) {
+  const labels = isChinese
+    ? {
+        disabled: 'Cloak Pilot 关闭',
+        unverified: 'Cloak 145 未验证',
+        verifying: 'Cloak 验证中',
+        trusted: 'Cloak 145 已信任',
+        stale: 'Cloak 快照过期',
+        invalid: 'Cloak 配置无效',
+        'rolling-back': 'Cloak 回滚中',
+        failed: 'Cloak 启动失败',
+      }
+    : {
+        disabled: 'Cloak Pilot off',
+        unverified: 'Cloak 145 unverified',
+        verifying: 'Cloak verifying',
+        trusted: 'Cloak 145 trusted',
+        stale: 'Cloak snapshot stale',
+        invalid: 'Cloak invalid',
+        'rolling-back': 'Cloak rolling back',
+        failed: 'Cloak failed',
+      }
+  const className =
+    status.state === 'trusted'
+      ? 'bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-950/55 dark:text-emerald-200 dark:ring-emerald-900/80'
+      : status.state === 'verifying' || status.state === 'rolling-back'
+        ? 'bg-blue-50 text-blue-700 ring-blue-200 dark:bg-blue-950/55 dark:text-blue-200 dark:ring-blue-900/80'
+        : status.state === 'invalid' || status.state === 'failed'
+          ? 'bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-950/55 dark:text-rose-200 dark:ring-rose-900/80'
+          : status.state === 'stale' || status.state === 'unverified'
+            ? 'bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-950/55 dark:text-amber-200 dark:ring-amber-900/80'
+            : 'bg-slate-100 text-slate-600 ring-slate-200 dark:bg-slate-800/90 dark:text-slate-300 dark:ring-slate-700/80'
+  return { label: labels[status.state], className }
+}
+
 function getMetaBadgeClasses(kind: EnvironmentListItem['metaBadges'][number]['key']) {
   switch (kind) {
     case 'proxy':
@@ -147,6 +182,7 @@ export function EnvironmentRow({
   onPullStorageState,
   onLaunch,
   onStop,
+  onSetCloakPilotEnabled,
   onDelete,
   onMoveToNurture,
   onMoveToOperation,
@@ -164,11 +200,12 @@ export function EnvironmentRow({
   onPullStorageState: () => void
   onLaunch: () => void
   onStop: () => void
+  onSetCloakPilotEnabled: (enabled: boolean) => void
   onDelete: () => void
   onMoveToNurture: () => void
   onMoveToOperation: () => void
 }) {
-  const { t } = useTranslation('desktop')
+  const { t, i18n } = useTranslation('desktop')
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement | null>(null)
   const canStop = item.status === 'running' || item.status === 'queued' || item.status === 'starting'
@@ -180,6 +217,8 @@ export function EnvironmentRow({
       : t('environment.row.actions.launch')
   const actionIcon = useMemo(() => (canStop ? <Square size={16} /> : <Play size={16} />), [canStop])
   const syncTone = item.sync ? getSyncBadgeTone(item.sync.className) : null
+  const isChinese = i18n.resolvedLanguage?.toLowerCase().startsWith('zh') ?? true
+  const cloakPilotBadge = getCloakPilotBadge(item.cloakPilot, isChinese)
 
   useEffect(() => {
     if (!menuOpen) {
@@ -214,6 +253,11 @@ export function EnvironmentRow({
                   {badge.label}
                 </span>
               ))}
+              <span
+                className={`inline-flex h-7 items-center rounded-full px-3 text-[11px] font-medium ring-1 ring-inset ${cloakPilotBadge.className}`}
+              >
+                {cloakPilotBadge.label}
+              </span>
             </div>
             {item.sync ? (
               <div className="mt-2">
@@ -319,6 +363,26 @@ export function EnvironmentRow({
                       <span className="ml-2">{t('environment.row.actions.pullStorageState')}</span>
                     </DropdownMenuItem>
                     <DropdownMenuItem
+                      aria-disabled={canStop || item.isLaunching}
+                      className={canStop || item.isLaunching ? 'cursor-not-allowed opacity-50' : ''}
+                      onClick={() => {
+                        if (canStop || item.isLaunching) return
+                        setMenuOpen(false)
+                        onSetCloakPilotEnabled(!item.cloakPilot.enabled)
+                      }}
+                    >
+                      <ArrowRightLeft size={14} />
+                      <span className="ml-2">
+                        {item.cloakPilot.enabled
+                          ? isChinese
+                            ? '关闭 Cloak Pilot'
+                            : 'Disable Cloak Pilot'
+                          : isChinese
+                            ? '启用 Cloak Pilot'
+                            : 'Enable Cloak Pilot'}
+                      </span>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
                       onClick={() => {
                         setMenuOpen(false)
                         onClone()
@@ -390,6 +454,33 @@ export function EnvironmentRow({
               <div className="rounded-2xl bg-slate-50 px-4 py-3">
                 <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-slate-400">Hardware</div>
                 <div className="mt-2 text-sm text-slate-700">{item.hardware}</div>
+              </div>
+              <div className="rounded-2xl bg-slate-50 px-4 py-3 md:col-span-2 xl:col-span-3">
+                <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-slate-400">
+                  Cloak Pilot
+                </div>
+                <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-sm text-slate-700">
+                  <span>{cloakPilotBadge.label}</span>
+                  <span>
+                    {isChinese ? '存储版本' : 'Stored'}: {item.cloakPilot.storedBrowserVersion || '—'}
+                  </span>
+                  <span>
+                    {isChinese ? '目标版本' : 'Target'}: {item.cloakPilot.targetBrowserVersion || '—'}
+                  </span>
+                  <span className="font-mono text-xs">
+                    SHA: {item.cloakPilot.targetBinarySha256
+                      ? `${item.cloakPilot.targetBinarySha256.slice(0, 12)}…`
+                      : '—'}
+                  </span>
+                  {item.cloakPilot.snapshotId ? (
+                    <span className="font-mono text-xs">
+                      Snapshot: {item.cloakPilot.snapshotId}
+                    </span>
+                  ) : null}
+                </div>
+                {item.cloakPilot.lastError ? (
+                  <div className="mt-2 text-sm text-rose-600">{item.cloakPilot.lastError}</div>
+                ) : null}
               </div>
             </div>
             {item.runtimeSync && item.runtimeSync.length > 0 ? (

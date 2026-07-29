@@ -29,6 +29,14 @@ const RECOVERABLE_NETWORK_CODES = new Set([
   'UND_ERR_CONNECT_TIMEOUT',
 ])
 
+const NETWORK_BROKEN_PIPE_STACK_HINTS = new Set([
+  'stack:tls_socket',
+  'stack:fetch',
+  'stack:undici',
+  'stack:request',
+  'stack:agent_channel',
+])
+
 const RECOVERABLE_NETWORK_MESSAGE_RULES: PatternRule[] = [
   { label: 'message:ECONNABORTED', pattern: /\bECONNABORTED\b/i },
   { label: 'message:ECONNRESET', pattern: /\bECONNRESET\b/i },
@@ -133,6 +141,18 @@ export function matchesRecoverableNetworkSignature(facts: ErrorFacts): string[] 
     matchedBy.push(`cause.code:${facts.causeCode.toUpperCase()}`)
   }
   matchedBy.push(...findRuleMatches(RECOVERABLE_NETWORK_MESSAGE_RULES, facts.message))
+
+  const brokenPipeDeclared =
+    facts.code.toUpperCase() === 'EPIPE' ||
+    facts.causeCode.toUpperCase() === 'EPIPE' ||
+    /\b(?:write\s+)?EPIPE\b/i.test(facts.message)
+  if (brokenPipeDeclared) {
+    const networkStackHints = findRecoverableNetworkStackHints(facts)
+    if (networkStackHints.some((hint) => NETWORK_BROKEN_PIPE_STACK_HINTS.has(hint))) {
+      matchedBy.push('network-stream:EPIPE')
+    }
+  }
+
   return matchedBy
 }
 

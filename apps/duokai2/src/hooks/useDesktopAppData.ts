@@ -66,7 +66,10 @@ export function useDesktopAppData({
   const [directoryInfo, setDirectoryInfo] = useState<{
     appDataDir: string
     profilesDir: string
-    chromiumExecutable?: string
+    browserEngine: 'cloakbrowser'
+    cloakBrowserVersion: string
+    cloakBrowserCacheDir: string
+    fallbackEngine: 'forbidden'
   } | null>(null)
   const [runtimeInfo, setRuntimeInfo] = useState<DesktopRuntimeInfo | null>(null)
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(null)

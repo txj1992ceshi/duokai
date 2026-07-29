@@ -46,7 +46,7 @@ export default defineConfig({
         vite: {
           build: {
             rollupOptions: {
-              external: ['playwright', 'better-sqlite3', 'electron-updater'],
+              external: ['node:original-fs', 'playwright', 'better-sqlite3', 'electron-updater'],
             },
           },
         },

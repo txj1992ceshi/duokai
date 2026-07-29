@@ -80,6 +80,7 @@ export function useDesktopWorkspaceViewProps({
   cloneProfile,
   launchProfile,
   stopProfile,
+  setCloakPilotEnabled,
   syncProfileConfig,
   pullProfileConfig,
   syncProfileStorageState,
@@ -241,6 +242,7 @@ export function useDesktopWorkspaceViewProps({
   cloneProfile: (profileId: string) => void | Promise<void>
   launchProfile: (profileId: string) => void | Promise<void>
   stopProfile: (profileId: string) => void | Promise<void>
+  setCloakPilotEnabled: (profileId: string, enabled: boolean) => void | Promise<void>
   syncProfileConfig: (profileId: string) => void | Promise<void>
   pullProfileConfig: (profileId: string) => void | Promise<void>
   syncProfileStorageState: (profileId: string) => void | Promise<void>
@@ -421,6 +423,8 @@ export function useDesktopWorkspaceViewProps({
     onCloneProfile: (profileId) => void cloneProfile(profileId),
     onLaunchProfile: (profileId) => void launchProfile(profileId),
     onStopProfile: (profileId) => void stopProfile(profileId),
+    onSetCloakPilotEnabled: (profileId, enabled) =>
+      void setCloakPilotEnabled(profileId, enabled),
     onUploadEnvironmentConfig: (profileId) => void syncProfileConfig(profileId),
     onPullEnvironmentConfig: (profileId) => void pullProfileConfig(profileId),
     onUploadStorageState: (profileId) => void syncProfileStorageState(profileId),

@@ -637,12 +637,37 @@ export interface DashboardSummary {
   logCount: number
 }
 
+export type CloakPilotProfileState =
+  | 'disabled'
+  | 'unverified'
+  | 'verifying'
+  | 'trusted'
+  | 'stale'
+  | 'invalid'
+  | 'rolling-back'
+  | 'failed'
+
+export interface CloakPilotProfileStatus {
+  profileId: string
+  enabled: boolean
+  state: CloakPilotProfileState
+  reason: string
+  targetBrowserVersion: string
+  targetBinarySha256: string
+  storedBrowserVersion: string
+  effectiveBrowserVersion: string
+  snapshotId: string
+  lastTransitionAt: string
+  lastError: string
+}
+
 export interface RuntimeStatus {
   runningProfileIds: string[]
   queuedProfileIds: string[]
   startingProfileIds: string[]
   launchStages: Record<string, ProfileRuntimeMetadata['launchValidationStage']>
   retryCounts: Record<string, number>
+  cloakPilotProfiles: Record<string, CloakPilotProfileStatus>
 }
 
 export interface RuntimeHostInfo {
@@ -986,7 +1011,10 @@ export interface ProfileDirectoryInfo {
   appDataDir: string
   profilesDir: string
   workspacesDir: string
-  chromiumExecutable?: string
+  browserEngine: 'cloakbrowser'
+  cloakBrowserVersion: string
+  cloakBrowserCacheDir: string
+  fallbackEngine: 'forbidden'
 }
 
 export interface ExportBundle {

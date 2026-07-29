@@ -222,6 +222,24 @@ export function useDesktopDerivedState({
 
   const runtimeLaunchStages = useMemo(() => runtimeStatus?.launchStages ?? {}, [runtimeStatus])
 
+  const getCloakPilotStatus = useCallback(
+    (profile: ProfileRecord) =>
+      runtimeStatus?.cloakPilotProfiles?.[profile.id] ?? {
+        profileId: profile.id,
+        enabled: false,
+        state: 'disabled' as const,
+        reason: 'runtime_status_unavailable',
+        targetBrowserVersion: '',
+        targetBinarySha256: '',
+        storedBrowserVersion: String(profile.fingerprintConfig.advanced.browserVersion || ''),
+        effectiveBrowserVersion: '',
+        snapshotId: '',
+        lastTransitionAt: '',
+        lastError: '',
+      },
+    [runtimeStatus],
+  )
+
   const getProfileVisualState = useCallback(
     (profile: ProfileRecord) =>
       resolveProfileVisualState(profile, {
@@ -303,6 +321,7 @@ export function useDesktopDerivedState({
     runtimeQueuedIds,
     runtimeStartingIds,
     runtimeLaunchStages,
+    getCloakPilotStatus,
     getProfileVisualState,
     getProfileStatusTone,
     getLaunchPhaseLabel,
