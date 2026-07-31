@@ -42,8 +42,6 @@ export default function AdminUsersPage() {
     if (userText) {
       try {
         const parsed = JSON.parse(userText);
-        setCurrentUser(parsed);
-
         if (parsed.role !== 'admin') {
           router.replace('/');
           return;
@@ -58,7 +56,10 @@ export default function AdminUsersPage() {
       return;
     }
 
-    setAuthChecked(true);
+    queueMicrotask(() => {
+      setCurrentUser(JSON.parse(userText));
+      setAuthChecked(true);
+    });
   }, [router]);
 
   useEffect(() => {

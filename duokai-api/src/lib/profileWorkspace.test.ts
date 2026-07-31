@@ -101,7 +101,7 @@ test('workspace snapshot schema keeps profile identity and unique snapshot key',
   const indexes = WorkspaceSnapshotModel.schema.indexes();
   assert.equal(
     indexes.some(
-      ([fields, options]: [Record<string, number>, { unique?: boolean }]) =>
+      ([fields, options]) =>
         fields.userId === 1 &&
         fields.profileId === 1 &&
         fields.snapshotId === 1 &&
@@ -116,7 +116,7 @@ test('profile storage state schema keeps profile identity as string with unique 
   const indexes = ProfileStorageStateModel.schema.indexes();
   assert.equal(
     indexes.some(
-      ([fields, options]: [Record<string, number>, { unique?: boolean }]) =>
+      ([fields, options]) =>
         fields.userId === 1 && fields.profileId === 1 && options?.unique === true,
     ),
     true,
