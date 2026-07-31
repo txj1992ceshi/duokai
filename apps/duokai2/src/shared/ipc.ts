@@ -158,18 +158,6 @@ export interface DesktopApi {
     stop: (profileId: string) => Promise<void>
     getStatus: () => Promise<RuntimeStatus>
     getHostInfo: () => Promise<RuntimeHostInfo>
-    ensureLocalRuntime: (runtimeApiKey?: string) => Promise<{
-      url: string
-      source: 'manifest' | 'default' | 'autostart'
-      pid?: number
-      updatedAt?: string
-    }>
-    getLocalRuntimeInfo: (runtimeApiKey?: string) => Promise<{
-      url: string
-      source: 'manifest' | 'default' | 'autostart'
-      pid?: number
-      updatedAt?: string
-    } | null>
   }
   workspace: {
     snapshots: {

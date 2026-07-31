@@ -146,10 +146,6 @@ import {
 } from './services/runtimeIsolation'
 import { checkNetworkHealth, type NetworkHealthResult } from './services/networkCheck'
 import { buildNetworkDiagnosticsSummary } from './services/networkDiagnostics'
-import {
-  ensureLocalRuntimeRunning,
-  getLocalRuntimeInfo,
-} from './services/localRuntimeLauncher'
 import { checkStandaloneProxyEgress } from './services/proxyCheck'
 import {
   evaluateWithStableNavigation,
@@ -9399,12 +9395,6 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('runtime.getStatus', async () => getRuntimeStatusSnapshot())
   ipcMain.handle('runtime.getHostInfo', async () => getRuntimeHostInfo())
-  ipcMain.handle('runtime.ensureLocalRuntime', async (_event, runtimeApiKey?: string) => {
-    return await ensureLocalRuntimeRunning(app, runtimeApiKey)
-  })
-  ipcMain.handle('runtime.getLocalRuntimeInfo', async (_event, runtimeApiKey?: string) => {
-    return await getLocalRuntimeInfo(app, runtimeApiKey)
-  })
   ipcMain.handle('workspace.snapshots.list', async (_event, profileId: string) => {
     return listWorkspaceSnapshotsForProfile(profileId)
   })
