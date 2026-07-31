@@ -175,12 +175,12 @@ export default function AdminHomePage() {
       router.replace('/login');
       return;
     }
-    setAuthChecked(true);
+    queueMicrotask(() => setAuthChecked(true));
   }, [router]);
 
   useEffect(() => {
     if (!authChecked) return;
-    loadDashboard();
+    queueMicrotask(() => { void loadDashboard(); });
   }, [authChecked, loadDashboard]);
 
   if (!authChecked) return null;
@@ -268,7 +268,7 @@ export default function AdminHomePage() {
           accentClassName="text-yellow-400"
         />
         <StatCard label="运行中 Session 数" value={sessionCount} />
-        <StatCard label="Runtime 在线状态" value={runtimeOnline ? '在线' : '离线'} />
+        <StatCard label="Agent 在线状态" value={runtimeOnline ? '在线' : '离线'} />
       </div>
 
       <div className="rounded-2xl border border-neutral-800 bg-neutral-900 px-5 py-4 text-sm text-neutral-300">

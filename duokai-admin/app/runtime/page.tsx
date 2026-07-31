@@ -66,7 +66,7 @@ export default function RuntimePage() {
       router.replace('/login');
       return;
     }
-    setAuthChecked(true);
+    queueMicrotask(() => setAuthChecked(true));
   }, [router]);
 
   useEffect(() => {
@@ -74,7 +74,7 @@ export default function RuntimePage() {
 
     let timer: ReturnType<typeof setInterval> | null = null;
 
-    loadRuntime();
+    queueMicrotask(() => { void loadRuntime(); });
     timer = setInterval(loadRuntime, 5000);
 
     return () => {
@@ -92,7 +92,7 @@ export default function RuntimePage() {
     <div className="space-y-6">
       <PageHeader
         title="运行状态"
-        description="Runtime 总控视图"
+        description="Desktop Agent 运行总控视图"
         aside={
           <AppButton onClick={loadRuntime} variant="secondary">
             立即刷新
@@ -105,7 +105,7 @@ export default function RuntimePage() {
       <ErrorBanner message={error} />
 
       <div className="grid gap-4 md:grid-cols-3">
-        <StatCard label="Runtime 在线状态" value={loading ? '-' : runtimeStatus.online ? '在线' : '离线'} />
+        <StatCard label="Agent 在线状态" value={loading ? '-' : runtimeStatus.online ? '在线' : '离线'} />
         <StatCard label="当前会话数" value={loading ? '-' : sessions.length} />
         <StatCard label="降级状态" value={loading ? '-' : runtimeStatus.degraded ? '已降级' : '正常'} />
       </div>
@@ -154,8 +154,8 @@ export default function RuntimePage() {
               <tr>
                 <td className="px-4 py-4" colSpan={4}>
                   <EmptyState
-                    title="暂无 session"
-                    description="当前 Runtime 没有活跃会话"
+                    title="暂无运行环境"
+                    description="当前在线 Agent 没有运行中的环境"
                   />
                 </td>
               </tr>
