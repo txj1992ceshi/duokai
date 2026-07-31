@@ -5,9 +5,14 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
+const repoRoot = resolve(appRoot, '../..')
 
 function read(relativePath: string): string {
   return readFileSync(resolve(appRoot, relativePath), 'utf8')
+}
+
+function readRepo(relativePath: string): string {
+  return readFileSync(resolve(repoRoot, relativePath), 'utf8')
 }
 
 test('desktop package pins only the CloakBrowser engine contract', () => {
@@ -62,4 +67,115 @@ test('distribution assets and user-facing guidance forbid legacy fallback', () =
   assert.doesNotMatch(profileActions, /legacy browser path|原浏览器链路/i)
   assert.match(profileActions, /Single-engine mode blocks future launches/)
   assert.match(translations, /CloakBrowser/)
+})
+
+test('official entrypoints cannot revive the retired direct Playwright runtime', () => {
+  const removedPaths = [
+    'apps/duokai2/electron/services/localRuntimeLauncher.ts',
+    'apps/duokai2/electron/services/localRuntimeManifest.ts',
+    'fingerprint-dashboard/src/lib/runtimeClient.ts',
+    'fingerprint-dashboard/src/lib/localRuntimeClient.ts',
+    'apps/duokai2/electron/services/cloakBrowserPostTrustProbe.ts',
+    'apps/duokai2/electron/services/cloakBrowserPostTrustProbe.test.ts',
+  ]
+  for (const relativePath of removedPaths) {
+    assert.equal(existsSync(resolve(repoRoot, relativePath)), false, relativePath)
+  }
+
+  const main = read('electron/main.ts')
+  const preload = read('electron/preload.ts')
+  const ipc = read('src/shared/ipc.ts')
+  for (const source of [main, preload, ipc]) {
+    assert.doesNotMatch(source, /ensureLocalRuntime|getLocalRuntimeInfo|stealth-engine/i)
+  }
+
+  const dashboardPage = readRepo('fingerprint-dashboard/src/app/page.tsx')
+  assert.doesNotMatch(
+    dashboardPage,
+    /runtimeClient|NEXT_PUBLIC_RUNTIME_EXECUTION_MODE|runtime\.(?:startSession|stopSession|doSessionAction|testBrowserProxy|checkRuntimeHealth)/,
+  )
+  assert.match(dashboardPage, /\/api\/control-plane\/runtime/)
+
+  const retiredActionRoute = readRepo('fingerprint-dashboard/src/app/api/runtime/[action]/route.ts')
+  assert.match(retiredActionRoute, /LEGACY_DIRECT_RUNTIME_RETIRED/)
+  assert.match(retiredActionRoute, /status: 410/)
+  const retiredProxyRoute = readRepo('fingerprint-dashboard/src/app/api/proxy/browser-check/route.ts')
+  assert.match(retiredProxyRoute, /LEGACY_BROWSER_PROXY_CHECK_RETIRED/)
+  assert.match(retiredProxyRoute, /status: 410/)
+
+  const runtimeStatusRoute = readRepo('fingerprint-dashboard/src/app/api/runtime/status/route.ts')
+  assert.match(runtimeStatusRoute, /mode: 'control-plane'/)
+  assert.doesNotMatch(runtimeStatusRoute, /127\.0\.0\.1:3101|runtimeUrl|RUNTIME_URL/)
+
+  const officialEntrypoints = [
+    'start.sh',
+    'start_windows.bat',
+    'admin_start.sh',
+    'admin_start_windows.bat',
+    'frontend_install_and_start.sh',
+    'admin_install_and_start.sh',
+    'install_windows.bat',
+    'deploy/bootstrap-and-deploy.sh',
+    'deploy/ecosystem.config.cjs',
+    'ci/deploy.sh',
+  ]
+  const forbiddenExecutablePattern =
+    /fingerprint-dashboard[\\/]stealth-engine|playwright(?:\.cmd)?\s+install\s+chromium|RUNTIME_PORT\s*=\s*3101|name\s*:\s*['"]duokai-runtime|NEXT_PUBLIC_RUNTIME_EXECUTION_MODE/i
+  for (const relativePath of officialEntrypoints) {
+    assert.doesNotMatch(readRepo(relativePath), forbiddenExecutablePattern, relativePath)
+  }
+})
+
+test('physical legacy runtime removal cannot regress', () => {
+  const removedPaths = [
+    'fingerprint-dashboard/stealth-engine',
+    'fingerprint-dashboard/tests/browser-scan-check.js',
+    'fingerprint-dashboard/tests/concurrency-test.js',
+    'fingerprint-dashboard/tests/proxy-fault-test.js',
+    'fingerprint-dashboard/tests/redis-failover-clients.js',
+    'fingerprint-dashboard/docker/Dockerfile',
+    'duokai-api/src/lib/runtime.ts',
+    'duokai-api/src/lib/runtimeProxy.ts',
+    'duokai-api/src/lib/runtimeProxy.test.ts',
+  ]
+  for (const relativePath of removedPaths) {
+    assert.equal(existsSync(resolve(repoRoot, relativePath)), false, relativePath)
+  }
+
+  const apiRuntime = readRepo('duokai-api/src/routes/runtime.ts')
+  assert.match(apiRuntime, /mode: 'control-plane'/)
+  assert.match(apiRuntime, /LEGACY_DIRECT_RUNTIME_RETIRED/)
+  assert.match(apiRuntime, /res\.status\(410\)/)
+  assert.match(apiRuntime, /AgentModel/)
+  assert.doesNotMatch(apiRuntime, /getRuntimeUrl|RUNTIME_URL|runtimeUrl|\/session\/(?:start|stop|list)/)
+
+  const apiLaunch = readRepo('duokai-api/src/routes/launch.ts')
+  assert.match(apiLaunch, /LEGACY_DIRECT_LAUNCH_RETIRED/)
+  assert.match(apiLaunch, /res\.status\(410\)/)
+  assert.doesNotMatch(apiLaunch, /child_process|spawn\(|launch\.js|stealth-engine/)
+
+  const dashboardLaunch = readRepo('fingerprint-dashboard/src/app/api/launch/route.ts')
+  assert.match(dashboardLaunch, /LEGACY_DIRECT_LAUNCH_RETIRED/)
+  assert.match(dashboardLaunch, /status: 410/)
+  assert.doesNotMatch(dashboardLaunch, /child_process|spawn\(|launch\.js|stealth-engine/)
+
+  const apiProxy = readRepo('duokai-api/src/routes/proxy.ts')
+  assert.match(apiProxy, /['"]\/check['"]/)
+  assert.match(apiProxy, /LEGACY_BROWSER_PROXY_CHECK_RETIRED/)
+  assert.match(apiProxy, /res\.status\(410\)/)
+  assert.doesNotMatch(apiProxy, /getRuntimeUrl|RUNTIME_URL|test-browser/)
+
+  const apiHealth = readRepo('duokai-api/src/routes/health.ts')
+  assert.match(apiHealth, /runtime: 'agent-managed'/)
+  assert.match(apiHealth, /AgentModel/)
+  assert.doesNotMatch(apiHealth, /getRuntimeUrl|RUNTIME_URL|\/health`/)
+
+  const apiEnv = readRepo('duokai-api/.env.example')
+  assert.doesNotMatch(apiEnv, /^RUNTIME_(?:URL|API_KEY)=/m)
+
+  const rootPackage = JSON.parse(readRepo('package.json')) as {
+    scripts?: Record<string, string>
+  }
+  assert.equal(rootPackage.scripts?.['dev:legacy-dashboard'], undefined)
+  assert.equal(rootPackage.scripts?.['dev:control-dashboard'], 'npm run dev --workspace fingerprint-dashboard')
 })
