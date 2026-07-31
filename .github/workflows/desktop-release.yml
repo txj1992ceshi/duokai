@@ -58,9 +58,6 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Install Chromium
-        run: npm run install:chromium
-
       - name: Build desktop package
         run: ${{ matrix.build_command }}
 

@@ -118,9 +118,12 @@ test('official entrypoints cannot revive the retired direct Playwright runtime',
     'deploy/bootstrap-and-deploy.sh',
     'deploy/ecosystem.config.cjs',
     'ci/deploy.sh',
+    '.github/workflows/desktop-release.yml',
+    '.github/workflows/desktop-windows-smoke.yml',
+    '.github/workflows/desktop-windows-test-package.yml',
   ]
   const forbiddenExecutablePattern =
-    /fingerprint-dashboard[\\/]stealth-engine|playwright(?:\.cmd)?\s+install\s+chromium|RUNTIME_PORT\s*=\s*3101|name\s*:\s*['"]duokai-runtime|NEXT_PUBLIC_RUNTIME_EXECUTION_MODE/i
+    /fingerprint-dashboard[\\/]stealth-engine|playwright(?:\.cmd)?\s+install\s+chromium|npm\s+run\s+install:chromium|apps[\\/]duokai2[\\/]package-lock\.json|RUNTIME_PORT\s*=\s*3101|name\s*:\s*['"]duokai-runtime|NEXT_PUBLIC_RUNTIME_EXECUTION_MODE/i
   for (const relativePath of officialEntrypoints) {
     assert.doesNotMatch(readRepo(relativePath), forbiddenExecutablePattern, relativePath)
   }
