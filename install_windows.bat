@@ -1,8 +1,6 @@
 @echo off
-setlocal EnableExtensions EnableDelayedExpansion
+setlocal EnableExtensions
 cd /d "%~dp0"
-
-echo [CHECK] Verifying Windows environment...
 node -v >nul 2>&1
 if %errorlevel% neq 0 (
     echo [ERROR] Node.js was not found. Opening the download page...
@@ -11,50 +9,24 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-echo [1/5] Installing API dependencies...
+echo [1/3] Installing API dependencies...
 pushd "duokai-api"
 call npm.cmd install
-if %errorlevel% neq 0 (
-    popd
-    exit /b %errorlevel%
-)
+if %errorlevel% neq 0 (popd & exit /b %errorlevel%)
 popd
 
-echo [2/5] Installing admin frontend dependencies...
+echo [2/3] Installing admin frontend dependencies...
 pushd "duokai-admin"
 call npm.cmd install
-if %errorlevel% neq 0 (
-    popd
-    exit /b %errorlevel%
-)
+if %errorlevel% neq 0 (popd & exit /b %errorlevel%)
 popd
 
-echo [3/5] Installing frontend dependencies...
+echo [3/3] Installing web frontend dependencies...
 pushd "apps\duokai-web"
 call npm.cmd install
-if %errorlevel% neq 0 (
-    popd
-    exit /b %errorlevel%
-)
+if %errorlevel% neq 0 (popd & exit /b %errorlevel%)
 popd
 
-echo [4/5] Installing stealth engine dependencies...
-pushd "fingerprint-dashboard\stealth-engine"
-call npm.cmd install
-if %errorlevel% neq 0 (
-    popd
-    exit /b %errorlevel%
-)
-
-echo [5/5] Installing Playwright Chromium...
-call node_modules\.bin\playwright.cmd install chromium
-if %errorlevel% neq 0 (
-    popd
-    exit /b %errorlevel%
-)
-
-popd
-
-echo [DONE] Installation completed successfully.
+echo [DONE] Installation completed. Ordinary Playwright Chromium is not installed.
 pause
 exit /b 0

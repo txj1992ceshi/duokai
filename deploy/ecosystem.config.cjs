@@ -11,17 +11,6 @@ module.exports = {
       },
     },
     {
-      name: 'duokai-runtime',
-      cwd: '/var/www/duokai/fingerprint-dashboard/stealth-engine',
-      script: 'node',
-      args: 'server.js',
-      env: {
-        NODE_ENV: 'production',
-        RUNTIME_PORT: '3101',
-        DASHBOARD_URL: process.env.DASHBOARD_URL || 'http://127.0.0.1:3001',
-      },
-    },
-    {
       name: 'duokai-admin',
       cwd: '/var/www/duokai',
       script: 'deploy/start-next-app.sh',
