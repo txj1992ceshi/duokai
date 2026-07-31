@@ -1,40 +1,20 @@
-import { spawn } from 'node:child_process';
-import fs from 'node:fs';
-import path from 'node:path';
 import { Router } from 'express';
+import { asyncHandler } from '../lib/http.js';
+import { requireUser } from '../middlewares/auth.js';
 
 const router = Router();
+router.use(requireUser);
 
-router.post('/', (req, res) => {
-  const profileId = String(req.body?.profileId || '');
-  if (!profileId) {
-    res.status(400).json({ error: 'Profile ID is required' });
-    return;
-  }
-
-  const cwd = process.cwd();
-  const engineLocation = path.resolve(cwd, '..', 'fingerprint-dashboard', 'stealth-engine');
-  const launchScript = path.resolve(engineLocation, 'launch.js');
-
-  if (!fs.existsSync(launchScript)) {
-    res.status(500).json({
-      error: `launch.js not found. Looking at: ${launchScript}`,
+router.post(
+  '/',
+  asyncHandler(async (_req, res) => {
+    res.status(410).json({
+      success: false,
+      code: 'LEGACY_DIRECT_LAUNCH_RETIRED',
+      error: '服务器端直接启动浏览器入口已退役。',
+      detail: '使用 /api/control-plane/runtime 向已注册的 Duokai Desktop Agent 下发 start 任务。',
     });
-    return;
-  }
-
-  const child = spawn(process.execPath, [launchScript, '--profileId', profileId], {
-    cwd: engineLocation,
-    detached: true,
-    stdio: 'ignore',
-    env: { ...process.env },
-  });
-  child.unref();
-
-  res.json({
-    success: true,
-    message: `Profile ${profileId} launched`,
-  });
-});
+  }),
+);
 
 export default router;

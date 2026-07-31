@@ -1,38 +1,27 @@
 import { Router } from 'express';
-import { connectMongo } from '../lib/mongodb.js';
 import { asyncHandler } from '../lib/http.js';
-import { getRuntimeUrl } from '../lib/runtime.js';
+import { connectMongo } from '../lib/mongodb.js';
+import { AgentModel } from '../models/Agent.js';
 
 const router = Router();
+const AGENT_ACTIVE_WINDOW_MS = 2 * 60 * 1000;
 
 router.get(
   '/',
   asyncHandler(async (_req, res) => {
     let mongo = 'ok';
-    let runtime = 'offline';
-
+    let onlineAgents = 0;
     try {
       await connectMongo();
+      onlineAgents = await AgentModel.countDocuments({
+        status: { $ne: 'DISABLED' },
+        lastSeenAt: { $gte: new Date(Date.now() - AGENT_ACTIVE_WINDOW_MS) },
+      });
     } catch {
       mongo = 'error';
     }
-
-    try {
-      const response = await fetch(`${getRuntimeUrl()}/health`, {
-        signal: AbortSignal.timeout(2000),
-      });
-      runtime = response.ok ? 'ok' : 'error';
-    } catch {
-      runtime = 'offline';
-    }
-
-    res.json({
-      success: true,
-      api: 'ok',
-      mongo,
-      runtime,
-    });
-  })
+    res.json({ success: true, api: 'ok', mongo, runtime: 'agent-managed', onlineAgents });
+  }),
 );
 
 export default router;
