@@ -5,7 +5,6 @@ import {
   LayoutDashboard, Globe, Smartphone, Workflow, Users, Network,
   Puzzle, Settings as SettingsIcon, ShieldCheck
 } from 'lucide-react'
-import * as runtime from '@/lib/runtimeClient'
 import { apiFetch, getApiBase } from '@/lib/api-client'
 import SectionBlock from '@/components/SectionBlock'
 import ConsoleOverview from '@/components/ConsoleOverview'
@@ -31,7 +30,7 @@ import {
 } from '@/lib/profile-storage-state-client'
 import { listWorkspaceSnapshots } from '@/lib/workspace-snapshot-client'
 import { useRouter } from 'next/navigation'
-import type { HostEnvironment, ProxyProtocol, ProxyVerificationRecord } from '@/lib/proxyTypes'
+import type { ProxyProtocol, ProxyVerificationRecord } from '@/lib/proxyTypes'
 import type {
   AdminAgentHealthSummary,
   AdminAgentTaskSummary,
@@ -47,7 +46,6 @@ import type {
   Profile,
   ProxyAssetSummary,
   ProxyListItem,
-  Settings,
   WorkspaceSnapshotRecord,
 } from '@/lib/dashboard-types'
 import {
@@ -61,11 +59,6 @@ import {
 type AdminProxyUsageAsset = ProxyAssetSummary & {
   affectedProfiles?: Array<{ profileId: string; name: string }>;
 };
-
-const RUNTIME_EXECUTION_MODE =
-  process.env.NEXT_PUBLIC_RUNTIME_EXECUTION_MODE === 'control-plane'
-    ? 'control-plane'
-    : 'local';
 
 declare global {
   interface Window { electronAPI?: unknown; }
@@ -242,7 +235,7 @@ export default function Home() {
   const [editingProfile, setEditingProfile] = useState<Profile | null>(null)
   const [proxyChecking, setProxyChecking] = useState(false)
   const [proxyResult, setProxyResult] = useState<ProxyVerificationRecord | null>(null)
-  const [proxyBrowserChecking, setProxyBrowserChecking] = useState(false)
+  const proxyBrowserChecking = false
   const [proxyBrowserResult, setProxyBrowserResult] = useState<ProxyVerificationRecord | null>(null)
 
   const [proxies, setProxies] = useState<ProxyListItem[]>([
@@ -257,15 +250,6 @@ export default function Home() {
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   
   const [behaviors, setBehaviors] = useState<Behavior[]>([]);
-  const [settings, setSettings] = useState<Settings>({
-    runtimeUrl: '',
-    runtimeApiKey: '',
-    autoFingerprint: true,
-    autoProxyVerification: true,
-    defaultStartupPlatform: '',
-    defaultStartupUrl: '',
-    theme: 'system',
-  });
   const [showBehaviorModal, setShowBehaviorModal] = useState(false);
   const [newBehaviorName, setNewBehaviorName] = useState('');
   const [newBehaviorDesc, setNewBehaviorDesc] = useState('');
@@ -281,10 +265,6 @@ export default function Home() {
   const [executingBehaviorId, setExecutingBehaviorId] = useState<string | null>(null);
   const [execLogs, setExecLogs] = useState<string[]>([]);
   const [targetSessionId, setTargetSessionId] = useState<string>('');
-  const [settingsNotice, setSettingsNotice] = useState<{
-    message: string;
-    variant: 'error' | 'success' | 'info';
-  }>({ message: '', variant: 'info' });
   const [adminTaskRows, setAdminTaskRows] = useState<AdminAgentTaskSummary[]>([]);
   const [adminTaskEvents, setAdminTaskEvents] = useState<AdminTaskEventSummary[]>([]);
   const [adminTaskFailures, setAdminTaskFailures] = useState<AdminTaskFailureSummary[]>([]);
@@ -293,7 +273,6 @@ export default function Home() {
   const [adminDiagnosticsLoading, setAdminDiagnosticsLoading] = useState(false);
   const [adminDiagnosticsError, setAdminDiagnosticsError] = useState('');
   const [retryingAdminTaskId, setRetryingAdminTaskId] = useState<string | null>(null);
-  const controlPlaneOnly = RUNTIME_EXECUTION_MODE === 'control-plane';
 
   const readResponseError = useCallback(async (res: Response, fallbackMessage: string) => {
     const text = await res.text().catch(() => '');
@@ -502,11 +481,10 @@ export default function Home() {
 
   const fetchProfiles = useCallback(async () => {
     try {
-      const [resP, resG, resB, resS, resProxyAssets, resIpLeases, resPolicies] = await Promise.all([
+      const [resP, resG, resB, resProxyAssets, resIpLeases, resPolicies] = await Promise.all([
         apiFetch('/api/profiles'),
         apiFetch('/api/groups'),
         apiFetch('/api/behaviors'),
-        apiFetch('/api/settings'),
         apiFetch('/api/proxy-assets'),
         apiFetch('/api/ip-leases'),
         apiFetch('/api/platform-policies'),
@@ -561,25 +539,6 @@ export default function Home() {
         const rawBehaviors = behaviorPayload?.behaviors ?? behaviorPayload;
         setBehaviors(Array.isArray(rawBehaviors) ? rawBehaviors : []);
       }
-      if (resS.ok) {
-        const settingsPayload = await resS.json();
-        const incomingSettings = settingsPayload?.settings ?? settingsPayload;
-        setSettings((prev) => ({
-          ...prev,
-          ...(incomingSettings || {}),
-          autoFingerprint:
-            typeof incomingSettings?.autoFingerprint === 'boolean'
-              ? incomingSettings.autoFingerprint
-              : prev.autoFingerprint,
-          autoProxyVerification:
-            typeof incomingSettings?.autoProxyVerification === 'boolean'
-              ? incomingSettings.autoProxyVerification
-              : prev.autoProxyVerification,
-          defaultStartupPlatform: String(incomingSettings?.defaultStartupPlatform || ''),
-          defaultStartupUrl: String(incomingSettings?.defaultStartupUrl || ''),
-          theme: String(incomingSettings?.theme || prev.theme || 'system'),
-        }));
-      }
     } catch (err) {
       console.error('获取数据失败', err)
     } finally {
@@ -616,13 +575,17 @@ export default function Home() {
     void loadAdminDiagnostics();
   }, [activeTab, currentUser?.role, loadAdminDiagnostics]);
 
-  // Poll runtime server status every 5 seconds
+  // Poll canonical control-plane agent status every 5 seconds.
   useEffect(() => {
     const checkRuntime = async () => {
       try {
-        const data = await runtime.checkRuntimeHealth(settings.runtimeApiKey);
+        const response = await apiFetch('/api/runtime/status');
+        const data = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+        if (!response.ok) {
+          throw new Error(String(data.error || '控制面运行状态读取失败'));
+        }
         runtimeFailureCountRef.current = 0;
-        setRuntimeOnline(data.ok === true);
+        setRuntimeOnline(data.online === true);
       } catch {
         runtimeFailureCountRef.current += 1;
         if (runtimeFailureCountRef.current >= 2) {
@@ -630,10 +593,10 @@ export default function Home() {
         }
       }
     };
-    checkRuntime();
-    const interval = setInterval(checkRuntime, 5000);
+    void checkRuntime();
+    const interval = setInterval(() => { void checkRuntime(); }, 5000);
     return () => clearInterval(interval);
-  }, [settings.runtimeApiKey])
+  }, []);
 
   const handleCreateProfile = async (isMobile = false, targetGroupId?: string) => {
     try {
@@ -653,177 +616,87 @@ export default function Home() {
   const handleDeleteProfile = async (id: string) => {
     if (!confirm('确定要删除这个环境吗？这将清除该环境的所有缓存。')) return;
     try {
-      // Find if it has a session and stop it
-      const p = profiles.find(x => x.id === id);
-      if (p?.runtimeSessionId) {
-        await runtime.stopSession(p.runtimeSessionId);
+      const profile = profiles.find((item) => item.id === id);
+      if (profile && (profile.status === 'Running' || Boolean(profile.runtimeSessionId))) {
+        const stopResponse = await apiFetch('/api/control-plane/runtime', {
+          method: 'POST',
+          body: JSON.stringify({ action: 'stop', profileId: profile.id }),
+        });
+        if (!stopResponse.ok) {
+          throw new Error(await readResponseError(stopResponse, '删除前停止任务下发失败'));
+        }
       }
-      const res = await apiFetch(`/api/profiles/${id}`, { method: 'DELETE' })
-      if (res.ok) fetchProfiles()
-    } catch (err) {
-      console.error('Failed to delete', err)
-      alert('删除失败: ' + (err instanceof Error ? err.message : String(err)))
+      const response = await apiFetch(`/api/profiles/${id}`, { method: 'DELETE' });
+      if (!response.ok) {
+        throw new Error(await readResponseError(response, '删除环境失败'));
+      }
+      await fetchProfiles();
+    } catch (error) {
+      console.error('Failed to delete', error);
+      alert('删除失败: ' + (error instanceof Error ? error.message : String(error)));
     }
-  }
+  };
 
   const isRunningProfile = useCallback((profile: Profile) => {
     return profile.status === 'Running' || Boolean(profile.runtimeSessionId);
   }, []);
 
-  const handleStartSession = async (p: Profile) => {
-    if (controlPlaneOnly) {
-      setStartingProfileIds(prev => ({ ...prev, [p.id]: true }));
-      try {
-        const res = await apiFetch('/api/control-plane/runtime', {
-          method: 'POST',
-          body: JSON.stringify({ action: 'start', profileId: p.id }),
-        });
-        if (!res.ok) {
-          throw new Error(await readResponseError(res, '启动任务下发失败'));
-        }
-        const json = await res.json().catch(() => null) as Record<string, unknown> | null;
-        if (json?.success === false) {
-          const detail = `${String(json.error || '启动任务下发失败')}${json.detail ? `\n${JSON.stringify(json.detail)}` : ''}${res.status ? `\nHTTP ${res.status}` : ''}`;
-          throw new Error(detail);
-        }
-        setRuntimeOnline(true);
-        setProfiles(prev => prev.map(profile => (
-          profile.id === p.id
-            ? { ...profile, status: 'Running' }
-            : profile
-        )));
-        setTimeout(() => {
-          void fetchProfiles();
-        }, 1200);
-      } catch (err) {
-        alert('启动失败: ' + (err instanceof Error ? err.message : String(err)));
-        void fetchProfiles();
-      } finally {
-        setStartingProfileIds(prev => {
-          const next = { ...prev };
-          delete next[p.id];
-          return next;
-        });
-      }
-      return;
-    }
-    setStartingProfileIds(prev => ({ ...prev, [p.id]: true }));
+  const handleStartSession = async (profile: Profile) => {
+    setStartingProfileIds((previous) => ({ ...previous, [profile.id]: true }));
     try {
-      const res = await runtime.startSession(p, undefined, { headless: false }) as Record<string, unknown>;
-      if (res.sessionId) {
-        setRuntimeOnline(true);
-        runtimeFailureCountRef.current = 0;
-        fetchProfiles();
-        const startupNavigation = res.startupNavigation as
-          | { ok?: boolean; requestedUrl?: string; error?: string }
-          | undefined;
-        if (startupNavigation?.ok === false) {
-          alert(`环境已就绪，但默认平台页打开失败。\n\n目标地址: ${startupNavigation.requestedUrl || p.startupUrl || '未指定'}\n错误: ${startupNavigation.error || '未知错误'}`);
-        }
+      const response = await apiFetch('/api/control-plane/runtime', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'start', profileId: profile.id }),
+      });
+      if (!response.ok) {
+        throw new Error(await readResponseError(response, '启动任务下发失败'));
       }
-    } catch (err: unknown) {
-      const runtimeError = err as {
-        error?: string;
-        message?: string;
-        stage?: string;
-        hostEnvironment?: HostEnvironment;
-        verification?: ProxyVerificationRecord;
-      };
-      const msg = runtimeError?.verification?.status
-        ? `${getCheckStatusLabel(runtimeError.verification.status)}${runtimeError.verification.detail ? `\n${runtimeError.verification.detail}` : ''}${runtimeError.verification.effectiveProxyTransport ? `\n最终入口模式: ${getEntryTransportLabel(runtimeError.verification.effectiveProxyTransport)}` : ''}${runtimeError.hostEnvironment ? `\n宿主环境: ${getHostEnvironmentLabel(runtimeError.hostEnvironment)}` : ''}${runtimeError.stage ? `\n失败阶段: ${runtimeError.stage}` : ''}`
-        : (runtimeError?.error || runtimeError?.message || JSON.stringify(runtimeError));
-      alert('启动失败: ' + msg);
+      const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+      if (payload?.success === false) {
+        throw new Error(String(payload.error || '启动任务下发失败'));
+      }
+      setRuntimeOnline(true);
+      setProfiles((previous) => previous.map((item) =>
+        item.id === profile.id ? { ...item, status: 'Running' } : item
+      ));
+      setTimeout(() => { void fetchProfiles(); }, 1200);
+    } catch (error) {
+      alert('启动失败: ' + (error instanceof Error ? error.message : String(error)));
+      void fetchProfiles();
     } finally {
-      setStartingProfileIds(prev => {
-        const next = { ...prev };
-        delete next[p.id];
+      setStartingProfileIds((previous) => {
+        const next = { ...previous };
+        delete next[profile.id];
         return next;
       });
     }
-  }
+  };
 
-  const handleStopSession = async (p: Profile) => {
-    if (controlPlaneOnly) {
-      try {
-        const res = await apiFetch('/api/control-plane/runtime', {
-          method: 'POST',
-          body: JSON.stringify({ action: 'stop', profileId: p.id }),
-        });
-        if (!res.ok) {
-          throw new Error(await readResponseError(res, '停止任务下发失败'));
-        }
-        const json = await res.json().catch(() => null) as Record<string, unknown> | null;
-        if (json?.success === false) {
-          const detail = `${String(json.error || '停止任务下发失败')}${json.detail ? `\n${JSON.stringify(json.detail)}` : ''}${res.status ? `\nHTTP ${res.status}` : ''}`;
-          throw new Error(detail);
-        }
-        setProfiles(prev => prev.map(profile => (
-          profile.id === p.id
-            ? { ...profile, status: 'Ready', runtimeSessionId: '' }
-            : profile
-        )));
-        setTimeout(() => {
-          void fetchProfiles();
-        }, 1200);
-      } catch (err) {
-        alert('停止失败: ' + (err instanceof Error ? err.message : String(err)));
-      }
-      return;
-    }
-    if (!p.runtimeSessionId) return;
+  const handleStopSession = async (profile: Profile) => {
     try {
-      await runtime.stopSession(p.runtimeSessionId);
-      fetchProfiles();
-    } catch (err: unknown) {
-      console.error('Stop failed', err);
-      const runtimeError = err as { stage?: string; error?: string; message?: string };
-      if (runtimeError?.stage === 'cloud_sync') {
-        await apiFetch(`/api/profiles/${p.id}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ ...p, runtimeSessionId: '', status: 'Ready' })
-        });
-        fetchProfiles();
-        alert('本地环境已停止，但云端状态回写失败，已尝试补写。');
-        return;
+      const response = await apiFetch('/api/control-plane/runtime', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'stop', profileId: profile.id }),
+      });
+      if (!response.ok) {
+        throw new Error(await readResponseError(response, '停止任务下发失败'));
       }
-      alert('停止失败: ' + (runtimeError?.error || runtimeError?.message || JSON.stringify(runtimeError)));
+      const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+      if (payload?.success === false) {
+        throw new Error(String(payload.error || '停止任务下发失败'));
+      }
+      setProfiles((previous) => previous.map((item) =>
+        item.id === profile.id ? { ...item, status: 'Ready', runtimeSessionId: '' } : item
+      ));
+      setTimeout(() => { void fetchProfiles(); }, 1200);
+    } catch (error) {
+      alert('停止失败: ' + (error instanceof Error ? error.message : String(error)));
     }
-  }
+  };
 
   const isStartingProfile = (profileId: string) => !!startingProfileIds[profileId];
 
 
-
-  const handleSaveSettings = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSettingsNotice({ message: '', variant: 'info' });
-    try {
-      const res = await apiFetch('/api/settings', {
-        method: 'PUT',
-        body: JSON.stringify({
-          autoFingerprint:
-            typeof settings.autoFingerprint === 'boolean'
-              ? settings.autoFingerprint
-              : true,
-          autoProxyVerification:
-            typeof settings.autoProxyVerification === 'boolean'
-              ? settings.autoProxyVerification
-              : true,
-          defaultStartupPlatform: String(settings.defaultStartupPlatform || ''),
-          defaultStartupUrl: String(settings.defaultStartupUrl || ''),
-          theme: String(settings.theme || 'system'),
-        })
-      });
-      if (res.ok) {
-        setSettingsNotice({ message: '设置已保存', variant: 'success' });
-      } else {
-        setSettingsNotice({ message: '设置保存失败', variant: 'error' });
-      }
-    } catch (err) {
-      console.error(err);
-      setSettingsNotice({ message: '设置保存失败', variant: 'error' });
-    }
-  }
 
   function handleLogout() {
     localStorage.removeItem('token');
@@ -900,55 +773,15 @@ export default function Home() {
 
   const handleBrowserCheckProxy = async () => {
     if (!editingProfile) return;
-    if (controlPlaneOnly) {
-      setProxyBrowserResult({
-        layer: 'environment',
-        status: 'unknown',
-        browserVerified: false,
-        latencyMs: 0,
-        error: '云端控制面不提供真实浏览器检测，请在桌面端执行',
-        detail: '当前部署模式下，真实浏览器检测和环境启动均应由桌面端本地运行时完成。',
-      } as ProxyVerificationRecord);
-      return;
-    }
-    const proxy = buildProxyFromDraft(editingProfile);
-    if (!proxy) { alert('请先填写代理类型、主机和端口'); return; }
-    setProxyBrowserChecking(true); setProxyBrowserResult(null);
-    try {
-      const result = await runtime.testBrowserProxy({
-        profileId: editingProfile.id,
-        proxy,
-        proxyType: editingProfile.proxyType,
-        proxyHost: editingProfile.proxyHost,
-        proxyPort: editingProfile.proxyPort,
-        proxyUsername: editingProfile.proxyUsername,
-        proxyPassword: editingProfile.proxyPassword,
-        expectedIp: editingProfile.expectedProxyIp,
-        expectedCountry: editingProfile.expectedProxyCountry,
-        expectedRegion: editingProfile.expectedProxyRegion,
-      }) as ProxyVerificationRecord;
-      setProxyBrowserResult(result);
-      if (result?.country || result?.region || result?.city) {
-        setEditingProfile((current) => (
-          current
-            ? {
-                ...current,
-                ...deriveExpectedGeoFromVerification(result),
-              }
-            : current
-        ));
-      }
-    } catch (err) {
-      setProxyBrowserResult({
-        layer: 'environment',
-        status: 'unknown',
-        error: err instanceof Error ? err.message : '真实浏览器测试失败',
-        detail: err && typeof err === 'object' && 'stage' in err ? `失败阶段: ${String((err as { stage?: string }).stage || '')}` : undefined,
-      });
-    } finally {
-      setProxyBrowserChecking(false);
-    }
-  }
+    setProxyBrowserResult({
+      layer: 'environment',
+      status: 'unknown',
+      browserVerified: false,
+      latencyMs: 0,
+      error: '旧直连浏览器检测已退役',
+      detail: '真实浏览器检测必须由 CloakBrowser 桌面代理执行；控制面尚未提供对应任务类型，因此本入口保持 fail-closed。',
+    } as ProxyVerificationRecord);
+  };
 
   const handleAdoptCurrentProxyResult = () => {
     if (!editingProfile || !proxyBrowserResult?.ip) return;
@@ -1206,31 +1039,12 @@ export default function Home() {
     }
   };
 
-  const addLog = (msg: string) => setExecLogs(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev.slice(0, 49)]);
-
   const handleRunBehavior = async () => {
-    if (!selectedBehavior || !targetSessionId) {
-      alert('请先选择一个流程和运行中的环境');
-      return;
-    }
-    setExecutingBehaviorId(selectedBehavior.id);
-    setExecLogs(['--- 启动自动化流程 ---']);
-    
-    try {
-      for (const action of selectedBehavior.actions) {
-        addLog(`执行: ${action.type}${action.url ? ` (${action.url})` : ''}${action.selector ? ` [${action.selector}]` : ''}`);
-        await runtime.doSessionAction(targetSessionId, action);
-        // Random pause between steps
-        await new Promise(r => setTimeout(r, 800 + Math.random() * 1200));
-      }
-      addLog('✅ 流程执行完成');
-    } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : JSON.stringify(err);
-      addLog(`❌ 出错: ${message}`);
-    } finally {
-      setExecutingBehaviorId(null);
-    }
+    setExecutingBehaviorId(null);
+    setExecLogs([
+      `[${new Date().toLocaleTimeString()}] 旧直连脚本执行入口已退役；当前仅支持控制面 start/stop 任务。`,
+    ]);
+    alert('自动化动作直连 Runtime 已退役，未执行任何浏览器动作。');
   };
 
   // --- Dynamic Stats Calculations ---
@@ -1444,13 +1258,7 @@ export default function Home() {
 
           {/* ─── 系统设置 ─── */}
           {activeTab === '系统设置' && (
-            <RuntimeSettingsPanel
-              settings={settings}
-              noticeMessage={settingsNotice.message}
-              noticeVariant={settingsNotice.variant}
-              onChange={setSettings}
-              onSubmit={handleSaveSettings}
-            />
+            <RuntimeSettingsPanel />
           )}
 
 
@@ -1501,7 +1309,7 @@ export default function Home() {
         groups={groups}
         proxyChecking={proxyChecking}
         proxyBrowserChecking={proxyBrowserChecking}
-        controlPlaneOnly={controlPlaneOnly}
+        controlPlaneOnly={true}
         proxyResult={proxyResult}
         proxyBrowserResult={proxyBrowserResult}
         workspaceSnapshots={editingProfile ? (workspaceSnapshotsByProfileId[editingProfile.id] || []) : []}
