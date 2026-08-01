@@ -67,6 +67,9 @@ jobs:
       - name: Validate single-engine boundaries
         run: npm run test:cloak-single-engine
 
+      - name: Run Cloak Runtime regression
+        run: npm run test:cloak-runtime
+
       - name: Lint desktop
         run: npm run lint
 

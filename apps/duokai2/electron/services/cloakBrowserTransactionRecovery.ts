@@ -158,6 +158,7 @@ function validateJournal(journal: CloakTransactionJournalRecord): void {
 }
 
 async function fsyncDirectory(directoryPath: string): Promise<void> {
+  if (process.platform === 'win32') return
   const handle = await open(directoryPath, 'r')
   try {
     await handle.sync()
