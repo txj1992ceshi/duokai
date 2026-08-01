@@ -29,6 +29,7 @@ on:
 
 jobs:
   policy:
+    name: desktop-release-policy
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

@@ -1,0 +1,112 @@
+name: Production Connectivity
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Type CHECK_PRODUCTION_CONNECTIVITY to run a read-only TCP and SSH probe.'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-connectivity
+  cancel-in-progress: false
+
+jobs:
+  production-connectivity:
+    name: production-connectivity
+    runs-on: ubuntu-latest
+    env:
+      VULTR_HOST: ${{ secrets.VULTR_HOST }}
+      VULTR_USER: ${{ secrets.VULTR_USER }}
+      VULTR_SSH_KEY: ${{ secrets.VULTR_SSH_KEY }}
+      VULTR_PORT: ${{ secrets.VULTR_PORT || '22' }}
+    steps:
+      - name: Validate diagnostic authorization and secret presence
+        shell: bash
+        env:
+          CONFIRMATION: ${{ github.event.inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRMATION" != 'CHECK_PRODUCTION_CONNECTIVITY' ]; then
+            echo 'confirmation must be exactly CHECK_PRODUCTION_CONNECTIVITY' >&2
+            exit 1
+          fi
+          for name in VULTR_HOST VULTR_USER VULTR_SSH_KEY VULTR_PORT; do
+            if [ -z "${!name:-}" ]; then
+              echo "${name} is required for the production connectivity diagnostic." >&2
+              exit 1
+            fi
+          done
+          if [[ ! "$VULTR_PORT" =~ ^[0-9]+$ ]] || [ "$VULTR_PORT" -lt 1 ] || [ "$VULTR_PORT" -gt 65535 ]; then
+            echo 'VULTR_PORT must be an integer from 1 to 65535.' >&2
+            exit 1
+          fi
+
+      - name: Run read-only TCP and SSH probes
+        id: probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p connectivity-evidence
+          KEY_FILE="$RUNNER_TEMP/vultr-connectivity-key"
+          trap 'rm -f "$KEY_FILE"' EXIT
+          printf '%s\n' "$VULTR_SSH_KEY" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+
+          TCP_STATUS='failed'
+          SSH_STATUS='not-run'
+          STARTED_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          if timeout 20 bash -c 'cat < /dev/null > /dev/tcp/$0/$1' "$VULTR_HOST" "$VULTR_PORT"; then
+            TCP_STATUS='passed'
+            if timeout 30 ssh \
+              -i "$KEY_FILE" \
+              -p "$VULTR_PORT" \
+              -o BatchMode=yes \
+              -o ConnectTimeout=20 \
+              -o ConnectionAttempts=1 \
+              -o ServerAliveInterval=5 \
+              -o ServerAliveCountMax=1 \
+              -o StrictHostKeyChecking=accept-new \
+              "$VULTR_USER@$VULTR_HOST" \
+              'printf "connectivity-ok\n"'; then
+              SSH_STATUS='passed'
+            else
+              SSH_STATUS='failed'
+            fi
+          fi
+          COMPLETED_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+
+          jq -n \
+            --arg startedAt "$STARTED_AT" \
+            --arg completedAt "$COMPLETED_AT" \
+            --arg tcp "$TCP_STATUS" \
+            --arg ssh "$SSH_STATUS" \
+            --arg port "$VULTR_PORT" \
+            '{
+              schemaVersion: 1,
+              probe: "read-only-production-connectivity",
+              startedAt: $startedAt,
+              completedAt: $completedAt,
+              port: ($port | tonumber),
+              tcp: $tcp,
+              ssh: $ssh,
+              remoteCommand: "printf connectivity-ok",
+              mutationAttempted: false,
+              result: (if $tcp == "passed" and $ssh == "passed" then "PASS" else "FAIL" end)
+            }' > connectivity-evidence/summary.json
+          cat connectivity-evidence/summary.json
+          if [ "$TCP_STATUS" != 'passed' ] || [ "$SSH_STATUS" != 'passed' ]; then
+            exit 1
+          fi
+
+      - name: Upload connectivity evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-connectivity-evidence
+          path: connectivity-evidence/summary.json
+          if-no-files-found: warn
