@@ -16,6 +16,9 @@ const cacheDir = cacheDirInput ? path.resolve(cacheDirInput) : ''
 const expectedBinarySha256 = String(
   process.env.DUOKAI_CLOAK_PILOT_BINARY_SHA256 ?? '',
 ).trim().toLowerCase()
+const resourcesPathInput = String(
+  process.env.DUOKAI_CLOAK_INSTALL_RESOURCES_PATH ?? '',
+).trim()
 
 function fail(message: string): never {
   throw new Error(message)
@@ -32,9 +35,13 @@ async function main(): Promise<void> {
     fail('DUOKAI_CLOAK_PILOT_BINARY_SHA256 must be an exact SHA256 digest.')
   }
 
+  const defaultResourcesPath =
+    process.platform === 'win32'
+      ? path.join(process.cwd(), 'release', 'win-unpacked', 'resources')
+      : path.join(process.cwd(), 'release', 'mac-arm64', 'Duokai.app', 'Contents', 'Resources')
   const environment = {
     appPath: process.cwd(),
-    resourcesPath: path.join(process.cwd(), 'release', 'mac-arm64', 'Duokai.app', 'Contents', 'Resources'),
+    resourcesPath: resourcesPathInput ? path.resolve(resourcesPathInput) : defaultResourcesPath,
     temporaryDirectory: os.tmpdir(),
   }
   const installed = await installCloakBrowserFixedVersion({
