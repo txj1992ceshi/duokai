@@ -11,6 +11,7 @@ on:
       - 'apps/duokai2/scripts/validate-desktop-release-version.test.mjs'
       - 'apps/duokai2/docs/desktop-release-runbook.md'
       - 'deploy/desktop-release-policy.test.mjs'
+      - 'deploy/rollback-rehearsal.test.mjs'
   push:
     branches:
       - main
@@ -23,6 +24,7 @@ on:
       - 'apps/duokai2/scripts/validate-desktop-release-version.test.mjs'
       - 'apps/duokai2/docs/desktop-release-runbook.md'
       - 'deploy/desktop-release-policy.test.mjs'
+      - 'deploy/rollback-rehearsal.test.mjs'
   workflow_dispatch:
 
 jobs:
@@ -40,6 +42,7 @@ jobs:
       - name: Validate desktop release freeze contract
         run: |
           node --test deploy/desktop-release-policy.test.mjs
+          node --test deploy/rollback-rehearsal.test.mjs
           node --test apps/duokai2/scripts/validate-desktop-release-version.test.mjs
 
       - name: Prove current published version cannot be overwritten
