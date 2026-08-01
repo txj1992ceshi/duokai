@@ -77,6 +77,48 @@ test('evaluatePlatformSmokeSuccess fails when host mismatches expected platform'
   assert.match(evaluation.reasons.join(' '), /final host mismatch/)
 })
 
+test('evaluatePlatformSmokeSuccess accepts signed trusted navigation when profile metadata is unavailable', () => {
+  const scenario = resolvePlatformSmokeScenario('default')
+  const evaluation = evaluatePlatformSmokeSuccess({
+    scenario,
+    launchPassed: true,
+    startupNavigation: null,
+    trustedStartupNavigationPassed: true,
+    probe: {
+      success: true,
+      finalUrl: 'https://example.com/',
+      finalHost: 'example.com',
+      title: 'Example Domain',
+      readyState: 'complete',
+      selectorMatches: { body: 1 },
+    },
+  })
+
+  assert.equal(evaluation.success, true)
+  assert.deepEqual(evaluation.reasons, [])
+})
+
+test('evaluatePlatformSmokeSuccess still rejects missing navigation trust', () => {
+  const scenario = resolvePlatformSmokeScenario('default')
+  const evaluation = evaluatePlatformSmokeSuccess({
+    scenario,
+    launchPassed: true,
+    startupNavigation: null,
+    trustedStartupNavigationPassed: false,
+    probe: {
+      success: true,
+      finalUrl: 'https://example.com/',
+      finalHost: 'example.com',
+      title: 'Example Domain',
+      readyState: 'complete',
+      selectorMatches: { body: 1 },
+    },
+  })
+
+  assert.equal(evaluation.success, false)
+  assert.match(evaluation.reasons.join(' '), /startup navigation failed/)
+})
+
 test('buildPlatformSmokeArtifactBaseName sanitizes optional labels', () => {
   const scenario = resolvePlatformSmokeScenario('linkedin-register-smoke')
   assert.equal(

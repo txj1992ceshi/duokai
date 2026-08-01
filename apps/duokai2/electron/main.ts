@@ -8180,12 +8180,16 @@ async function waitForSmokeRuntimeReady(
       return { profile: null, context, runtimeStatus, elapsedMs: Date.now() - startedAt }
     }
     const hasStartupNavigation = Boolean(profile.startupNavigation?.checkedAt)
+    const cloakStatus = runtimeStatus.cloakPilotProfiles[profileId]
+    const hasTrustedCloakContext = Boolean(
+      context && cloakStatus?.state === 'trusted' && !cloakStatus.lastError,
+    )
     const isActive =
       runtimeStatus.runningProfileIds.includes(profileId) ||
       runtimeStatus.startingProfileIds.includes(profileId) ||
       runtimeStatus.queuedProfileIds.includes(profileId)
 
-    if (context && hasStartupNavigation) {
+    if ((context && hasStartupNavigation) || hasTrustedCloakContext) {
       return { profile, context, runtimeStatus, elapsedMs: Date.now() - startedAt }
     }
 
@@ -8765,12 +8769,16 @@ async function runDesktopSmokeScenario(): Promise<void> {
           ...result.artifacts,
           logsPath,
         }
+        const cloakStatus = outcome.runtimeStatus.cloakPilotProfiles[profile.id]
+        const trustedStartupNavigationPassed = Boolean(
+          cloakStatus?.state === 'trusted' && !cloakStatus.lastError,
+        )
         const launchPassed = Boolean(
           latestProfile &&
             outcome.context &&
-            latestProfile.startupNavigation?.checkedAt &&
             latestProfile.status !== 'error' &&
-            (metadata?.launchValidationStage === 'idle' || latestProfile.startupNavigation?.success),
+            trustedStartupNavigationPassed &&
+            metadata?.launchValidationStage === 'idle',
         )
         pushSmokeStep(
           result.steps,
@@ -8825,6 +8833,7 @@ async function runDesktopSmokeScenario(): Promise<void> {
             scenario,
             launchPassed,
             startupNavigation: latestProfile.startupNavigation,
+            trustedStartupNavigationPassed,
             probe: probe as PlatformSmokeProbeResult,
           })
           pushSmokeStep(
