@@ -12,7 +12,8 @@ const deployPolicy = read('.github/workflows/deploy-policy.yml')
 const agentContract = read('.github/workflows/agent-contract.yml')
 const releasePolicy = read('.github/workflows/desktop-release-policy.yml')
 
-test('candidate closure is manual, exact-head and evidence-backed', () => {
+test('candidate closure is PR-aware, exact-head and evidence-backed', () => {
+  assert.match(candidate, /^\s{2}pull_request:\s*$/m)
   assert.match(candidate, /^\s{2}workflow_dispatch:\s*$/m)
   assert.doesNotMatch(candidate, /^\s{2}push:\s*$/m)
   assert.match(candidate, /VERIFY_CANDIDATE_CLOSURE/)
@@ -32,7 +33,8 @@ test('candidate closure is manual, exact-head and evidence-backed', () => {
   assert.match(candidate, /name:\s*candidate-closure/)
 })
 
-test('production connectivity workflow is read-only and never deploys', () => {
+test('production connectivity workflow is PR-aware, read-only and never deploys', () => {
+  assert.match(connectivity, /^\s{2}pull_request:\s*$/m)
   assert.match(connectivity, /^\s{2}workflow_dispatch:\s*$/m)
   assert.doesNotMatch(connectivity, /^\s{2}push:\s*$/m)
   assert.match(connectivity, /CHECK_PRODUCTION_CONNECTIVITY/)

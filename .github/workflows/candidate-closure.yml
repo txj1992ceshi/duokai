@@ -1,6 +1,15 @@
 name: Candidate Closure
 
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/candidate-closure.yml'
+      - '.github/workflows/agent-contract.yml'
+      - '.github/workflows/deploy-policy.yml'
+      - '.github/workflows/desktop-release-policy.yml'
+      - '.github/workflows/desktop-windows-smoke.yml'
+      - '.github/workflows/desktop-windows-test-package.yml'
+      - 'deploy/**'
   workflow_dispatch:
     inputs:
       expected_sha:
@@ -26,9 +35,10 @@ jobs:
     name: candidate-closure
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout dispatched candidate
+      - name: Checkout exact candidate
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref }}
           fetch-depth: 1
 
       - name: Verify exact candidate and machine gates
@@ -36,11 +46,12 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          EXPECTED_SHA: ${{ github.event.inputs.expected_sha }}
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event.inputs.expected_sha }}
           CONFIRMATION: ${{ github.event.inputs.confirmation }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          if [ "$CONFIRMATION" != 'VERIFY_CANDIDATE_CLOSURE' ]; then
+          if [ "$EVENT_NAME" = 'workflow_dispatch' ] && [ "$CONFIRMATION" != 'VERIFY_CANDIDATE_CLOSURE' ]; then
             echo 'confirmation must be exactly VERIFY_CANDIDATE_CLOSURE' >&2
             exit 1
           fi
