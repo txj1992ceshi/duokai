@@ -31,7 +31,7 @@ import {
 } from './cloakBrowserRolloutControl.ts'
 
 const fixedNow = new Date('2026-07-28T16:40:00.000Z')
-const executablePath = '/Applications/Test Duokai.app/Contents/MacOS/Duokai'
+const executablePath = path.resolve('/Applications/Test Duokai.app/Contents/MacOS/Duokai')
 const appAsarContent = 'phase-6j-app-asar-fixture'
 const appAsarSha256 = 'c3e6633f8aae34eb7538d38b46e67d80785f2a455b584f2fd37ec11d696a141b'
 
