@@ -40,6 +40,9 @@ test('production launch and proxy preflight contain no ordinary Chromium fallbac
   const runtime = read('electron/services/runtime.ts')
   const proxyCheck = read('electron/services/proxyCheck.ts')
   const viteConfig = read('vite.config.ts')
+  const cloakRuntime = read('electron/services/cloakBrowserRuntime.ts')
+  const installationManager = read('electron/services/cloakBrowserInstallationManager.ts')
+  const runtimeSmoke = read('scripts/run-cloak-runtime-smoke.ts')
 
   assert.doesNotMatch(main, /from ['"]playwright['"]/)
   assert.doesNotMatch(main, /chromium\.launch(?:PersistentContext)?/)
@@ -47,12 +50,22 @@ test('production launch and proxy preflight contain no ordinary Chromium fallbac
   assert.doesNotMatch(main, /resolveChromiumExecutable/)
   assert.match(main, /cloak_single_engine_launch_blocked/)
   assert.match(main, /fallbackEngine: 'forbidden'/)
+  assert.doesNotMatch(main, /if \(!cloakPilotEnabled &&/)
+  assert.doesNotMatch(
+    main,
+    /evaluateTrustedSnapshotReuse|buildTrustedLaunchSnapshot|trusted_launch_quick_check_passed/,
+  )
 
   assert.doesNotMatch(runtime, /playwright|ms-playwright|Chromium/i)
   assert.doesNotMatch(proxyCheck, /from ['"]playwright['"]|chromium\.launch/)
   assert.doesNotMatch(viteConfig, /['"]playwright['"]/)
   assert.match(proxyCheck, /fetchJsonThroughHttpProxy/)
   assert.match(proxyCheck, /'proxy_tunnel'/)
+  for (const source of [cloakRuntime, installationManager, runtimeSmoke]) {
+    assert.doesNotMatch(source, /DUOKAI_CLOAKBROWSER_MODULE/)
+  }
+  assert.match(cloakRuntime, /import\(['"]cloakbrowser['"]\)/)
+  assert.match(installationManager, /import\(['"]cloakbrowser['"]\)/)
 })
 
 test('distribution assets and user-facing guidance forbid legacy fallback', () => {

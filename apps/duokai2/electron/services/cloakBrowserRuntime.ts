@@ -396,13 +396,12 @@ export function buildCloakLaunchOptions(
 }
 
 export async function loadCloakBrowserModule(): Promise<CloakBrowserModuleLike> {
-  const moduleSpecifier = process.env.DUOKAI_CLOAKBROWSER_MODULE || 'cloakbrowser'
   try {
-    return (await import(moduleSpecifier)) as unknown as CloakBrowserModuleLike
+    return (await import('cloakbrowser')) as unknown as CloakBrowserModuleLike
   } catch (error) {
     throw new CloakRuntimeError(
       'wrapper_unavailable',
-      `Unable to load CloakBrowser wrapper from "${moduleSpecifier}".`,
+      'Unable to load the pinned CloakBrowser wrapper.',
       error,
     )
   }

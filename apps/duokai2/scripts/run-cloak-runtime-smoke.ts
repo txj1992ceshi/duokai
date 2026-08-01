@@ -132,7 +132,7 @@ async function run(): Promise<SmokeReport> {
 
   const browserVersion =
     process.env.DUOKAI_CLOAK_POC_BROWSER_VERSION || '145.0.7632.109.2'
-  const moduleSpecifier = process.env.DUOKAI_CLOAKBROWSER_MODULE || 'cloakbrowser'
+  const moduleSpecifier = 'cloakbrowser'
   const request: CloakRuntimeLaunchRequest = {
     userDataDir,
     downloadsDir,

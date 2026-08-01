@@ -126,13 +126,17 @@ import {
 import { listEgressPathCandidates } from './services/egressPaths'
 import { RuntimeScheduler } from './services/runtimeScheduler'
 import { convergeClosedRuntimeContext } from './services/runtimeContextLifecycle'
+import {
+  assertAllProfileRuntimesInactiveForMutation,
+  assertProfileRuntimeInactiveForMutation,
+  type ProfileRuntimeMutationState,
+} from './services/profileRuntimeMutationGate'
 import { AgentNetworkError, AgentService } from './services/agentService'
 import {
   classifyRecoverableGlobalNetworkError,
   isRecoverableNetworkFailure,
   type RecoverableGlobalNetworkErrorClassification,
 } from './services/networkErrorRecovery'
-import { evaluateTrustedSnapshotReuse } from './services/trustedLaunch'
 import {
   assignStableHardwareFingerprint,
   sanitizeTemplateHardwareFingerprint,
@@ -193,7 +197,6 @@ import type {
   StartupNavigationResult,
   DesktopUpdateState,
   TrustedIsolationCheck,
-  TrustedLaunchSnapshot,
   UpdateCloudPhoneInput,
   UpdateTemplateInput,
   UpdateProfileInput,
@@ -220,7 +223,6 @@ const DEFAULT_CONTROL_PLANE_API_BASE = (
   String(process.env.DUOKAI_API_BASE || '').trim() || 'https://duokai-admin.junhuo.icu'
 ).replace(/\/$/, '')
 const LEGACY_CONTROL_PLANE_API_HOSTS = new Set(['duokai.duckdns.org'])
-const TRUSTED_SNAPSHOT_VERSION = 1
 const PROFILE_RUNTIME_LOCK_HEARTBEAT_MS = 30 * 1000
 const PROFILE_RUNTIME_LOCK_STALE_MS = 2 * 60 * 1000
 const CONTROL_PLANE_API_BASE_KEY = 'controlPlaneApiBase'
@@ -4923,15 +4925,6 @@ function detectDesktopHostEnvironment(): string {
   return 'Windows'
 }
 
-function resolveChromiumMajorForProfile(profile: ProfileRecord): string {
-  const browserVersion = String(profile.fingerprintConfig.advanced.browserVersion || '').trim()
-  if (browserVersion) {
-    return browserVersion.split('.')[0] || browserVersion
-  }
-  const matched = profile.fingerprintConfig.userAgent.match(/Chrome\/(\d+)/i)
-  return matched?.[1] || ''
-}
-
 function buildConfigFingerprintHash(profile: ProfileRecord): string {
   return hashStructuredPayload({
     environmentPurpose: profile.environmentPurpose,
@@ -4961,95 +4954,6 @@ function buildProxyFingerprintHash(profile: ProfileRecord, proxy: ProxyRecord | 
     expectedRegion: profile.fingerprintConfig.runtimeMetadata.lastResolvedRegion,
     preferredTransport: profile.fingerprintConfig.runtimeMetadata.lastEffectiveProxyTransport,
   })
-}
-
-function buildTrustedLaunchSnapshot(
-  profile: ProfileRecord,
-  check: NetworkHealthResult,
-  configFingerprintHash: string,
-  proxyFingerprintHash: string,
-  effectiveProxyTransport: string,
-): TrustedLaunchSnapshot {
-  return {
-    configFingerprintHash,
-    proxyFingerprintHash,
-    snapshotVersion: TRUSTED_SNAPSHOT_VERSION,
-    verificationLevel: 'full',
-    verifiedAt: new Date().toISOString(),
-    effectiveProxyTransport,
-    verifiedEgressIp: check.ip,
-    verifiedCountry: check.country,
-    verifiedRegion: check.region,
-    verifiedTimezone: check.timezone,
-    verifiedLanguage: check.languageHint,
-    verifiedGeolocation: check.geolocation,
-    verifiedHostEnvironment: detectDesktopHostEnvironment(),
-    verifiedChromiumMajor: resolveChromiumMajorForProfile(profile),
-    verifiedDesktopAppVersion: app.getVersion(),
-    httpsCheckPassed: check.ok,
-    leakCheckPassed: check.ok,
-    startupNavigationPassed: true,
-    status: 'trusted',
-  }
-}
-
-function buildQuickIsolationCheck(
-  profile: ProfileRecord,
-  check: NetworkHealthResult,
-  effectiveProxyTransport: string,
-  success: boolean,
-  message: string,
-): TrustedIsolationCheck {
-  const workspace = profile.workspace
-  return {
-    mode: 'quick-network',
-    checkedAt: new Date().toISOString(),
-    success,
-    message,
-    egressIp: check.ip,
-    country: check.country,
-    region: check.region,
-    timezone: check.timezone,
-    language: check.languageHint,
-    geolocation: check.geolocation,
-    effectiveProxyTransport,
-    workspaceConsistencyStatus: workspace?.consistencySummary.status || 'unknown',
-    workspaceHealthStatus: workspace?.healthSummary.status || 'unknown',
-    runtimeLockStatus: getRuntimeLockStateForProfile(profile),
-    canonicalRoot: workspace ? path.dirname(workspace.paths.profileDir) : '',
-  }
-}
-
-function compareSnapshotWithCheck(
-  snapshot: TrustedLaunchSnapshot,
-  check: NetworkHealthResult,
-  effectiveProxyTransport: string,
-): { ok: boolean; message: string } {
-  if (!check.ok) {
-    return { ok: false, message: check.message || '快速隔离校验失败' }
-  }
-  if (snapshot.effectiveProxyTransport && snapshot.effectiveProxyTransport !== effectiveProxyTransport) {
-    return { ok: false, message: '当前代理入口与可信快照不一致' }
-  }
-  if (snapshot.verifiedEgressIp && snapshot.verifiedEgressIp !== check.ip) {
-    return { ok: false, message: '当前出口 IP 与可信快照不一致' }
-  }
-  if (snapshot.verifiedCountry && snapshot.verifiedCountry !== check.country) {
-    return { ok: false, message: '当前出口国家与可信快照不一致' }
-  }
-  if (snapshot.verifiedRegion && snapshot.verifiedRegion !== check.region) {
-    return { ok: false, message: '当前出口地区与可信快照不一致' }
-  }
-  if (snapshot.verifiedTimezone && check.timezone && snapshot.verifiedTimezone !== check.timezone) {
-    return { ok: false, message: '当前时区与可信快照不一致' }
-  }
-  if (snapshot.verifiedLanguage && check.languageHint && snapshot.verifiedLanguage !== check.languageHint) {
-    return { ok: false, message: '当前语言与可信快照不一致' }
-  }
-  if (snapshot.verifiedGeolocation && check.geolocation && snapshot.verifiedGeolocation !== check.geolocation) {
-    return { ok: false, message: '当前地理位置与可信快照不一致' }
-  }
-  return { ok: true, message: '快速隔离校验通过' }
 }
 
 async function syncProfileStatusToControlPlane(
@@ -6930,19 +6834,6 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     }
     const configFingerprintHash = buildConfigFingerprintHash(profile)
     const proxyFingerprintHash = buildProxyFingerprintHash(profile, proxy)
-    const existingSnapshot = profile.fingerprintConfig.runtimeMetadata.trustedLaunchSnapshot
-    const trustedSnapshotDecision = evaluateTrustedSnapshotReuse(existingSnapshot, {
-      configFingerprintHash,
-      proxyFingerprintHash,
-      currentDesktopAppVersion: app.getVersion(),
-      currentChromiumMajor: resolveChromiumMajorForProfile(profile),
-      currentHostEnvironment: detectDesktopHostEnvironment(),
-      currentCanonicalRoot: workspaceLaunch?.canonicalRoot || '',
-      runtimeLockStatus: getRuntimeLockStateForProfile(profile),
-      workspaceHealthStatus: profile.workspace?.healthSummary.status || 'unknown',
-      workspaceConsistencyStatus: profile.workspace?.consistencySummary.status || 'unknown',
-      lastQuickIsolationCheck: profile.fingerprintConfig.runtimeMetadata.lastQuickIsolationCheck,
-    })
     profile = updateRuntimeMetadata(profile, {
       lastValidationLevel: validation.level,
       lastValidationMessages: validation.messages,
@@ -6955,104 +6846,21 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       throw new Error(validation.messages.join(' '))
     }
 
-    let resolvedProxy: ProxyRecord | null = proxy
-    let check: NetworkHealthResult
-    let effectiveProxyTransport = toEntryTransport(proxy)
-    let usedTrustedSnapshot = false
-
-    if (!cloakPilotEnabled && existingSnapshot && !trustedSnapshotDecision.usable) {
-    audit('trusted_snapshot_rejected', {
-      profileId,
-      status: trustedSnapshotDecision.status,
-      reason: trustedSnapshotDecision.reason,
-    })
-    profile = updateRuntimeMetadata(profile, {
-      trustedSnapshotStatus: trustedSnapshotDecision.status,
-      trustedLaunchSnapshot: {
-        ...existingSnapshot,
-        status: trustedSnapshotDecision.status,
-      },
-      lastValidationMessages: Array.from(
-        new Set([
-          ...profile.fingerprintConfig.runtimeMetadata.lastValidationMessages,
-          trustedSnapshotDecision.reason,
-        ].filter(Boolean)),
-      ),
-    })
-    profile = persistTrustedLaunchSummary(profile, {
-      trustedSnapshotStatus: trustedSnapshotDecision.status,
-      trustedLaunchVerifiedAt:
-        trustedSnapshotDecision.status === 'trusted' ? existingSnapshot.verifiedAt : '',
-    })
-    void syncWorkspaceSummaryToControlPlane(profile).catch(() => {})
-    }
-
-    if (!cloakPilotEnabled && trustedSnapshotDecision.usable) {
-    usedTrustedSnapshot = true
-    audit('quick_check_start', { profileId })
-    profile = updateRuntimeMetadata(profile, {
-      launchValidationStage: 'quick-check',
-      trustedSnapshotStatus: 'trusted',
-    })
-    profile = persistTrustedLaunchSummary(profile, {
-      trustedSnapshotStatus: 'trusted',
-      trustedLaunchVerifiedAt: existingSnapshot?.verifiedAt || '',
-    })
-    check = await checkNetworkHealth(profile, proxy, database.getSettings())
-    if (check.ok) {
-      rememberSuccessfulEgressPath(check.egressPathType)
-    }
-    effectiveProxyTransport = toEntryTransport(proxy)
-    const comparison = compareSnapshotWithCheck(existingSnapshot!, check, effectiveProxyTransport)
-    const quickCheck = buildQuickIsolationCheck(
-      profile,
-      check,
-      effectiveProxyTransport,
-      comparison.ok,
-      comparison.message,
-    )
-    profile = updateRuntimeMetadata(profile, {
-      lastQuickCheckAt: quickCheck.checkedAt,
-      lastQuickCheckSuccess: quickCheck.success,
-      lastQuickCheckMessage: quickCheck.message,
-      lastNetworkEgressPath: check.egressPathType,
-      lastEffectiveProxyTransport: effectiveProxyTransport,
-      trustedSnapshotStatus: comparison.ok ? 'trusted' : 'invalid',
-      trustedLaunchSnapshot: comparison.ok
-        ? existingSnapshot
-        : existingSnapshot
-          ? { ...existingSnapshot, status: 'invalid', verificationLevel: 'quick' }
-          : null,
-    })
-    profile = persistTrustedLaunchSummary(profile, {
-      trustedSnapshotStatus: comparison.ok ? 'trusted' : 'invalid',
-      trustedLaunchVerifiedAt: comparison.ok ? existingSnapshot?.verifiedAt || '' : '',
-    })
-    void syncProfileLaunchTrustToControlPlane(profile)
-    void syncWorkspaceSummaryToControlPlane(profile).catch(() => {})
-    if (!comparison.ok) {
-      audit('quick_check_failed', { profileId, reason: comparison.message })
-      throw new Error(comparison.message)
-    }
-    audit('trusted_launch_quick_check_passed', {
-      profileId,
-      verifiedAt: existingSnapshot?.verifiedAt || '',
-      effectiveProxyTransport,
-      egressIp: check.ip,
-    })
-    } else {
     audit('full_check_start', { profileId })
     profile = updateRuntimeMetadata(profile, {
       launchValidationStage: 'full-check',
-      trustedSnapshotStatus: existingSnapshot ? 'stale' : 'unknown',
-      trustedLaunchSnapshot: existingSnapshot
-        ? { ...existingSnapshot, status: 'stale' }
-        : existingSnapshot,
+      trustedSnapshotStatus: 'stale',
+      trustedLaunchSnapshot: profile.fingerprintConfig.runtimeMetadata.trustedLaunchSnapshot
+        ? {
+            ...profile.fingerprintConfig.runtimeMetadata.trustedLaunchSnapshot,
+            status: 'stale',
+          }
+        : null,
     })
     const preflightResult = await runProxyPreflight(profile, database)
-    resolvedProxy = preflightResult.proxy
-    check = preflightResult.check
-    effectiveProxyTransport = toEntryTransport(resolvedProxy)
+    const resolvedProxy = preflightResult.proxy
+    const check = preflightResult.check
+    const effectiveProxyTransport = toEntryTransport(resolvedProxy)
     profile = updateRuntimeMetadata(profile, {
       lastQuickCheckAt: '',
       lastQuickCheckSuccess: null,
@@ -7065,7 +6873,6 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       trustedSnapshotStatus: 'stale',
     })
     void syncWorkspaceSummaryToControlPlane(profile).catch(() => {})
-    }
 
     const registrationCooldown = getRegistrationCooldownContext(profile, check)
     const readinessValidation = validateProfileReadiness(
@@ -7108,34 +6915,6 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       },
     },
     })
-
-    const finalConfigFingerprintHash = buildConfigFingerprintHash(profile)
-    const finalProxyFingerprintHash = buildProxyFingerprintHash(profile, resolvedProxy)
-    if (!cloakPilotEnabled && !usedTrustedSnapshot) {
-    const refreshedSnapshot = buildTrustedLaunchSnapshot(
-      profile,
-      check,
-      finalConfigFingerprintHash,
-      finalProxyFingerprintHash,
-      effectiveProxyTransport,
-    )
-    profile = updateRuntimeMetadata(profile, {
-      configFingerprintHash: finalConfigFingerprintHash,
-      proxyFingerprintHash: finalProxyFingerprintHash,
-      trustedSnapshotStatus: 'trusted',
-      trustedLaunchSnapshot: refreshedSnapshot,
-      lastEffectiveProxyTransport: effectiveProxyTransport,
-    })
-    audit('trusted_launch_snapshot_created', {
-      profileId,
-      verifiedAt: refreshedSnapshot.verifiedAt,
-      effectiveProxyTransport,
-      egressIp: refreshedSnapshot.verifiedEgressIp,
-      country: refreshedSnapshot.verifiedCountry,
-      region: refreshedSnapshot.verifiedRegion,
-    })
-    void syncProfileLaunchTrustToControlPlane(profile)
-    }
 
     const directoryInfo = getProfileDirectoryInfo(app)
     ensureProfileDirectory(directoryInfo.profilesDir)
@@ -7859,6 +7638,14 @@ const scheduler = new RuntimeScheduler({
   },
 })
 
+function getProfileRuntimeMutationState(): ProfileRuntimeMutationState {
+  return {
+    runningProfileIds: runtimeContexts.keys(),
+    startingProfileIds: scheduler.getStartingIds(),
+    queuedProfileIds: scheduler.getQueuedIds(),
+  }
+}
+
 async function enqueueLaunch(profileId: string): Promise<void> {
   const profile = requireDatabase().getProfileById(profileId)
   if (!profile) {
@@ -8047,6 +7834,11 @@ async function updateProfileStartupTarget(
   targetUrl: string,
   startupPlatform?: string,
 ): Promise<ProfileRecord> {
+  assertProfileRuntimeInactiveForMutation(
+    [profileId],
+    getProfileRuntimeMutationState(),
+    'updating a Profile startup target',
+  )
   const profile = requireDatabase().getProfileById(profileId)
   if (!profile) {
     throw new Error('Profile not found')
@@ -9294,6 +9086,11 @@ async function registerIpcHandlers(): Promise<void> {
   ipcMain.handle('profiles.update', async (_event, input: UpdateProfileInput) => {
     ensureWritable('profiles.update')
     ensureControlPlaneConfigWritable('profiles.update')
+    assertProfileRuntimeInactiveForMutation(
+      [input.id],
+      getProfileRuntimeMutationState(),
+      'updating a Profile',
+    )
     const existingProfile = requireDatabase().getProfileById(input.id)
     const payload = applyPurposeTransitionMetadata(
       await applyResolvedNetworkProfileToPayload(
@@ -9336,6 +9133,11 @@ async function registerIpcHandlers(): Promise<void> {
   ipcMain.handle('profiles.pullConfig', async (_event, profileId: string) => {
     ensureWritable('profiles.pullConfig')
     ensureControlPlaneConfigWritable('profiles.pullConfig')
+    assertProfileRuntimeInactiveForMutation(
+      [profileId],
+      getProfileRuntimeMutationState(),
+      'pulling Profile configuration',
+    )
     return pullProfileConfigFromControlPlane(profileId, { force: true })
   })
   ipcMain.handle('profiles.syncStorageState', async (_event, profileId: string) => {
@@ -9349,6 +9151,11 @@ async function registerIpcHandlers(): Promise<void> {
   ipcMain.handle('profiles.pullStorageState', async (_event, profileId: string) => {
     ensureWritable('profiles.pullStorageState')
     ensureControlPlaneConfigWritable('profiles.pullStorageState')
+    assertProfileRuntimeInactiveForMutation(
+      [profileId],
+      getProfileRuntimeMutationState(),
+      'pulling Profile storage state',
+    )
     return downloadProfileStorageStateFromControlPlane(profileId, {
       force: true,
       reason: 'manual',
@@ -9380,6 +9187,11 @@ async function registerIpcHandlers(): Promise<void> {
   ipcMain.handle('profiles.bulkAssignGroup', async (_event, payload: ProfileBulkActionPayload) => {
     ensureWritable('profiles.bulkAssignGroup')
     ensureControlPlaneConfigWritable('profiles.bulkAssignGroup')
+    assertProfileRuntimeInactiveForMutation(
+      payload.profileIds,
+      getProfileRuntimeMutationState(),
+      'assigning Profile groups',
+    )
     requireDatabase().bulkAssignGroup(payload.profileIds, payload.groupName ?? '')
     setLastConfigSyncResult(buildEnvironmentSyncPendingResult('环境分组已在本地更新，等待上传到云端'))
     updateEnvironmentSyncMetadataForProfiles(payload.profileIds, {
@@ -9520,6 +9332,11 @@ async function registerIpcHandlers(): Promise<void> {
   })
   ipcMain.handle('workspace.snapshots.create', async (_event, profileId: string) => {
     ensureWritable('workspace.snapshots.create')
+    assertProfileRuntimeInactiveForMutation(
+      [profileId],
+      getProfileRuntimeMutationState(),
+      'creating a workspace snapshot',
+    )
     return createWorkspaceSnapshotForProfile(profileId)
   })
   ipcMain.handle('workspace.snapshots.restore', async (_event, profileId: string, snapshotId: string) => {
@@ -9586,6 +9403,10 @@ async function registerIpcHandlers(): Promise<void> {
     if (selected.canceled || selected.filePaths.length === 0) {
       return null
     }
+    assertAllProfileRuntimesInactiveForMutation(
+      getProfileRuntimeMutationState(),
+      'importing a configuration bundle',
+    )
     const content = await readFile(selected.filePaths[0], 'utf8')
     const bundle = parseBundle(content)
     const baseResult = requireDatabase().importBundle(bundle)
@@ -9667,6 +9488,11 @@ function initAgentService() {
         if (!profileId) {
           return { status: 'FAILED', errorCode: 'INVALID_PAYLOAD', errorMessage: 'profileId is required' }
         }
+        assertProfileRuntimeInactiveForMutation(
+          [profileId],
+          getProfileRuntimeMutationState(),
+          'creating a workspace snapshot',
+        )
         const snapshot = await createWorkspaceSnapshotForProfile(profileId)
         return {
           status: 'SUCCEEDED',
@@ -9703,6 +9529,11 @@ function initAgentService() {
         if (!profileId) {
           return { status: 'FAILED', errorCode: 'INVALID_PAYLOAD', errorMessage: 'profileId is required' }
         }
+        assertProfileRuntimeInactiveForMutation(
+          [profileId],
+          getProfileRuntimeMutationState(),
+          'verifying a Profile',
+        )
         const result = await verifyProfileForControlTask(profileId)
         if (result.level === 'block') {
           return {

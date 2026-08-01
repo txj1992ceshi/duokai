@@ -196,8 +196,7 @@ async function defaultEnsureBinary(
   browserVersion: string,
   releaseChannel: string,
 ): Promise<string> {
-  const moduleSpecifier = process.env.DUOKAI_CLOAKBROWSER_MODULE || 'cloakbrowser'
-  const module = (await import(moduleSpecifier)) as unknown as {
+  const module = (await import('cloakbrowser')) as unknown as {
     ensureBinary?: (
       licenseKey?: string,
       browserVersion?: string,
@@ -207,7 +206,7 @@ async function defaultEnsureBinary(
   if (typeof module.ensureBinary !== 'function') {
     throw new CloakInstallationManagerError(
       'installer_unavailable',
-      `CloakBrowser module "${moduleSpecifier}" does not expose ensureBinary().`,
+      'The pinned CloakBrowser module does not expose ensureBinary().',
     )
   }
   return await module.ensureBinary(licenseKey, browserVersion, releaseChannel)
