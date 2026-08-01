@@ -63,8 +63,12 @@ jobs:
           "binary_sha256=$hash" | Tee-Object -FilePath smoke-artifacts/cloakbrowser-binary-sha256.txt -Append
           "browser_version=$($info.binary.version)" | Tee-Object -FilePath smoke-artifacts/cloakbrowser-binary-sha256.txt -Append
           "platform_tag=$($info.environment.platform_tag)" | Tee-Object -FilePath smoke-artifacts/cloakbrowser-binary-sha256.txt -Append
+          $managedCacheDir = Split-Path -Parent $info.binary.cache_dir
+          if (-not [System.IO.Path]::IsPathFullyQualified($managedCacheDir)) {
+            throw 'CloakBrowser managed cache directory is not absolute.'
+          }
           "DUOKAI_CLOAK_INSTALL_CONFIRM=YES" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "DUOKAI_CLOAK_POC_CACHE_DIR=$($info.environment.cache_dir)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "DUOKAI_CLOAK_POC_CACHE_DIR=$managedCacheDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "DUOKAI_CLOAK_PILOT_BINARY_SHA256=$hash" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $resourcesPath = Join-Path $env:GITHUB_WORKSPACE 'apps\duokai2\release\win-unpacked\resources'
           "DUOKAI_CLOAK_INSTALL_RESOURCES_PATH=$resourcesPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -72,7 +76,13 @@ jobs:
       - name: Create and verify Duokai installation receipt
         shell: pwsh
         run: |
-          node scripts/run-cloak-installation-smoke.ts | Tee-Object -FilePath smoke-artifacts/cloak-installation-receipt.json
+          $receiptOutput = & node scripts/run-cloak-installation-smoke.ts 2>&1
+          $receiptExitCode = $LASTEXITCODE
+          $receiptOutput | Set-Content -Path smoke-artifacts/cloak-installation-receipt.json
+          if ($receiptExitCode -ne 0) {
+            $receiptOutput | Write-Error
+            throw 'Duokai CloakBrowser installation receipt command failed.'
+          }
           $receiptResult = Get-Content smoke-artifacts/cloak-installation-receipt.json -Raw | ConvertFrom-Json
           if (-not $receiptResult.success -or -not $receiptResult.verification.receiptMatches -or -not $receiptResult.verification.binaryMatches) {
             throw 'Duokai CloakBrowser installation receipt verification failed.'
