@@ -1,0 +1,36 @@
+name: Deploy Policy
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/deploy-policy.yml'
+      - '.github/workflows/deploy-vultr.yml'
+      - 'deploy/**'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/deploy-policy.yml'
+      - '.github/workflows/deploy-vultr.yml'
+      - 'deploy/**'
+  workflow_dispatch:
+
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate shell syntax
+        run: |
+          bash -n deploy/update-from-git.sh
+          bash -n deploy/bootstrap-and-deploy.sh
+
+      - name: Validate deployment freeze contract
+        run: node --test deploy/deploy-policy.test.mjs

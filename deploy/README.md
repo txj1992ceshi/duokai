@@ -12,6 +12,21 @@
 
 ## 部署入口
 
+生产部署与合并已经解耦：push/merge 到 `main` **不会自动部署**。生产发布只能由有权操作人员手动触发 GitHub Actions 的 `Deploy Vultr` workflow，并且必须同时提供：
+
+- `expected_sha`：触发时 `origin/main` 上的精确 40 位小写 SHA；
+- `confirmation`：严格等于 `DEPLOY_VULTR`。
+
+workflow 与远端更新脚本都会再次核对 SHA。`main` 在授权后发生移动、输入不是精确 SHA、远端拉取结果不一致时，部署必须 fail-closed。
+
+在服务器本地执行维护流程时，必须显式提供同一授权 SHA：
+
+```bash
+EXPECTED_SHA=<exact-main-sha> ./deploy/update-from-git.sh
+```
+
+底层构建入口仍为：
+
 ```bash
 ./deploy/bootstrap-and-deploy.sh
 ```
@@ -53,3 +68,28 @@ pm2 status
 ```
 
 PM2 清单中不应出现 `duokai-runtime`，主机上也不应因为部署流程下载 Playwright Chromium。
+
+## 合并、部署与 Profile rollout 冻结规则
+
+1. 合并方式固定为 **merge commit**，保留完整提交审计链；不删除功能分支，直到服务器部署和回滚窗口关闭。
+2. 独立 reviewer 批准和 release director 授权之前，不得合并。
+3. 合并后仍不得自动部署；生产人员必须对精确 `main` SHA 单独授权。
+4. 服务器部署可以先于 Profile rollout，但部署完成后所有 Profile 必须继续保持 Pilot 空白名单、`rollout=off`，并维持全局 kill switch；不得借服务器部署顺带启用 Profile。
+5. Profile rollout 必须按 Observe → 单 Profile Enforce → 小批次 → 全量迁移的独立门禁推进。
+
+## 回滚
+
+生产回滚必须通过 Git 历史和同一手动部署入口完成，禁止强推 `main`、禁止直接 `reset --hard` 远端分支，也禁止把生产机长期留在不属于 `origin/main` 的旧提交。
+
+推荐流程：
+
+1. release director 宣布回滚并指定独立 rollback owner；
+2. 以当前 `origin/main` 创建回滚分支；
+3. 对引入问题的 merge commit 执行 `git revert -m 1 <merge-sha>`；
+4. 为 revert 提交创建 PR，完成自动检查与独立批准；
+5. 合并回滚 PR 后，记录新的 `origin/main` SHA；
+6. 手动触发 `Deploy Vultr`，将新的回滚 SHA 同时作为 `expected_sha`；
+7. 重复 API/Admin/Frontend 健康检查，确认 PM2 中不存在 `duokai-runtime`；
+8. 将故障 SHA、revert SHA、部署 run URL、健康检查与负责人写入回滚证据包。
+
+如果 GitHub Runner 无法连接生产主机，必须先修复网络/防火墙/SSH 可达性；不能把“代码已回滚”误记为“生产已回滚”。
