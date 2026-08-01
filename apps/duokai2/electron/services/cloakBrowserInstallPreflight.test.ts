@@ -4,8 +4,10 @@ import test from 'node:test'
 
 import type { CloakBrowserModuleLike } from './cloakBrowserRuntime.ts'
 import {
+  CLOAK_PILOT_BINARY_SHA256_BY_HOST,
   CLOAK_PILOT_BROWSER_VERSION,
   CloakInstallPreflightError,
+  resolveCloakPilotBinarySha256,
   runCloakInstallPreflight,
 } from './cloakBrowserInstallPreflight.ts'
 
@@ -32,6 +34,22 @@ function moduleFixture(overrides: Partial<ReturnType<CloakBrowserModuleLike['bin
     },
   }
 }
+
+test('Pilot binary SHA is pinned per verified desktop host', () => {
+  assert.equal(
+    resolveCloakPilotBinarySha256('darwin', 'arm64'),
+    CLOAK_PILOT_BINARY_SHA256_BY_HOST['darwin-arm64'],
+  )
+  assert.equal(
+    resolveCloakPilotBinarySha256('win32', 'x64'),
+    CLOAK_PILOT_BINARY_SHA256_BY_HOST['win32-x64'],
+  )
+  assert.throws(
+    () => resolveCloakPilotBinarySha256('darwin', 'x64'),
+    (error: unknown) =>
+      error instanceof CloakInstallPreflightError && error.code === 'invalid_configuration',
+  )
+})
 
 const dependencies = {
   loadModule: async () => moduleFixture(),

@@ -7,7 +7,10 @@ import {
   installCloakBrowserFixedVersion,
   verifyCloakBrowserInstallation,
 } from '../electron/services/cloakBrowserInstallationManager.ts'
-import { CLOAK_PILOT_BROWSER_VERSION } from '../electron/services/cloakBrowserInstallPreflight.ts'
+import {
+  CLOAK_PILOT_BINARY_SHA256,
+  CLOAK_PILOT_BROWSER_VERSION,
+} from '../electron/services/cloakBrowserInstallPreflight.ts'
 
 const startedAt = new Date().toISOString()
 const confirmation = String(process.env.DUOKAI_CLOAK_INSTALL_CONFIRM ?? '').trim()
@@ -33,6 +36,11 @@ async function main(): Promise<void> {
   }
   if (!/^[a-f0-9]{64}$/.test(expectedBinarySha256)) {
     fail('DUOKAI_CLOAK_PILOT_BINARY_SHA256 must be an exact SHA256 digest.')
+  }
+  if (expectedBinarySha256 !== CLOAK_PILOT_BINARY_SHA256) {
+    fail(
+      `DUOKAI_CLOAK_PILOT_BINARY_SHA256 does not match the verified ${process.platform}-${process.arch} Pilot binary.`,
+    )
   }
 
   const defaultResourcesPath =
