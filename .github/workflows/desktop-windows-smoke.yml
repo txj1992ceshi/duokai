@@ -17,6 +17,9 @@ jobs:
     runs-on: windows-latest
     env:
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\apps\duokai2\.cache\electron-builder
+      CLOAKBROWSER_AUTO_UPDATE: 'false'
+      CLOAKBROWSER_RELEASE_CHANNEL: stable
+      CLOAKBROWSER_VERSION: 145.0.7632.109.2
       DUOKAI_SMOKE_API_BASE: ${{ github.event.inputs.api_base }}
       DUOKAI_SMOKE_IDENTIFIER: ${{ secrets.DUOKAI_SMOKE_IDENTIFIER }}
       DUOKAI_SMOKE_PASSWORD: ${{ secrets.DUOKAI_SMOKE_PASSWORD }}
@@ -45,6 +48,22 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Install pinned CloakBrowser binary
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path smoke-artifacts | Out-Null
+          npx cloakbrowser install
+          npx cloakbrowser info --json | Set-Content -Path smoke-artifacts/cloakbrowser-info.json
+          $info = Get-Content smoke-artifacts/cloakbrowser-info.json -Raw | ConvertFrom-Json
+          if (-not $info.binary.installed) {
+            throw 'Pinned CloakBrowser binary was not installed.'
+          }
+          $hash = (Get-FileHash -Algorithm SHA256 -Path $info.binary.path).Hash.ToLowerInvariant()
+          "binary_path=$($info.binary.path)" | Tee-Object -FilePath smoke-artifacts/cloakbrowser-binary-sha256.txt
+          "binary_sha256=$hash" | Tee-Object -FilePath smoke-artifacts/cloakbrowser-binary-sha256.txt -Append
+          "browser_version=$($info.binary.version)" | Tee-Object -FilePath smoke-artifacts/cloakbrowser-binary-sha256.txt -Append
+          "platform_tag=$($info.environment.platform_tag)" | Tee-Object -FilePath smoke-artifacts/cloakbrowser-binary-sha256.txt -Append
+
       - name: Validate single-engine boundaries
         run: npm run test:cloak-single-engine
 
@@ -63,7 +82,7 @@ jobs:
         with:
           name: duokai2-windows-smoke-artifacts
           path: |
-            apps/duokai2/smoke-artifacts/*
+            apps/duokai2/smoke-artifacts/**/*
             apps/duokai2/release/**/*.exe
             apps/duokai2/release/**/*.zip
           if-no-files-found: warn

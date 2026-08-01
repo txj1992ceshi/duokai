@@ -105,9 +105,13 @@ import {
   type CloakProductionPilotResult,
 } from './services/cloakBrowserProductionPilot'
 import {
+  CLOAK_ROLLOUT_HEALTH_SCHEMA_VERSION,
   CloakRolloutGovernor,
+  createDefaultCloakRolloutControl,
   getCloakRolloutControlPath,
   getCloakRolloutHealthPath,
+  writeCloakRolloutControlAtomic,
+  writeCloakRolloutHealthAtomic,
   type CloakRolloutAdmissionLease,
 } from './services/cloakBrowserRolloutControl'
 import {
@@ -282,7 +286,12 @@ type GlobalNetworkRecoveryState = {
 const SMOKE_TEST_ENABLED = process.env.SMOKE_TEST === '1'
 const SMOKE_RESULT_FILE = 'smoke-result.json'
 const SMOKE_AUDIT_FILE = 'runtime-audit.log'
+const SMOKE_USER_DATA_DIR = String(process.env.SMOKE_USER_DATA_DIR || '').trim()
 const STARTUP_TRACE_FILE = path.join(os.tmpdir(), 'duokai2-startup.log')
+
+if (SMOKE_TEST_ENABLED && SMOKE_USER_DATA_DIR) {
+  app.setPath('userData', path.resolve(SMOKE_USER_DATA_DIR))
+}
 
 let mainWindow: BrowserWindow | null = null
 let db: DatabaseService | null = null
@@ -8481,6 +8490,71 @@ async function collectPlatformSmokeProbe(
   )
 }
 
+async function prepareSmokeCloakControls(profileId: string): Promise<{
+  rolloutId: string
+  batchId: string
+  cleanup: () => Promise<void>
+}> {
+  const userDataDir = app.getPath('userData')
+  const pilotPath = getCloakPilotLocalConfigPath(userDataDir)
+  const controlPath = getCloakRolloutControlPath(userDataDir)
+  const healthPath = getCloakRolloutHealthPath(userDataDir)
+  const rolloutId = `ci-smoke-${randomUUID()}`
+  const batchId = 'ci-smoke-single-profile'
+  const now = new Date()
+
+  loadedCloakPilotConfig = await setCloakPilotProfileEnabled(pilotPath, profileId, true, now)
+  await writeCloakRolloutControlAtomic(controlPath, {
+    ...createDefaultCloakRolloutControl(),
+    mode: 'observe',
+    rolloutId,
+    globalKillSwitch: false,
+    batches: [
+      {
+        id: batchId,
+        enabled: true,
+        killSwitch: false,
+        profileIds: [profileId],
+        maxConcurrentSessions: 1,
+      },
+    ],
+    updatedAt: now.toISOString(),
+  })
+  await writeCloakRolloutHealthAtomic(healthPath, {
+    schemaVersion: CLOAK_ROLLOUT_HEALTH_SCHEMA_VERSION,
+    rolloutId,
+    outcomes: [],
+    updatedAt: now.toISOString(),
+  })
+  cloakRolloutGovernor = null
+
+  return {
+    rolloutId,
+    batchId,
+    cleanup: async () => {
+      const cleanupAt = new Date()
+      await writeCloakRolloutControlAtomic(controlPath, {
+        ...createDefaultCloakRolloutControl(),
+        updatedAt: cleanupAt.toISOString(),
+      })
+      await writeCloakRolloutHealthAtomic(healthPath, {
+        schemaVersion: CLOAK_ROLLOUT_HEALTH_SCHEMA_VERSION,
+        rolloutId: '',
+        outcomes: [],
+        updatedAt: cleanupAt.toISOString(),
+      })
+      loadedCloakPilotConfig = await setCloakPilotProfileEnabled(
+        pilotPath,
+        profileId,
+        false,
+        cleanupAt,
+      )
+      runtimeCloakPilotStatuses.delete(profileId)
+      cloakRolloutGovernor = null
+    },
+  }
+}
+
 async function ensureSmokeProxyAndProfile(): Promise<{
   scenario: PlatformSmokeScenario
   proxy: ProxyRecord | null
@@ -8556,6 +8630,7 @@ async function runDesktopSmokeScenario(): Promise<void> {
     parseSmokeRequireProxy(process.env.DUOKAI_SMOKE_REQUIRE_PROXY),
   )
   const artifactLabel = String(process.env.DUOKAI_SMOKE_ARTIFACT_LABEL || '').trim()
+  let smokeCloakControls: Awaited<ReturnType<typeof prepareSmokeCloakControls>> | null = null
   const result: SmokeResultPayload = {
     success: false,
     platform: process.platform,
@@ -8664,6 +8739,19 @@ async function runDesktopSmokeScenario(): Promise<void> {
 
     if (profile) {
       try {
+        smokeCloakControls = await prepareSmokeCloakControls(profile.id)
+        pushSmokeStep(
+          result.steps,
+          'smoke.cloakControls',
+          'passed',
+          'Prepared an isolated single-profile CloakBrowser observe rollout for CI smoke',
+          {
+            profileId: profile.id,
+            rolloutId: smokeCloakControls.rolloutId,
+            batchId: smokeCloakControls.batchId,
+            userDataDir: app.getPath('userData'),
+          },
+        )
         await performRuntimeLaunch(profile.id)
         const outcome = await waitForSmokeRuntimeReady(profile.id)
         const latestProfile = outcome.profile
@@ -8782,6 +8870,29 @@ async function runDesktopSmokeScenario(): Promise<void> {
     )
     result.success = false
   } finally {
+    if (smokeCloakControls) {
+      try {
+        await smokeCloakControls.cleanup()
+        pushSmokeStep(
+          result.steps,
+          'smoke.cloakControls.restore',
+          'passed',
+          'Restored isolated CI smoke controls to fail-closed defaults',
+          {
+            rolloutId: smokeCloakControls.rolloutId,
+            batchId: smokeCloakControls.batchId,
+          },
+        )
+      } catch (error) {
+        pushSmokeStep(
+          result.steps,
+          'smoke.cloakControls.restore',
+          'failed',
+          error instanceof Error ? error.message : String(error),
+        )
+      }
+    }
+    result.success = result.steps.every((step) => step.status !== 'failed')
     await writeSmokeArtifacts(result)
     setTimeout(() => app.exit(result.success ? 0 : 1), 300)
   }

@@ -42,6 +42,7 @@ const child = process.platform === 'win32'
         CI: '1',
         SMOKE_TEST: '1',
         SMOKE_OUTPUT_DIR: outputDir,
+        SMOKE_USER_DATA_DIR: path.join(outputDir, 'user-data'),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
@@ -52,6 +53,7 @@ const child = process.platform === 'win32'
         CI: '1',
         SMOKE_TEST: '1',
         SMOKE_OUTPUT_DIR: outputDir,
+        SMOKE_USER_DATA_DIR: path.join(outputDir, 'user-data'),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
