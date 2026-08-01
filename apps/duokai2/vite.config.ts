@@ -46,7 +46,7 @@ export default defineConfig({
         vite: {
           build: {
             rollupOptions: {
-              external: ['node:original-fs', 'better-sqlite3', 'electron-updater'],
+              external: ['node:original-fs', 'better-sqlite3', 'electron-updater', 'cloakbrowser'],
             },
           },
         },

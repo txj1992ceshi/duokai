@@ -66,6 +66,7 @@ test('production launch and proxy preflight contain no ordinary Chromium fallbac
   }
   assert.match(cloakRuntime, /import\(['"]cloakbrowser['"]\)/)
   assert.match(installationManager, /import\(['"]cloakbrowser['"]\)/)
+  assert.match(viteConfig, /external:\s*\[[^\]]*['"]cloakbrowser['"]/s)
 })
 
 test('distribution assets and user-facing guidance forbid legacy fallback', () => {
