@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { constants, createReadStream, existsSync } from 'node:fs'
 import { access } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
+import path from 'node:path'
 
 export type CloakBrowserTier = 'free' | 'pro'
 export type CloakBrowserReleaseChannel = 'stable'
@@ -78,6 +79,12 @@ export interface CloakRuntimeContextLike {
 
 export type BinaryVersionCommandRunner = (binaryPath: string) => Promise<string>
 
+export interface BinaryVersionCommandOptions {
+  platform?: NodeJS.Platform
+  timeoutMs?: number
+  spawnProcess?: typeof spawn
+}
+
 export interface InspectCloakRuntimeIdentityInput {
   wrapperVersion: string
   requestedChromiumVersion: string
@@ -109,13 +116,67 @@ export function parseChromiumVersionOutput(output: string): ChromiumVersionInfo 
   }
 }
 
-export async function runBinaryVersionCommand(binaryPath: string): Promise<string> {
+export async function runBinaryVersionCommand(
+  binaryPath: string,
+  options: BinaryVersionCommandOptions = {},
+): Promise<string> {
+  const platform = options.platform ?? process.platform
+  const timeoutMs = options.timeoutMs ?? 15_000
+  const spawnProcess = options.spawnProcess ?? spawn
+  const windowsRoot = String(process.env.SystemRoot ?? '').trim()
+  const powershellPath = windowsRoot
+    ? path.win32.join(
+        windowsRoot,
+        'System32',
+        'WindowsPowerShell',
+        'v1.0',
+        'powershell.exe',
+      )
+    : 'powershell.exe'
+  const powershellScript =
+    '[Console]::Out.Write((Get-Item -LiteralPath $env:DUOKAI_CLOAK_BINARY_PATH).VersionInfo.ProductVersion)'
+  const command = platform === 'win32' ? powershellPath : binaryPath
+  const args =
+    platform === 'win32'
+      ? [
+          '-NoLogo',
+          '-NoProfile',
+          '-NonInteractive',
+          '-EncodedCommand',
+          Buffer.from(powershellScript, 'utf16le').toString('base64'),
+        ]
+      : ['--version']
+  const environment =
+    platform === 'win32'
+      ? { ...process.env, DUOKAI_CLOAK_BINARY_PATH: binaryPath }
+      : process.env
+
   return await new Promise<string>((resolve, reject) => {
-    const child = spawn(binaryPath, ['--version'], {
+    const child = spawnProcess(command, args, {
+      env: environment,
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     })
     let stdout = ''
     let stderr = ''
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      child.kill('SIGKILL')
+      reject(
+        new CloakIdentityError(
+          'version_probe_failed',
+          `CloakBrowser binary version probe timed out after ${timeoutMs}ms at ${binaryPath}.`,
+        ),
+      )
+    }, timeoutMs)
+    const settle = (callback: () => void): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      callback()
+    }
     child.stdout.setEncoding('utf8')
     child.stderr.setEncoding('utf8')
     child.stdout.on('data', (chunk: string) => {
@@ -125,25 +186,29 @@ export async function runBinaryVersionCommand(binaryPath: string): Promise<strin
       stderr += chunk
     })
     child.once('error', (error) => {
-      reject(
-        new CloakIdentityError(
-          'version_probe_failed',
-          `Failed to execute CloakBrowser binary version probe at ${binaryPath}.`,
-          error,
-        ),
-      )
-    })
-    child.once('close', (code) => {
-      if (code !== 0) {
+      settle(() => {
         reject(
           new CloakIdentityError(
             'version_probe_failed',
-            `CloakBrowser binary version probe exited with code ${code ?? 'unknown'}: ${stderr.trim()}`,
+            `Failed to execute CloakBrowser binary version probe at ${binaryPath}.`,
+            error,
           ),
         )
-        return
-      }
-      resolve(stdout || stderr)
+      })
+    })
+    child.once('close', (code) => {
+      settle(() => {
+        if (code !== 0) {
+          reject(
+            new CloakIdentityError(
+              'version_probe_failed',
+              `CloakBrowser binary version probe exited with code ${code ?? 'unknown'}: ${stderr.trim()}`,
+            ),
+          )
+          return
+        }
+        resolve(stdout || stderr)
+      })
     })
   })
 }

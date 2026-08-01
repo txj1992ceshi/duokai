@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
+import type { spawn } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { PassThrough } from 'node:stream'
 import test from 'node:test'
 
 import {
@@ -10,6 +13,7 @@ import {
   computeBinarySha256,
   inspectCloakRuntimeIdentity,
   parseChromiumVersionOutput,
+  runBinaryVersionCommand,
   validateCloakRuntimeIdentity,
   type CloakBrowserRuntimeIdentity,
   type CloakRuntimeContextLike,
@@ -62,6 +66,79 @@ test('parseChromiumVersionOutput rejects missing version data', () => {
     (error: unknown) =>
       error instanceof CloakIdentityError && error.code === 'version_probe_failed',
   )
+})
+
+test('runBinaryVersionCommand reads Windows file metadata without launching Chrome', async () => {
+  let capturedCommand = ''
+  let capturedArgs: readonly string[] = []
+  let capturedEnvironment: NodeJS.ProcessEnv | undefined
+  const spawnProcess = ((
+    command: string,
+    args: readonly string[],
+    options: { env?: NodeJS.ProcessEnv },
+  ) => {
+    capturedCommand = command
+    capturedArgs = args
+    capturedEnvironment = options.env
+    const child = new EventEmitter() as EventEmitter & {
+      stdout: PassThrough
+      stderr: PassThrough
+      kill: () => boolean
+    }
+    child.stdout = new PassThrough()
+    child.stderr = new PassThrough()
+    child.kill = () => true
+    queueMicrotask(() => {
+      child.stdout.end('145.0.7632.109')
+      child.stderr.end()
+      child.emit('close', 0)
+    })
+    return child
+  }) as unknown as typeof spawn
+
+  const binaryPath = 'C:\\cloakbrowser\\chromium-145.0.7632.109.2\\chrome.exe'
+  assert.equal(
+    await runBinaryVersionCommand(binaryPath, {
+      platform: 'win32',
+      timeoutMs: 100,
+      spawnProcess,
+    }),
+    '145.0.7632.109',
+  )
+  assert.match(capturedCommand, /powershell\.exe$/i)
+  assert.ok(capturedArgs.includes('-EncodedCommand'))
+  assert.equal(capturedEnvironment?.DUOKAI_CLOAK_BINARY_PATH, binaryPath)
+})
+
+test('runBinaryVersionCommand fails closed when the version probe times out', async () => {
+  let killed = false
+  const spawnProcess = (() => {
+    const child = new EventEmitter() as EventEmitter & {
+      stdout: PassThrough
+      stderr: PassThrough
+      kill: () => boolean
+    }
+    child.stdout = new PassThrough()
+    child.stderr = new PassThrough()
+    child.kill = () => {
+      killed = true
+      return true
+    }
+    return child
+  }) as unknown as typeof spawn
+
+  await assert.rejects(
+    runBinaryVersionCommand('/tmp/cloakbrowser', {
+      platform: 'linux',
+      timeoutMs: 5,
+      spawnProcess,
+    }),
+    (error: unknown) =>
+      error instanceof CloakIdentityError &&
+      error.code === 'version_probe_failed' &&
+      /timed out/.test(error.message),
+  )
+  assert.equal(killed, true)
 })
 
 test('computeBinarySha256 is stable and changes with file content', async () => {
