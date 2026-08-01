@@ -31,6 +31,9 @@ async function tempKeyPath(): Promise<{ root: string; keyFilePath: string }> {
   return { root, keyFilePath: path.join(root, 'sealed-signing-key.json') }
 }
 
+const secureStorageTestPlatform: 'win32' | 'darwin' =
+  process.platform === 'win32' ? 'win32' : 'darwin'
+
 test('keyring creates one private active key without plaintext secret material', async () => {
   const fixture = await tempKeyPath()
   const secret = Buffer.alloc(32, 7)
@@ -38,7 +41,7 @@ test('keyring creates one private active key without plaintext secret material',
     const provider = new ElectronSafeStorageSigningKeyringProvider({
       keyFilePath: fixture.keyFilePath,
       loadSafeStorage: async () => safeStorageFixture(),
-      platform: 'darwin',
+      platform: secureStorageTestPlatform,
       randomKey: () => Buffer.from(secret),
       now: () => new Date('2026-07-27T17:00:00.000Z'),
     })
@@ -68,7 +71,7 @@ test('rotation keeps retired keys available while signing switches to the new ac
     const provider = new ElectronSafeStorageSigningKeyringProvider({
       keyFilePath: fixture.keyFilePath,
       loadSafeStorage: async () => safeStorageFixture(),
-      platform: 'darwin',
+      platform: secureStorageTestPlatform,
       randomKey: () => Buffer.from(secrets[index++] ?? Buffer.alloc(32, 9)),
       now: () => new Date(Date.UTC(2026, 6, 27, 17, timestamp++)),
       maxRetiredKeys: 2,
@@ -101,7 +104,7 @@ test('reset intentionally invalidates every previous key ID', async () => {
     const provider = new ElectronSafeStorageSigningKeyringProvider({
       keyFilePath: fixture.keyFilePath,
       loadSafeStorage: async () => safeStorageFixture(),
-      platform: 'darwin',
+      platform: secureStorageTestPlatform,
       randomKey: () => Buffer.from(secrets[index++] ?? Buffer.alloc(32, 9)),
       now: () => new Date('2026-07-27T17:10:00.000Z'),
     })
@@ -143,7 +146,7 @@ test('legacy single sealed-key files migrate atomically to schema 2 without chan
     const provider = new ElectronSafeStorageSigningKeyringProvider({
       keyFilePath: fixture.keyFilePath,
       loadSafeStorage: async () => safeStorage,
-      platform: 'darwin',
+      platform: secureStorageTestPlatform,
       now: () => new Date('2026-07-27T17:21:00.000Z'),
     })
     const active = await provider.getActiveKey()
@@ -173,7 +176,7 @@ test('corrupt keyrings and Linux basic_text storage fail closed', async () => {
     const corrupt = new ElectronSafeStorageSigningKeyringProvider({
       keyFilePath: fixture.keyFilePath,
       loadSafeStorage: async () => safeStorageFixture(),
-      platform: 'darwin',
+      platform: secureStorageTestPlatform,
     })
     await assert.rejects(
       corrupt.getActiveKey(),

@@ -300,7 +300,7 @@ function writePrivateJsonAtomicSync(filePath: string, value: unknown): void {
       flag: 'wx',
     })
     if (process.platform !== 'win32') chmodSync(temporaryPath, 0o600)
-    const descriptor = openSync(temporaryPath, 'r')
+    const descriptor = openSync(temporaryPath, 'r+')
     try {
       fsyncSync(descriptor)
     } finally {

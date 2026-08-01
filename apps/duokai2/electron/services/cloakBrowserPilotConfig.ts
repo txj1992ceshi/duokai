@@ -263,7 +263,7 @@ export async function writeCloakPilotLocalConfigAtomic(
       flag: 'wx',
     })
     if (process.platform !== 'win32') await chmod(temporaryPath, 0o600)
-    const handle = await open(temporaryPath, 'r')
+    const handle = await open(temporaryPath, 'r+')
     try {
       await handle.sync()
     } finally {

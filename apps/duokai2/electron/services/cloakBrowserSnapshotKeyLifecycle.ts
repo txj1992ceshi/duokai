@@ -117,7 +117,7 @@ async function atomicWritePrivate(filePath: string, content: string): Promise<vo
       flag: 'wx',
       mode: 0o600,
     })
-    const handle = await open(temporaryPath, 'r')
+    const handle = await open(temporaryPath, 'r+')
     try {
       await handle.sync()
     } finally {

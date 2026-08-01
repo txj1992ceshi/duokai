@@ -47,6 +47,8 @@ const RUNTIME_VERSION = '145.0.7632.109'
 const NOW = new Date('2026-07-27T01:15:00.000Z')
 const BINARY_PATH =
   `/Users/test/.cloakbrowser/chromium-${PACKAGE_VERSION}/Chromium.app/Contents/MacOS/Chromium`
+const secureStorageTestPlatform: 'win32' | 'darwin' =
+  process.platform === 'win32' ? 'win32' : 'darwin'
 
 function fingerprintConfig(): FingerprintConfig {
   return {
@@ -298,7 +300,7 @@ test('safeStorage provider creates and reloads one sealed key', async () => {
     const options = {
       keyFilePath: keyPath,
       loadSafeStorage: async () => fakeSafeStorage(),
-      platform: 'darwin' as const,
+      platform: secureStorageTestPlatform,
       now: () => NOW,
       randomKey: () => Buffer.alloc(32, 6),
     }
@@ -366,7 +368,7 @@ test('delivery manifest requires explicit preinstall outside the application', (
     appPath: '/Applications/Duokai.app',
     temporaryDirectory: '/tmp',
   })
-  assert.equal(manifest.cacheDir, '/Users/test/.cloakbrowser')
+  assert.equal(manifest.cacheDir, path.resolve('/Users/test/.cloakbrowser'))
   assert.equal(manifest.launchAutoDownload, false)
   assert.equal(manifest.fallbackEngine, 'forbidden')
 })

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import path from 'node:path'
 import test from 'node:test'
 
 import type { CloakBrowserModuleLike } from './cloakBrowserRuntime.ts'
@@ -9,7 +10,7 @@ import {
 } from './cloakBrowserInstallPreflight.ts'
 
 const SHA = 'a'.repeat(64)
-const CACHE_DIR = '/Users/test/.cloakbrowser'
+const CACHE_DIR = path.resolve('/Users/test/.cloakbrowser')
 const VERSION_DIR = `${CACHE_DIR}/chromium-${CLOAK_PILOT_BROWSER_VERSION}`
 const BINARY_PATH = `${VERSION_DIR}/Chromium.app/Contents/MacOS/Chromium`
 
