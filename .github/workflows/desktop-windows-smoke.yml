@@ -45,6 +45,12 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Validate single-engine boundaries
+        run: npm run test:cloak-single-engine
+
+      - name: Lint desktop
+        run: npm run lint
+
       - name: Build Windows package
         run: npm run build:win
 
