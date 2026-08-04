@@ -151,7 +151,6 @@ export interface DesktopApi {
   }
   cloakPilot: {
     getStatus: (profileId: string) => Promise<CloakPilotProfileStatus>
-    setProfileEnabled: (profileId: string, enabled: boolean) => Promise<CloakPilotProfileStatus>
   }
   runtime: {
     launch: (profileId: string) => Promise<{ warningMessage?: string }>

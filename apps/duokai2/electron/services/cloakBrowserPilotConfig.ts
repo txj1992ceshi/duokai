@@ -9,18 +9,21 @@ import {
   CLOAK_PILOT_BROWSER_VERSION,
 } from './cloakBrowserInstallPreflight.ts'
 
-export const CLOAK_PILOT_LOCAL_CONFIG_SCHEMA_VERSION = 1
+export const CLOAK_PILOT_LOCAL_CONFIG_SCHEMA_VERSION = 2
 export const CLOAK_PILOT_COMPATIBILITY_SCHEMA_VERSION = 1
 
 export type CloakPilotLocalEligibilityReason =
   | 'enabled'
-  | 'config_missing'
+  | 'default_enabled'
   | 'profile_not_enabled'
+  | 'profile_disabled'
   | 'invalid_profile_id'
 
 export interface CloakPilotLocalConfig {
   schemaVersion: typeof CLOAK_PILOT_LOCAL_CONFIG_SCHEMA_VERSION
+  defaultEnabled: boolean
   enabledProfileIds: string[]
+  disabledProfileIds: string[]
   updatedAt: string
 }
 
@@ -35,7 +38,9 @@ export interface CloakPilotLocalEligibility {
   enabled: boolean
   reason: CloakPilotLocalEligibilityReason
   profileId: string
+  defaultEnabled: boolean
   enabledProfileIds: string[]
+  disabledProfileIds: string[]
   configHash: string
   configUpdatedAt: string
   cacheDir: string
@@ -109,11 +114,11 @@ function normalizeProfileId(value: unknown): string {
   return profileId
 }
 
-function normalizeEnabledProfileIds(value: unknown): string[] {
+function normalizeProfileIds(value: unknown, fieldName: string): string[] {
   if (!Array.isArray(value)) {
     throw new CloakPilotLocalConfigError(
       'invalid_config',
-      'Cloak Pilot enabledProfileIds must be an array.',
+      `Cloak Pilot ${fieldName} must be an array.`,
     )
   }
   return Array.from(
@@ -126,7 +131,9 @@ function normalizeEnabledProfileIds(value: unknown): string[] {
 function defaultConfig(): CloakPilotLocalConfig {
   return {
     schemaVersion: CLOAK_PILOT_LOCAL_CONFIG_SCHEMA_VERSION,
+    defaultEnabled: true,
     enabledProfileIds: [],
+    disabledProfileIds: [],
     updatedAt: '',
   }
 }
@@ -139,12 +146,30 @@ function normalizeConfig(value: unknown): CloakPilotLocalConfig {
     )
   }
   const record = value as Record<string, unknown>
-  if (record.schemaVersion !== CLOAK_PILOT_LOCAL_CONFIG_SCHEMA_VERSION) {
+  const schemaVersion = Number(record.schemaVersion)
+  if (schemaVersion !== 1 && schemaVersion !== CLOAK_PILOT_LOCAL_CONFIG_SCHEMA_VERSION) {
     throw new CloakPilotLocalConfigError(
       'invalid_config',
       `Unsupported Cloak Pilot local configuration schema ${String(record.schemaVersion)}.`,
     )
   }
+  const rawEnabledProfileIds = record.enabledProfileIds
+  const enabledProfileIds = normalizeProfileIds(rawEnabledProfileIds, 'enabledProfileIds')
+  const legacyHadConfiguredEntries =
+    schemaVersion === 1 && Array.isArray(rawEnabledProfileIds) && rawEnabledProfileIds.length > 0
+  const defaultEnabled =
+    schemaVersion === 1
+      ? !legacyHadConfiguredEntries
+      : typeof record.defaultEnabled === 'boolean'
+        ? record.defaultEnabled
+        : (() => {
+            throw new CloakPilotLocalConfigError(
+              'invalid_config',
+              'Cloak Pilot defaultEnabled must be a boolean.',
+            )
+          })()
+  const disabledProfileIds =
+    schemaVersion === 1 ? [] : normalizeProfileIds(record.disabledProfileIds, 'disabledProfileIds')
   const updatedAt = String(record.updatedAt ?? '').trim()
   if (updatedAt && !Number.isFinite(Date.parse(updatedAt))) {
     throw new CloakPilotLocalConfigError(
@@ -154,7 +179,9 @@ function normalizeConfig(value: unknown): CloakPilotLocalConfig {
   }
   return {
     schemaVersion: CLOAK_PILOT_LOCAL_CONFIG_SCHEMA_VERSION,
-    enabledProfileIds: normalizeEnabledProfileIds(record.enabledProfileIds),
+    defaultEnabled,
+    enabledProfileIds,
+    disabledProfileIds: disabledProfileIds.filter((profileId) => !enabledProfileIds.includes(profileId)),
     updatedAt,
   }
 }
@@ -298,12 +325,20 @@ export async function setCloakPilotProfileEnabled(
     )
   }
   const current = await readCloakPilotLocalConfig(filePath)
-  const ids = new Set(current.config.enabledProfileIds)
-  if (enabled) ids.add(profileId)
-  else ids.delete(profileId)
+  const enabledIds = new Set(current.config.enabledProfileIds)
+  const disabledIds = new Set(current.config.disabledProfileIds)
+  if (enabled) {
+    disabledIds.delete(profileId)
+    enabledIds.add(profileId)
+  } else {
+    enabledIds.delete(profileId)
+    disabledIds.add(profileId)
+  }
   return await writeCloakPilotLocalConfigAtomic(filePath, {
     schemaVersion: CLOAK_PILOT_LOCAL_CONFIG_SCHEMA_VERSION,
-    enabledProfileIds: [...ids].sort(),
+    defaultEnabled: current.config.defaultEnabled,
+    enabledProfileIds: [...enabledIds].sort(),
+    disabledProfileIds: [...disabledIds].sort(),
     updatedAt: now.toISOString(),
   })
 }
@@ -315,7 +350,9 @@ export function evaluateCloakPilotLocalEligibility(
   const profileId = normalizeProfileId(profileIdInput)
   const base: Omit<CloakPilotLocalEligibility, 'enabled' | 'reason'> = {
     profileId,
+    defaultEnabled: loaded.config.defaultEnabled,
     enabledProfileIds: [...loaded.config.enabledProfileIds],
+    disabledProfileIds: [...loaded.config.disabledProfileIds],
     configHash: loaded.configHash,
     configUpdatedAt: loaded.config.updatedAt,
     cacheDir: getDefaultCloakPilotCacheDir(),
@@ -325,13 +362,16 @@ export function evaluateCloakPilotLocalEligibility(
   if (!profileId) {
     return { ...base, enabled: false, reason: 'invalid_profile_id' }
   }
-  if (!loaded.exists) {
-    return { ...base, enabled: false, reason: 'config_missing' }
+  if (loaded.config.disabledProfileIds.includes(profileId)) {
+    return { ...base, enabled: false, reason: 'profile_disabled' }
   }
-  if (!loaded.config.enabledProfileIds.includes(profileId)) {
-    return { ...base, enabled: false, reason: 'profile_not_enabled' }
+  if (loaded.config.defaultEnabled) {
+    return { ...base, enabled: true, reason: 'default_enabled' }
   }
-  return { ...base, enabled: true, reason: 'enabled' }
+  if (loaded.config.enabledProfileIds.includes(profileId)) {
+    return { ...base, enabled: true, reason: 'enabled' }
+  }
+  return { ...base, enabled: false, reason: 'profile_not_enabled' }
 }
 
 function chromiumRuntimeVersion(packageVersion: string): string {

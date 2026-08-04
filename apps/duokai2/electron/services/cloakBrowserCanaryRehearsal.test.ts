@@ -16,6 +16,7 @@ import {
   CLOAK_PILOT_BROWSER_VERSION,
 } from './cloakBrowserInstallPreflight.ts'
 import {
+  CLOAK_PILOT_LOCAL_CONFIG_SCHEMA_VERSION,
   readCloakPilotLocalConfig,
   writeCloakPilotLocalConfigAtomic,
 } from './cloakBrowserPilotConfig.ts'
@@ -126,8 +127,10 @@ async function loadFixture(
   const controlPath = path.join(directory, 'rollout-control.json')
   const healthPath = path.join(directory, 'rollout-health.json')
   await writeCloakPilotLocalConfigAtomic(pilotPath, {
-    schemaVersion: 1,
+    schemaVersion: CLOAK_PILOT_LOCAL_CONFIG_SCHEMA_VERSION,
+    defaultEnabled: false,
     enabledProfileIds: options.enabledProfileIds ?? [PROFILE_ID],
+    disabledProfileIds: [],
     updatedAt: '2026-07-28T04:50:00.000Z',
   })
   await writeCloakRolloutControlAtomic(controlPath, options.control ?? controlConfig())

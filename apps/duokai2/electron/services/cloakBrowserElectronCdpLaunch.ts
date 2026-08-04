@@ -647,7 +647,9 @@ export async function restoreCloakFailClosedAfterElectronCdpFailure(
   }
   const pilot = await writeCloakPilotLocalConfigAtomic(pilotPath, {
     schemaVersion: CLOAK_PILOT_LOCAL_CONFIG_SCHEMA_VERSION,
+    defaultEnabled: false,
     enabledProfileIds: [],
+    disabledProfileIds: [],
     updatedAt: now.toISOString(),
   })
   const rollout = await writeCloakRolloutControlAtomic(controlPath, failClosedControl)

@@ -125,7 +125,7 @@ function getSyncBadgeTone(statusClassName: NonNullable<EnvironmentListItem['sync
 function getCloakPilotBadge(status: EnvironmentListItem['cloakPilot'], isChinese: boolean) {
   const labels = isChinese
     ? {
-        disabled: 'Cloak Pilot 关闭',
+        disabled: 'Cloak 安全策略暂停',
         unverified: 'Cloak 145 未验证',
         verifying: 'Cloak 验证中',
         trusted: 'Cloak 145 已信任',
@@ -135,7 +135,7 @@ function getCloakPilotBadge(status: EnvironmentListItem['cloakPilot'], isChinese
         failed: 'Cloak 启动失败',
       }
     : {
-        disabled: 'Cloak Pilot off',
+        disabled: 'Cloak paused by policy',
         unverified: 'Cloak 145 unverified',
         verifying: 'Cloak verifying',
         trusted: 'Cloak 145 trusted',
@@ -182,7 +182,6 @@ export function EnvironmentRow({
   onPullStorageState,
   onLaunch,
   onStop,
-  onSetCloakPilotEnabled,
   onDelete,
   onMoveToNurture,
   onMoveToOperation,
@@ -200,7 +199,6 @@ export function EnvironmentRow({
   onPullStorageState: () => void
   onLaunch: () => void
   onStop: () => void
-  onSetCloakPilotEnabled: (enabled: boolean) => void
   onDelete: () => void
   onMoveToNurture: () => void
   onMoveToOperation: () => void
@@ -361,26 +359,6 @@ export function EnvironmentRow({
                     >
                       <ArrowRightLeft size={14} />
                       <span className="ml-2">{t('environment.row.actions.pullStorageState')}</span>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      aria-disabled={canStop || item.isLaunching}
-                      className={canStop || item.isLaunching ? 'cursor-not-allowed opacity-50' : ''}
-                      onClick={() => {
-                        if (canStop || item.isLaunching) return
-                        setMenuOpen(false)
-                        onSetCloakPilotEnabled(!item.cloakPilot.enabled)
-                      }}
-                    >
-                      <ArrowRightLeft size={14} />
-                      <span className="ml-2">
-                        {item.cloakPilot.enabled
-                          ? isChinese
-                            ? '关闭 Cloak Pilot'
-                            : 'Disable Cloak Pilot'
-                          : isChinese
-                            ? '启用 Cloak Pilot'
-                            : 'Enable Cloak Pilot'}
-                      </span>
                     </DropdownMenuItem>
                     <DropdownMenuItem
                       onClick={() => {

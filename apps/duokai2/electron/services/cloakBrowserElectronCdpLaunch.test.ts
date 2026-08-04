@@ -243,7 +243,9 @@ test('CDP launch failure restores Pilot and rollout controls to fail-closed with
 
   await writeCloakPilotLocalConfigAtomic(pilotPath, {
     schemaVersion: CLOAK_PILOT_LOCAL_CONFIG_SCHEMA_VERSION,
+    defaultEnabled: false,
     enabledProfileIds: ['11111111-1111-4111-8111-111111111111'],
+    disabledProfileIds: [],
     updatedAt: fixedNow.toISOString(),
   })
   await writeCloakRolloutControlAtomic(controlPath, {

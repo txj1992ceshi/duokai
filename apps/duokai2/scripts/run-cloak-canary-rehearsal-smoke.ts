@@ -12,6 +12,7 @@ import {
   CLOAK_PILOT_BROWSER_VERSION,
 } from '../electron/services/cloakBrowserInstallPreflight.ts'
 import {
+  CLOAK_PILOT_LOCAL_CONFIG_SCHEMA_VERSION,
   readCloakPilotLocalConfig,
   writeCloakPilotLocalConfigAtomic,
 } from '../electron/services/cloakBrowserPilotConfig.ts'
@@ -39,8 +40,10 @@ try {
   const healthPath = path.join(directory, 'rollout-health.json')
 
   await writeCloakPilotLocalConfigAtomic(pilotPath, {
-    schemaVersion: 1,
+    schemaVersion: CLOAK_PILOT_LOCAL_CONFIG_SCHEMA_VERSION,
+    defaultEnabled: false,
     enabledProfileIds: [profileId],
+    disabledProfileIds: [],
     updatedAt: '2026-07-28T04:50:00.000Z',
   })
   await writeCloakRolloutControlAtomic(controlPath, {

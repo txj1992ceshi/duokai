@@ -74,12 +74,17 @@ test('distribution assets and user-facing guidance forbid legacy fallback', () =
   assert.equal(existsSync(resolve(appRoot, 'scripts/prepare-playwright-browsers.mjs')), false)
 
   const readme = read('README.md')
-  const profileActions = read('src/hooks/useProfileActions.ts')
+  const pilotConfig = read('electron/services/cloakBrowserPilotConfig.ts')
+  const environmentRow = read('src/components/environment/EnvironmentRow.tsx')
+  const preload = read('electron/preload.ts')
+  const ipc = read('src/shared/ipc.ts')
   const translations = read('src/i18n.ts')
 
   assert.doesNotMatch(readme, /install:chromium|- `Playwright Chromium`/i)
-  assert.doesNotMatch(profileActions, /legacy browser path|原浏览器链路/i)
-  assert.match(profileActions, /Single-engine mode blocks future launches/)
+  assert.match(pilotConfig, /defaultEnabled: true/)
+  assert.doesNotMatch(environmentRow, /启用 Cloak Pilot|关闭 Cloak Pilot|Enable Cloak Pilot|Disable Cloak Pilot/)
+  assert.doesNotMatch(preload, /cloakPilot\.setProfileEnabled/)
+  assert.doesNotMatch(ipc, /setProfileEnabled/)
   assert.match(translations, /CloakBrowser/)
 })
 

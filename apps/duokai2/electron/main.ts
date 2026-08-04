@@ -91,12 +91,13 @@ import {
 import { evaluateCloakPilotEligibility } from './services/cloakBrowserPilotGate'
 import { evaluateCloakClientHintsCoherence } from './services/cloakBrowserClientHints'
 import {
+  CLOAK_PILOT_LOCAL_CONFIG_SCHEMA_VERSION,
   buildCloakPilotRuntimeProfile,
   evaluateCloakPilotLocalEligibility,
   getCloakPilotLocalConfigPath,
   getDefaultCloakPilotCacheDir,
   readCloakPilotLocalConfig,
-  setCloakPilotProfileEnabled,
+  writeCloakPilotLocalConfigAtomic,
   type CloakPilotLocalEligibility,
   type LoadedCloakPilotLocalConfig,
 } from './services/cloakBrowserPilotConfig'
@@ -3101,7 +3102,6 @@ const CAPABILITIES: DesktopRuntimeInfo['capabilities'] = [
   'proxies.delete',
   'proxies.test',
   'cloakPilot.getStatus',
-  'cloakPilot.setProfileEnabled',
   'runtime.launch',
   'runtime.stop',
   'runtime.open-platform',
@@ -6510,7 +6510,9 @@ function buildLegacyCloakPilotEligibility(
     enabled: true,
     reason: 'enabled',
     profileId: profile.id,
+    defaultEnabled: false,
     enabledProfileIds: legacy.allowlistedProfileIds,
+    disabledProfileIds: [],
     configHash,
     configUpdatedAt: '',
     cacheDir:
@@ -6537,7 +6539,9 @@ async function resolveCloakPilotLocalEligibility(
     enabled: false,
     reason: 'profile_not_enabled',
     profileId: profile.id,
+    defaultEnabled: false,
     enabledProfileIds: [],
+    disabledProfileIds: [],
     configHash: createHash('sha256').update('invalid-cloak-pilot-config').digest('hex'),
     configUpdatedAt: '',
     cacheDir: getDefaultCloakPilotCacheDir(),
@@ -6816,9 +6820,11 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       reason: cloakPilotEligibility.reason,
       configHash: cloakPilotEligibility.configHash,
       configUpdatedAt: cloakPilotEligibility.configUpdatedAt,
-      source: loadedCloakPilotConfig?.config.enabledProfileIds.includes(profileId)
-        ? 'local-config'
-        : 'environment-gate',
+      source: loadedCloakPilotConfig?.config.defaultEnabled
+        ? 'local-default'
+        : loadedCloakPilotConfig?.config.enabledProfileIds.includes(profileId)
+          ? 'local-explicit'
+          : 'environment-gate',
     })
     if (!cloakPilotEnabled) {
       const blockMessage =
@@ -8299,7 +8305,13 @@ async function prepareSmokeCloakControls(profileId: string): Promise<{
   const batchId = 'ci-smoke-single-profile'
   const now = new Date()
 
-  loadedCloakPilotConfig = await setCloakPilotProfileEnabled(pilotPath, profileId, true, now)
+  loadedCloakPilotConfig = await writeCloakPilotLocalConfigAtomic(pilotPath, {
+    schemaVersion: CLOAK_PILOT_LOCAL_CONFIG_SCHEMA_VERSION,
+    defaultEnabled: false,
+    enabledProfileIds: [profileId],
+    disabledProfileIds: [],
+    updatedAt: now.toISOString(),
+  })
   await writeCloakRolloutControlAtomic(controlPath, {
     ...createDefaultCloakRolloutControl(),
     mode: 'observe',
@@ -8339,12 +8351,13 @@ async function prepareSmokeCloakControls(profileId: string): Promise<{
         outcomes: [],
         updatedAt: cleanupAt.toISOString(),
       })
-      loadedCloakPilotConfig = await setCloakPilotProfileEnabled(
-        pilotPath,
-        profileId,
-        false,
-        cleanupAt,
-      )
+      loadedCloakPilotConfig = await writeCloakPilotLocalConfigAtomic(pilotPath, {
+        schemaVersion: CLOAK_PILOT_LOCAL_CONFIG_SCHEMA_VERSION,
+        defaultEnabled: true,
+        enabledProfileIds: [],
+        disabledProfileIds: [],
+        updatedAt: cleanupAt.toISOString(),
+      })
       runtimeCloakPilotStatuses.delete(profileId)
       cloakRolloutGovernor = null
     },
@@ -9276,49 +9289,6 @@ async function registerIpcHandlers(): Promise<void> {
     await refreshCloakPilotLocalConfig()
     return baseCloakPilotStatus(profile)
   })
-  ipcMain.handle(
-    'cloakPilot.setProfileEnabled',
-    async (_event, profileIdInput: string, enabledInput: boolean) => {
-      const profileId = String(profileIdInput || '').trim()
-      const profile = requireDatabase().getProfileById(profileId)
-      if (!profile) throw new Error('Profile not found')
-      if (
-        runtimeContexts.has(profileId) ||
-        scheduler.getQueuedIds().includes(profileId) ||
-        scheduler.getStartingIds().includes(profileId)
-      ) {
-        throw new Error('Stop the environment before changing Cloak Pilot eligibility.')
-      }
-      loadedCloakPilotConfig = await setCloakPilotProfileEnabled(
-        cloakPilotConfigFilePath(),
-        profileId,
-        Boolean(enabledInput),
-      )
-      cloakPilotConfigError = ''
-      runtimeCloakPilotStatuses.delete(profileId)
-      const eligibility = evaluateCloakPilotLocalEligibility(profileId, loadedCloakPilotConfig)
-      const status = updateCloakPilotStatus(
-        profile,
-        {
-          enabled: eligibility.enabled,
-          state: eligibility.enabled ? 'unverified' : 'disabled',
-          reason: eligibility.reason,
-          effectiveBrowserVersion: eligibility.enabled ? eligibility.browserVersion : '',
-          snapshotId: '',
-          lastError: '',
-        },
-        eligibility,
-      )
-      audit('cloak_pilot_local_config_updated', {
-        profileId,
-        enabled: status.enabled,
-        configHash: eligibility.configHash,
-        configUpdatedAt: eligibility.configUpdatedAt,
-      })
-      return status
-    },
-  )
-
   ipcMain.handle('runtime.launch', async (_event, profileId: string) => performRuntimeLaunch(profileId))
   ipcMain.handle('runtime.stop', async (_event, profileId: string) => {
     ensureWritable('runtime.stop')
@@ -9628,7 +9598,9 @@ async function bootstrap(): Promise<void> {
   await refreshCloakPilotLocalConfig()
   traceStartup('cloak_pilot_config_loaded', {
     exists: loadedCloakPilotConfig?.exists ?? false,
+    defaultEnabled: loadedCloakPilotConfig?.config.defaultEnabled ?? false,
     enabledProfileCount: loadedCloakPilotConfig?.config.enabledProfileIds.length ?? 0,
+    disabledProfileCount: loadedCloakPilotConfig?.config.disabledProfileIds.length ?? 0,
     error: cloakPilotConfigError,
   })
   db = new DatabaseService(app)
