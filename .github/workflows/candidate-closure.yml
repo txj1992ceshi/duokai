@@ -1,0 +1,174 @@
+name: Candidate Closure
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/candidate-closure.yml'
+      - '.github/workflows/agent-contract.yml'
+      - '.github/workflows/deploy-policy.yml'
+      - '.github/workflows/desktop-release-policy.yml'
+      - '.github/workflows/desktop-windows-smoke.yml'
+      - '.github/workflows/desktop-windows-test-package.yml'
+      - 'deploy/**'
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: 'Exact 40-character SHA at the candidate branch head.'
+        required: true
+        type: string
+      confirmation:
+        description: 'Type VERIFY_CANDIDATE_CLOSURE to run the exact-head closure gate.'
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: candidate-closure-${{ github.event.inputs.expected_sha }}
+  cancel-in-progress: false
+
+jobs:
+  candidate-closure:
+    name: candidate-closure
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref }}
+          fetch-depth: 1
+
+      - name: Verify exact candidate and machine gates
+        id: closure
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event.inputs.expected_sha }}
+          CONFIRMATION: ${{ github.event.inputs.confirmation }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = 'workflow_dispatch' ] && [ "$CONFIRMATION" != 'VERIFY_CANDIDATE_CLOSURE' ]; then
+            echo 'confirmation must be exactly VERIFY_CANDIDATE_CLOSURE' >&2
+            exit 1
+          fi
+          if [[ ! "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]; then
+            echo 'expected_sha must be an exact lowercase 40-character Git SHA' >&2
+            exit 1
+          fi
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            echo "candidate moved: expected $EXPECTED_SHA, checked out $ACTUAL_SHA" >&2
+            exit 1
+          fi
+
+          require_run() {
+            local workflow_file="$1"
+            local required_event="$2"
+            local result
+            result=$(gh api --method GET \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}/runs" \
+              -f head_sha="$EXPECTED_SHA" \
+              -f status=success \
+              -f per_page=100)
+            local run_id
+            run_id=$(jq -r --arg event "$required_event" '
+              [.workflow_runs[]
+                | select(.conclusion == "success")
+                | select($event == "any" or .event == $event)]
+              | sort_by(.created_at)
+              | reverse
+              | .[0].id // empty
+            ' <<<"$result")
+            if [ -z "$run_id" ]; then
+              echo "No successful exact-head run for ${workflow_file} (${required_event})." >&2
+              exit 1
+            fi
+            printf '%s' "$run_id"
+          }
+
+          AGENT_RUN=$(require_run 'agent-contract.yml' 'any')
+          DEPLOY_POLICY_RUN=$(require_run 'deploy-policy.yml' 'any')
+          RELEASE_POLICY_RUN=$(require_run 'desktop-release-policy.yml' 'pull_request')
+          SMOKE_RUN=$(require_run 'desktop-windows-smoke.yml' 'workflow_dispatch')
+          PACKAGE_RUN=$(require_run 'desktop-windows-test-package.yml' 'workflow_dispatch')
+
+          require_artifact() {
+            local run_id="$1"
+            local artifact_name="$2"
+            local artifacts
+            artifacts=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts")
+            jq -e --arg name "$artifact_name" '
+              [.artifacts[] | select(.name == $name and .expired == false)] | length > 0
+            ' <<<"$artifacts" >/dev/null || {
+              echo "Required non-expired artifact ${artifact_name} missing from run ${run_id}." >&2
+              exit 1
+            }
+          }
+
+          require_artifact "$SMOKE_RUN" 'duokai2-windows-smoke-artifacts'
+          require_artifact "$PACKAGE_RUN" 'duokai2-windows-test-package'
+
+          PRS=$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/commits/${EXPECTED_SHA}/pulls")
+          PR_NUMBER=$(jq -r '
+            [.[] | select(.state == "open" and .draft == false and .base.ref == "main")]
+            | .[0].number // empty
+          ' <<<"$PRS")
+          if [ -z "$PR_NUMBER" ]; then
+            echo 'No open, non-draft PR to main contains the exact candidate SHA.' >&2
+            exit 1
+          fi
+
+          OWNER=${GITHUB_REPOSITORY%%/*}
+          REPO=${GITHUB_REPOSITORY##*/}
+          THREADS=$(gh api graphql \
+            -f owner="$OWNER" \
+            -f name="$REPO" \
+            -F number="$PR_NUMBER" \
+            -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved}}}}}')
+          UNRESOLVED=$(jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length' <<<"$THREADS")
+          if [ "$UNRESOLVED" -ne 0 ]; then
+            echo "PR #${PR_NUMBER} has ${UNRESOLVED} unresolved review thread(s)." >&2
+            exit 1
+          fi
+
+          jq -n \
+            --arg candidateSha "$EXPECTED_SHA" \
+            --argjson pullRequest "$PR_NUMBER" \
+            --argjson agentRun "$AGENT_RUN" \
+            --argjson deployPolicyRun "$DEPLOY_POLICY_RUN" \
+            --argjson releasePolicyRun "$RELEASE_POLICY_RUN" \
+            --argjson smokeRun "$SMOKE_RUN" \
+            --argjson packageRun "$PACKAGE_RUN" \
+            --argjson unresolvedThreads "$UNRESOLVED" \
+            '{
+              schemaVersion: 1,
+              candidateSha: $candidateSha,
+              pullRequest: $pullRequest,
+              unresolvedThreads: $unresolvedThreads,
+              gates: {
+                agentContract: $agentRun,
+                deployPolicy: $deployPolicyRun,
+                desktopReleasePolicy: $releasePolicyRun,
+                windowsSmoke: $smokeRun,
+                windowsTestPackage: $packageRun
+              },
+              requiredArtifacts: [
+                "duokai2-windows-smoke-artifacts",
+                "duokai2-windows-test-package"
+              ],
+              result: "PASS"
+            }' > candidate-closure-summary.json
+          cat candidate-closure-summary.json
+
+      - name: Upload candidate closure summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-closure-summary
+          path: candidate-closure-summary.json
+          if-no-files-found: error

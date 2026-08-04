@@ -130,15 +130,16 @@ const api: DesktopApi = {
     delete: (id: string) => ipcRenderer.invoke('proxies.delete', id),
     test: (id: string) => ipcRenderer.invoke('proxies.test', id),
   },
+  cloakPilot: {
+    getStatus: (profileId: string) => ipcRenderer.invoke('cloakPilot.getStatus', profileId),
+    setProfileEnabled: (profileId: string, enabled: boolean) =>
+      ipcRenderer.invoke('cloakPilot.setProfileEnabled', profileId, enabled),
+  },
   runtime: {
     launch: (profileId: string) => ipcRenderer.invoke('runtime.launch', profileId),
     stop: (profileId: string) => ipcRenderer.invoke('runtime.stop', profileId),
     getStatus: () => ipcRenderer.invoke('runtime.getStatus'),
     getHostInfo: () => ipcRenderer.invoke('runtime.getHostInfo'),
-    ensureLocalRuntime: (runtimeApiKey?: string) =>
-      ipcRenderer.invoke('runtime.ensureLocalRuntime', runtimeApiKey),
-    getLocalRuntimeInfo: (runtimeApiKey?: string) =>
-      ipcRenderer.invoke('runtime.getLocalRuntimeInfo', runtimeApiKey),
   },
   workspace: {
     snapshots: {

@@ -5,7 +5,7 @@ import type {
   StartupNavigationResult,
   UpdateProfileInput,
 } from '../../src/shared/types'
-import { applyPlatformTemplate, createDefaultFingerprint } from './factories'
+import { applyPlatformTemplate, createDefaultFingerprint } from './factories.ts'
 
 export type PlatformSmokeScenarioId =
   | 'default'
@@ -43,6 +43,7 @@ export interface PlatformSmokeEvaluationInput {
   scenario: PlatformSmokeScenario
   launchPassed: boolean
   startupNavigation: StartupNavigationResult | null | undefined
+  trustedStartupNavigationPassed?: boolean
   probe: PlatformSmokeProbeResult | null | undefined
 }
 
@@ -222,7 +223,7 @@ export function evaluatePlatformSmokeSuccess(
     reasons.push('runtime launch did not complete successfully')
   }
 
-  if (!input.startupNavigation?.success) {
+  if (!input.startupNavigation?.success && input.trustedStartupNavigationPassed !== true) {
     reasons.push(
       `startup navigation failed${
         input.startupNavigation?.reasonCode ? ` (${input.startupNavigation.reasonCode})` : ''

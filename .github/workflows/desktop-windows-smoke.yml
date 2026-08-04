@@ -17,6 +17,9 @@ jobs:
     runs-on: windows-latest
     env:
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\apps\duokai2\.cache\electron-builder
+      CLOAKBROWSER_AUTO_UPDATE: 'false'
+      CLOAKBROWSER_RELEASE_CHANNEL: stable
+      CLOAKBROWSER_VERSION: 145.0.7632.109.2
       DUOKAI_SMOKE_API_BASE: ${{ github.event.inputs.api_base }}
       DUOKAI_SMOKE_IDENTIFIER: ${{ secrets.DUOKAI_SMOKE_IDENTIFIER }}
       DUOKAI_SMOKE_PASSWORD: ${{ secrets.DUOKAI_SMOKE_PASSWORD }}
@@ -40,13 +43,59 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: apps/duokai2/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
         run: npm install
 
-      - name: Install Chromium
-        run: npm run install:chromium
+      - name: Install pinned CloakBrowser binary
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path smoke-artifacts | Out-Null
+          npx cloakbrowser install
+          npx cloakbrowser info --json | Set-Content -Path smoke-artifacts/cloakbrowser-info.json
+          $info = Get-Content smoke-artifacts/cloakbrowser-info.json -Raw | ConvertFrom-Json
+          if (-not $info.binary.installed) {
+            throw 'Pinned CloakBrowser binary was not installed.'
+          }
+          $hash = (Get-FileHash -Algorithm SHA256 -Path $info.binary.path).Hash.ToLowerInvariant()
+          "binary_path=$($info.binary.path)" | Tee-Object -FilePath smoke-artifacts/cloakbrowser-binary-sha256.txt
+          "binary_sha256=$hash" | Tee-Object -FilePath smoke-artifacts/cloakbrowser-binary-sha256.txt -Append
+          "browser_version=$($info.binary.version)" | Tee-Object -FilePath smoke-artifacts/cloakbrowser-binary-sha256.txt -Append
+          "platform_tag=$($info.environment.platform_tag)" | Tee-Object -FilePath smoke-artifacts/cloakbrowser-binary-sha256.txt -Append
+          $managedCacheDir = Split-Path -Parent $info.binary.cache_dir
+          if (-not [System.IO.Path]::IsPathFullyQualified($managedCacheDir)) {
+            throw 'CloakBrowser managed cache directory is not absolute.'
+          }
+          "DUOKAI_CLOAK_INSTALL_CONFIRM=YES" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "DUOKAI_CLOAK_POC_CACHE_DIR=$managedCacheDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "DUOKAI_CLOAK_PILOT_BINARY_SHA256=$hash" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $resourcesPath = Join-Path $env:GITHUB_WORKSPACE 'apps\duokai2\release\win-unpacked\resources'
+          "DUOKAI_CLOAK_INSTALL_RESOURCES_PATH=$resourcesPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Create and verify Duokai installation receipt
+        shell: pwsh
+        run: |
+          $receiptOutput = & node scripts/run-cloak-installation-smoke.ts 2>&1
+          $receiptExitCode = $LASTEXITCODE
+          $receiptOutput | Set-Content -Path smoke-artifacts/cloak-installation-receipt.json
+          if ($receiptExitCode -ne 0) {
+            $receiptOutput | Write-Error
+            throw 'Duokai CloakBrowser installation receipt command failed.'
+          }
+          $receiptResult = Get-Content smoke-artifacts/cloak-installation-receipt.json -Raw | ConvertFrom-Json
+          if (-not $receiptResult.success -or -not $receiptResult.verification.receiptMatches -or -not $receiptResult.verification.binaryMatches) {
+            throw 'Duokai CloakBrowser installation receipt verification failed.'
+          }
+
+      - name: Validate single-engine boundaries
+        run: npm run test:cloak-single-engine
+
+      - name: Run Cloak Runtime regression
+        run: npm run test:cloak-runtime
+
+      - name: Lint desktop
+        run: npm run lint
 
       - name: Build Windows package
         run: npm run build:win
@@ -60,7 +109,7 @@ jobs:
         with:
           name: duokai2-windows-smoke-artifacts
           path: |
-            apps/duokai2/smoke-artifacts/*
+            apps/duokai2/smoke-artifacts/**/*
             apps/duokai2/release/**/*.exe
             apps/duokai2/release/**/*.zip
           if-no-files-found: warn

@@ -5,6 +5,10 @@ import Database from 'better-sqlite3'
 import type { App } from 'electron'
 import { createDeviceProfileFromFingerprint, DEFAULT_ENVIRONMENT_PURPOSE } from './deviceProfile'
 import {
+  buildProfileMetadataBackfillUpdate,
+  type ProfileMetadataBackfillRow,
+} from './profileMetadataBackfill'
+import {
   cloneProfileRecordForNewId,
   createPortableWorkspaceDescriptor,
   createDefaultFingerprint,
@@ -400,36 +404,25 @@ export class DatabaseService {
   }
 
   private backfillProfileMetadata(): void {
-    const rows = this.db.prepare(`SELECT id, fingerprint_config, created_at, environment_purpose, device_profile, workspace_json FROM profiles`).all() as Array<{
-      id: string
-      fingerprint_config: string
-      created_at: string
-      environment_purpose: string | null
-      device_profile: string | null
-      workspace_json: string | null
-    }>
+    const rows = this.db.prepare(
+      `SELECT id, fingerprint_config, created_at, environment_purpose, device_profile, workspace_json FROM profiles`,
+    ).all() as ProfileMetadataBackfillRow[]
     const stmt = this.db.prepare(
       `UPDATE profiles SET environment_purpose = ?, device_profile = ?, workspace_json = ?, updated_at = ? WHERE id = ?`,
     )
-    const now = new Date().toISOString()
-    const transaction = this.db.transaction((items: typeof rows) => {
+    const transaction = this.db.transaction((items: ProfileMetadataBackfillRow[]) => {
       for (const row of items) {
-        const fingerprintConfig = normalizeFingerprintConfig(JSON.parse(row.fingerprint_config) as FingerprintConfig)
-        const purpose = (row.environment_purpose as EnvironmentPurpose | null) || DEFAULT_ENVIRONMENT_PURPOSE
-        const deviceProfile =
-          row.device_profile ?
-            createDeviceProfileFromFingerprint(
-              fingerprintConfig,
-              row.created_at,
-              JSON.parse(row.device_profile) as DeviceProfile,
-            )
-          : createDeviceProfileFromFingerprint(fingerprintConfig, row.created_at)
-        const existingWorkspace =
-          row.workspace_json && row.workspace_json.trim().length > 0 ?
-            (JSON.parse(row.workspace_json) as Partial<ProfileRecord['workspace']>)
-          : null
-        const workspace = normalizeWorkspaceDescriptor(existingWorkspace, row.id, fingerprintConfig)
-        stmt.run(purpose, JSON.stringify(deviceProfile), JSON.stringify(workspace), now, row.id)
+        const update = buildProfileMetadataBackfillUpdate(row)
+        if (!update) {
+          continue
+        }
+        stmt.run(
+          update.environmentPurpose,
+          update.deviceProfileJson,
+          update.workspaceJson,
+          new Date().toISOString(),
+          row.id,
+        )
       }
     })
     transaction(rows)

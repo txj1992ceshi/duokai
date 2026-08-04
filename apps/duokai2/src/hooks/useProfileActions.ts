@@ -332,6 +332,26 @@ export function useProfileActions({
     }
   }
 
+  async function setCloakPilotEnabled(profileId: string, enabled: boolean) {
+    setErrorMessage('')
+    try {
+      const api = requireDesktopApi(['cloakPilot.setProfileEnabled'])
+      const status = await api.cloakPilot.setProfileEnabled(profileId, enabled)
+      setNoticeMessage(
+        locale === 'zh-CN'
+          ? status.enabled
+            ? `Cloak Pilot 已为当前环境启用，目标版本 ${status.targetBrowserVersion}。`
+            : 'Cloak Pilot 已关闭。桌面端为 CloakBrowser 单引擎模式，后续启动将被阻止，直到重新启用并通过 rollout 门禁。'
+          : status.enabled
+            ? `Cloak Pilot enabled for this environment. Target ${status.targetBrowserVersion}.`
+            : 'Cloak Pilot disabled. Single-engine mode blocks future launches until CloakBrowser is re-enabled and admitted by rollout.',
+      )
+      await refreshAll()
+    } catch (error) {
+      setErrorMessage(localizeError(error))
+    }
+  }
+
   async function syncProfileConfig(profileId: string) {
     await withBusy(copy.syncingProfileConfig, async () => {
       const api = requireDesktopApi(['profiles.syncConfig'])
@@ -495,6 +515,7 @@ export function useProfileActions({
     deleteProfileById,
     launchProfile,
     stopProfile,
+    setCloakPilotEnabled,
     syncProfileConfig,
     pullProfileConfig,
     syncProfileStorageState,

@@ -341,8 +341,6 @@ export type ProxyListItem = {
 };
 
 export interface Settings {
-  runtimeUrl: string;
-  runtimeApiKey: string;
   autoFingerprint: boolean;
   autoProxyVerification: boolean;
   defaultStartupPlatform: string;

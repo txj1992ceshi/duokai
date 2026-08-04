@@ -12,7 +12,6 @@ type RuntimeSession = {
   sessionId?: string;
   startedAt?: string;
   status?: string;
-  runtimeUrl?: string;
   [key: string]: unknown;
 };
 
@@ -32,7 +31,7 @@ export default function RuntimeSessionDetailPage() {
       router.replace('/login');
       return;
     }
-    setAuthChecked(true);
+    queueMicrotask(() => setAuthChecked(true));
   }, [router]);
 
   useEffect(() => {
@@ -77,7 +76,7 @@ export default function RuntimeSessionDetailPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold">会话详情</h1>
-        <p className="mt-2 text-sm text-neutral-400">sessionId: {sessionId}</p>
+        <p className="mt-2 text-sm text-neutral-400">运行标识: {sessionId}</p>
       </div>
 
       <ErrorBanner message={error} />
@@ -89,7 +88,6 @@ export default function RuntimeSessionDetailPage() {
           <div>profileId：{(session.profileId as string) || '-'}</div>
           <div>status：{(session.status as string) || '-'}</div>
           <div>startedAt：{(session.startedAt as string) || '-'}</div>
-          <div>runtimeUrl：{(session.runtimeUrl as string) || '-'}</div>
         </div>
       ) : null}
     </div>

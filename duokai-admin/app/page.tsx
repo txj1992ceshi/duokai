@@ -15,20 +15,6 @@ type AdminUser = {
   status: 'active' | 'disabled';
 };
 
-type AdminProfile = {
-  id: string;
-  proxyType?: string;
-  proxyHost?: string;
-  proxyPort?: string;
-  ua?: string;
-  seed?: string;
-  isMobile?: boolean;
-  startupPlatform?: string;
-  startupUrl?: string;
-  storageStateSynced?: boolean;
-  workspaceSnapshotSynced?: boolean;
-};
-
 type ProfileStats = {
   totalProfiles: number;
   readyProfiles: number;
@@ -59,20 +45,6 @@ type RuntimeStatusPayload = {
   sessions?: Array<{ sessionId?: string }>;
 };
 
-function getProfileSyncSummary(profile: AdminProfile): 'Ready' | 'Partial' | 'Empty' {
-  const hasProxy =
-    profile.proxyType === 'direct' ||
-    Boolean(profile.proxyHost) ||
-    Boolean(profile.proxyPort);
-  const hasFingerprint =
-    Boolean(profile.ua) || Boolean(profile.seed) || typeof profile.isMobile === 'boolean';
-  const hasEnvironment = Boolean(profile.startupPlatform) || Boolean(profile.startupUrl);
-
-  if (hasProxy && hasFingerprint && hasEnvironment) return 'Ready';
-  if (hasProxy || hasFingerprint || hasEnvironment) return 'Partial';
-  return 'Empty';
-}
-
 export default function AdminHomePage() {
   const router = useRouter();
   const [authChecked, setAuthChecked] = useState(false);
@@ -80,7 +52,6 @@ export default function AdminHomePage() {
   const [error, setError] = useState('');
 
   const [users, setUsers] = useState<AdminUser[]>([]);
-  const [profiles, setProfiles] = useState<AdminProfile[]>([]);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatusPayload>({});
   const [profileStats, setProfileStats] = useState<ProfileStats>({
     totalProfiles: 0,
@@ -129,7 +100,6 @@ export default function AdminHomePage() {
       }
 
       setUsers(Array.isArray(usersData.users) ? usersData.users : []);
-      setProfiles(Array.isArray(profilesData.profiles) ? profilesData.profiles : []);
       setProfileStats({
         totalProfiles: Number(profilesData?.stats?.totalProfiles || 0),
         readyProfiles: Number(profilesData?.stats?.readyProfiles || 0),
@@ -175,12 +145,12 @@ export default function AdminHomePage() {
       router.replace('/login');
       return;
     }
-    setAuthChecked(true);
+    queueMicrotask(() => setAuthChecked(true));
   }, [router]);
 
   useEffect(() => {
     if (!authChecked) return;
-    loadDashboard();
+    queueMicrotask(() => { void loadDashboard(); });
   }, [authChecked, loadDashboard]);
 
   if (!authChecked) return null;
@@ -268,7 +238,7 @@ export default function AdminHomePage() {
           accentClassName="text-yellow-400"
         />
         <StatCard label="运行中 Session 数" value={sessionCount} />
-        <StatCard label="Runtime 在线状态" value={runtimeOnline ? '在线' : '离线'} />
+        <StatCard label="Agent 在线状态" value={runtimeOnline ? '在线' : '离线'} />
       </div>
 
       <div className="rounded-2xl border border-neutral-800 bg-neutral-900 px-5 py-4 text-sm text-neutral-300">

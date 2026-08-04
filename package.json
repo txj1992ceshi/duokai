@@ -16,6 +16,6 @@
     "dev:dashboard": "npm run dev --workspace apps/duokai-web",
     "dev:api": "npm run dev --workspace duokai-api",
     "dev:web": "npm run dev --workspace apps/duokai-web",
-    "dev:legacy-dashboard": "npm run dev --workspace fingerprint-dashboard"
+    "dev:control-dashboard": "npm run dev --workspace fingerprint-dashboard"
   }
 }

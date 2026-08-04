@@ -4,9 +4,7 @@ import { SocksProxyAgent } from 'socks-proxy-agent';
 import http from 'node:http';
 import https from 'node:https';
 import os from 'node:os';
-import { connectMongo } from '../lib/mongodb.js';
 import { asyncHandler } from '../lib/http.js';
-import { getRuntimeApiKey, getRuntimeUrl } from '../lib/runtime.js';
 import type {
   HostEnvironment,
   HostNetworkMode,
@@ -15,7 +13,6 @@ import type {
   ProxyVerificationRecord,
 } from '../lib/proxyTypes.js';
 import { requireUser } from '../middlewares/auth.js';
-import { ProfileModel } from '../models/Profile.js';
 
 type ProxyCheckPayload = {
   proxy?: string;
@@ -367,52 +364,14 @@ router.post(
 router.post(
   '/browser-check',
   requireUser,
-  asyncHandler(async (req, res) => {
-    await connectMongo();
-    const authUser = req.authUser!;
-    const body = (req.body || {}) as Record<string, unknown>;
-    const profileId = String(body.profileId || '');
-    const payload: Record<string, unknown> = { ...body };
-
-    if (profileId) {
-      const profile = await ProfileModel.findOne({
-        _id: profileId,
-        userId: authUser.userId,
-      }).lean();
-
-      if (!profile) {
-        res.status(404).json({ success: false, error: 'Profile not found' });
-        return;
-      }
-
-      payload.proxyType = payload.proxyType || profile.proxyType || 'direct';
-      payload.proxyHost = payload.proxyHost || profile.proxyHost || '';
-      payload.proxyPort = payload.proxyPort || profile.proxyPort || '';
-      payload.proxyUsername = payload.proxyUsername || profile.proxyUsername || '';
-      payload.proxyPassword = payload.proxyPassword || profile.proxyPassword || '';
-      payload.expectedIp = payload.expectedIp || profile.expectedProxyIp || '';
-      payload.expectedCountry = payload.expectedCountry || profile.expectedProxyCountry || '';
-      payload.expectedRegion = payload.expectedRegion || profile.expectedProxyRegion || '';
-      payload.proxy = payload.proxy || profile.proxy || '';
-    }
-
-    const runtimeResponse = await fetch(`${getRuntimeUrl()}/proxy/test-browser`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-runtime-key': getRuntimeApiKey(),
-      },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(45000),
+  asyncHandler(async (_req, res) => {
+    res.status(410).json({
+      success: false,
+      code: 'LEGACY_BROWSER_PROXY_CHECK_RETIRED',
+      error: '旧直连浏览器代理检测已退役。',
+      detail: '控制面尚未提供对应 CloakBrowser 任务类型，因此本入口保持 fail-closed。',
     });
-
-    let json: unknown = {};
-    try {
-      json = await runtimeResponse.json();
-    } catch {}
-
-    res.status(runtimeResponse.status).json(json);
-  })
+  }),
 );
 
 export default router;

@@ -56,4 +56,7 @@
 - Duokai Web 前端：`3001`
 - 后台管理端：`3000`
 - API：`3100`
-- Runtime：`3101`
+
+## 浏览器执行路径
+
+根目录启动脚本不再启动本地 Runtime Server，也不会安装普通 Playwright Chromium。浏览器环境的启动与停止统一通过控制面任务发送给已注册的 Duokai 桌面代理，由 CloakBrowser 单引擎执行；代理离线时任务明确失败，不存在旧引擎回退。

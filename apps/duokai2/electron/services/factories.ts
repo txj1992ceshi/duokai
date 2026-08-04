@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { createDeviceProfileFromFingerprint, DEFAULT_ENVIRONMENT_PURPOSE } from './deviceProfile'
+import { createDeviceProfileFromFingerprint, DEFAULT_ENVIRONMENT_PURPOSE } from './deviceProfile.ts'
 import type {
   BrowserKernel,
   CloudPhoneFingerprintSettings,
@@ -28,11 +28,11 @@ import type {
   UpdateProxyInput,
   UpdateTemplateInput,
 } from '../../src/shared/types'
-import { DEFAULT_ENVIRONMENT_LANGUAGE } from '../../src/shared/environmentLanguages'
+import { DEFAULT_ENVIRONMENT_LANGUAGE } from '../../src/shared/environmentLanguages.ts'
 import {
   assignStableHardwareFingerprint,
   sanitizeTemplateHardwareFingerprint,
-} from '../../src/shared/hardwareProfiles'
+} from '../../src/shared/hardwareProfiles.ts'
 
 export interface PlatformTemplatePreset {
   key: 'linkedin' | 'tiktok'

@@ -16,15 +16,14 @@
 - `Electron`
 - `React + Vite`
 - `SQLite` via `better-sqlite3`
-- `Playwright Chromium`
+- `CloakBrowser 0.5.2` + pinned `playwright-core 1.58.2`
 
 ## 常用命令
 
-安装依赖并安装 Chromium：
+安装依赖（CloakBrowser 固定版本由安装管理器和完整性门禁校验）：
 
 ```bash
 npm install
-npm run install:chromium
 ```
 
 开发模式：
@@ -77,7 +76,6 @@ npm run build:win
 
 ```bash
 npm install
-npm run install:chromium
 npm run build:mac
 ```
 
@@ -125,7 +123,6 @@ Windows 一键安装包有两种获取方式：
 
 ```bash
 npm install
-npm run install:chromium
 npm run build:win
 ```
 
@@ -193,7 +190,6 @@ git push origin main
 ```bash
 cd /Users/jj/Documents/duokai/apps/duokai2
 npm install
-npm run install:chromium
 npm run build:mac
 ```
 
@@ -210,7 +206,7 @@ npm run build:mac
 
 ## 说明
 
-- 构建时会自动把当前平台的 Playwright Chromium 打包进测试包资源，便于新机器首次启动环境
+- 发行包不再捆绑普通 Playwright Chromium；运行时仅允许固定 CloakBrowser，引擎未准入或完整性校验失败时直接阻止启动
 - 环境数据与 SQLite 数据库存储在应用用户目录，不在仓库内
 - 当前适合本地测试与小范围内部分发，未做 macOS 签名、公证和 Windows 代码签名
 - GitHub Releases 方案当前就是默认分发方案，目标是“先能稳定打包、先能安装使用”

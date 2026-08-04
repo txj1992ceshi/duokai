@@ -62,7 +62,10 @@ export function DashboardView({
   defaultCloudPhoneProvider: string
   defaultCloudPhoneProviderHealth: CloudPhoneProviderHealth | null
   directoryInfo: {
-    chromiumExecutable?: string
+    browserEngine: 'cloakbrowser'
+    cloakBrowserVersion: string
+    cloakBrowserCacheDir: string
+    fallbackEngine: 'forbidden'
   } | null
   runtimeHostInfo: RuntimeHostInfo | null
   runtimeStatus: RuntimeStatus | null
@@ -148,8 +151,10 @@ export function DashboardView({
     },
     {
       label: t.dashboard.chromium,
-      value: directoryInfo?.chromiumExecutable ? t.common.ready : t.common.missing,
-      detail: directoryInfo?.chromiumExecutable ?? t.dashboard.installChromium,
+      value: directoryInfo?.cloakBrowserVersion ? t.common.ready : t.common.missing,
+      detail: directoryInfo?.cloakBrowserVersion
+        ? `${directoryInfo.cloakBrowserVersion} · fallback ${directoryInfo.fallbackEngine}`
+        : t.dashboard.installChromium,
     },
   ]
 

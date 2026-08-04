@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import type { IndexDefinition, IndexOptions } from 'mongoose';
 
 import { normalizeWorkspacePayload, serializeProfile } from './serializers.js';
 import { ProfileStorageStateModel } from '../models/ProfileStorageState.js';
@@ -101,7 +102,7 @@ test('workspace snapshot schema keeps profile identity and unique snapshot key',
   const indexes = WorkspaceSnapshotModel.schema.indexes();
   assert.equal(
     indexes.some(
-      ([fields, options]: [Record<string, number>, { unique?: boolean }]) =>
+      ([fields, options]: [IndexDefinition, IndexOptions]) =>
         fields.userId === 1 &&
         fields.profileId === 1 &&
         fields.snapshotId === 1 &&
@@ -116,7 +117,7 @@ test('profile storage state schema keeps profile identity as string with unique 
   const indexes = ProfileStorageStateModel.schema.indexes();
   assert.equal(
     indexes.some(
-      ([fields, options]: [Record<string, number>, { unique?: boolean }]) =>
+      ([fields, options]: [IndexDefinition, IndexOptions]) =>
         fields.userId === 1 && fields.profileId === 1 && options?.unique === true,
     ),
     true,

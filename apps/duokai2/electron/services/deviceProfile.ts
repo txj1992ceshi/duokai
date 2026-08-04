@@ -8,7 +8,7 @@ import type {
   ProfileRecord,
   SimpleFingerprintMode,
 } from '../../src/shared/types'
-import { resolveFontBaseline } from './desktopRealism'
+import { resolveFontBaseline } from './desktopRealism.ts'
 
 export const DEVICE_PROFILE_VERSION = 1
 export const DEFAULT_ENVIRONMENT_PURPOSE: EnvironmentPurpose = 'operation'

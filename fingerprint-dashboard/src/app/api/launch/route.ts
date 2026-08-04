@@ -1,55 +1,26 @@
-import { NextResponse } from 'next/server';
-import { spawn } from 'child_process';
-import path from 'path';
-import fs from 'fs';
+import { NextRequest, NextResponse } from 'next/server';
+import { requireUser } from '@/lib/requireUser';
 
-// Force Node.js runtime so child_process and fs are available
 export const runtime = 'nodejs';
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   try {
-    const { profileId } = await req.json();
-
-    if (!profileId) {
-      return NextResponse.json({ error: 'Profile ID is required' }, { status: 400 });
-    }
-
-    // Build path dynamically to prevent Turbopack static analysis from
-    // treating this as a module import. We split the string intentionally.
-    const cwd = process.cwd();
-    const engineDir = 'stealth-engine';
-    const scriptName = 'launch.js';
-    const engineLocation = path.resolve(cwd, engineDir);
-    const launchScript = path.resolve(engineLocation, scriptName);
-
-    if (!fs.existsSync(launchScript)) {
-      return NextResponse.json({ 
-        error: `launch.js not found. Looking at: ${launchScript}` 
-      }, { status: 500 });
-    }
-
-    console.log(`[API] Spawning browser for profile: ${profileId}`);
-
-    const child = spawn(
-      process.execPath, // Use same node version as Next.js
-      [launchScript, '--profileId', profileId],
-      {
-        cwd: engineLocation,
-        detached: true,
-        stdio: 'ignore',
-        env: { ...process.env },
-      }
+    requireUser(req);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Request failed';
+    return NextResponse.json(
+      { success: false, error: message === 'Unauthorized' ? 'Unauthorized' : 'Request failed' },
+      { status: message === 'Unauthorized' ? 401 : 500 },
     );
-
-    child.unref();
-
-    return NextResponse.json({ 
-      success: true, 
-      message: `Profile ${profileId} launched` 
-    });
-
-  } catch (error: any) {
-    console.error('[API Error]', error);
-    return NextResponse.json({ error: error.message || 'Internal Server Error' }, { status: 500 });
   }
+
+  return NextResponse.json(
+    {
+      success: false,
+      code: 'LEGACY_DIRECT_LAUNCH_RETIRED',
+      error: '旧浏览器直启入口已退役。',
+      detail: '使用 /api/control-plane/runtime 创建 start 任务，由 Duokai Desktop Agent 使用 CloakBrowser 执行。',
+    },
+    { status: 410 },
+  );
 }

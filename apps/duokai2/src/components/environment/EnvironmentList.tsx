@@ -18,6 +18,7 @@ export function EnvironmentList({
   onClone,
   onLaunch,
   onStop,
+  onSetCloakPilotEnabled,
   onDelete,
   onMoveToNurture,
   onMoveToOperation,
@@ -34,6 +35,7 @@ export function EnvironmentList({
   onClone: (profileId: string) => void
   onLaunch: (profileId: string) => void
   onStop: (profileId: string) => void
+  onSetCloakPilotEnabled: (profileId: string, enabled: boolean) => void
   onDelete: (profileId: string) => void
   onMoveToNurture: (profileId: string) => void
   onMoveToOperation: (profileId: string) => void
@@ -82,6 +84,9 @@ export function EnvironmentList({
                   onPullStorageState={() => onPullStorageState(item.id)}
                   onLaunch={() => onLaunch(item.id)}
                   onStop={() => onStop(item.id)}
+                  onSetCloakPilotEnabled={(enabled) =>
+                    onSetCloakPilotEnabled(item.id, enabled)
+                  }
                   onDelete={() => onDelete(item.id)}
                   onMoveToNurture={() => onMoveToNurture(item.id)}
                   onMoveToOperation={() => onMoveToOperation(item.id)}

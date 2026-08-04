@@ -1,10 +1,16 @@
 name: Deploy Vultr
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: 'Exact 40-character SHA currently at origin/main.'
+        required: true
+        type: string
+      confirmation:
+        description: 'Type DEPLOY_VULTR to authorize this manual production deployment.'
+        required: true
+        type: string
 
 concurrency:
   group: deploy-vultr-main
@@ -14,7 +20,32 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy over SSH
+      - name: Checkout deployment control files
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Validate manual deployment authorization
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event.inputs.confirmation }}" != "DEPLOY_VULTR" ]; then
+            echo "confirmation must be exactly DEPLOY_VULTR" >&2
+            exit 1
+          fi
+          EXPECTED_SHA="${{ github.event.inputs.expected_sha }}"
+          if [[ ! "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "expected_sha must be an exact lowercase 40-character Git SHA" >&2
+            exit 1
+          fi
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            echo "origin/main moved: expected $EXPECTED_SHA, checked out $ACTUAL_SHA" >&2
+            exit 1
+          fi
+
+      - name: Deploy exact main SHA over SSH
         uses: appleboy/ssh-action@v1.2.2
         with:
           host: ${{ secrets.VULTR_HOST }}
@@ -22,12 +53,13 @@ jobs:
           key: ${{ secrets.VULTR_SSH_KEY }}
           port: ${{ secrets.VULTR_PORT || '22' }}
           envs: VULTR_ROOT_DIR,PUBLIC_SCHEME,PUBLIC_HOST,EXTRA_CORS_ORIGINS
-          script_stop: true
           command_timeout: 45m
+          capture_stdout: true
           script: |
             set -euo pipefail
             cd "${VULTR_ROOT_DIR:-/var/www/duokai}"
             BRANCH=main \
+            EXPECTED_SHA="${{ github.event.inputs.expected_sha }}" \
             PUBLIC_SCHEME="${PUBLIC_SCHEME:-http}" \
             PUBLIC_HOST="${PUBLIC_HOST}" \
             EXTRA_CORS_ORIGINS="${EXTRA_CORS_ORIGINS:-}" \

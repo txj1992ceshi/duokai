@@ -104,10 +104,7 @@ export interface Behavior {
   actions: unknown[]; // JSON representation of mouse/keyboard sequences
 }
 
-export interface Settings {
-  runtimeUrl: string;
-  runtimeApiKey: string;
-}
+export type Settings = Record<string, never>;
 
 export interface DbSchema {
   profiles: Profile[];
@@ -129,7 +126,7 @@ const initDb = () => {
     { id: '2', name: 'Amazon 运营组', color: 'bg-orange-500/10 text-orange-400 border-orange-500/20' },
     { id: '3', name: '默认分组', color: 'bg-slate-500/10 text-slate-400 border-slate-500/20' }
   ];
-  const defaultSettings = { runtimeUrl: 'http://127.0.0.1:3001', runtimeApiKey: '' };
+  const defaultSettings: Settings = {};
 
   if (!fs.existsSync(DB_PATH)) {
     fs.writeFileSync(DB_PATH, JSON.stringify({ 
@@ -195,7 +192,7 @@ export const getDb = (): DbSchema => {
       profiles: [], 
       groups: [], 
       behaviors: [], 
-      settings: { runtimeUrl: 'http://127.0.0.1:3001', runtimeApiKey: '' } 
+      settings: {}
     };
   }
 };

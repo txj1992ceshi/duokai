@@ -14,12 +14,15 @@ These paths conflict with the next architecture and should be treated as depreca
 
 ### Server-side launch bypass
 
-The legacy runtime launch path that shells into `fingerprint-dashboard/stealth-engine/launch.js` conflicts with the canonical server -> agent -> local runtime flow.
+Phase 7B retired every official entrypoint that could launch or call the standalone `fingerprint-dashboard/stealth-engine` Runtime:
 
-Target state:
+- Dashboard start/stop/status now use control-plane tasks and Agent heartbeat state only
+- legacy runtime actions and browser-layer proxy checks return HTTP `410` and fail closed
+- Electron no longer exposes or spawns a local `3101` Runtime
+- root launch/install scripts no longer install Playwright Chromium or start the old service
+- PM2, deployment and CI no longer define or deploy `duokai-runtime`
 
-- keep only task-driven local execution
-- return a clear deprecation response for legacy direct launch paths
+Phase 7C physically deleted the complete `fingerprint-dashboard/stealth-engine` tree: 1,835 tracked files and 31,241,130 bytes, including its committed dependency tree, package metadata and executable sources. Four direct-Runtime test clients and the dedicated Playwright Dockerfile were deleted with it. The authenticated HTTP `410` routes remain only as non-executing tombstones for explicit migration errors.
 
 ### Mongo inline runtime state
 
@@ -46,8 +49,11 @@ Any hidden task type or UI wording that suggests automated platform actions shou
 
 ## Migration Rule
 
-Deprecated paths may remain temporarily for compatibility, but:
+Deprecated executable paths have now been physically removed. Going forward:
 
-- no new features should be built on them
-- all new runtime work must use the canonical architecture
-- deprecation should be reflected in route responses, docs, and types
+- the `fingerprint-dashboard/stealth-engine` directory, its dedicated Docker image and direct-Runtime test clients must not be recreated
+- HTTP `410` tombstone routes must never gain an executor, child process, Runtime URL or compatibility fallback
+- no new feature may introduce server-side browser execution or ordinary Playwright Chromium
+- all runtime work must use control-plane tasks and the registered Duokai desktop Agent
+- browser execution must remain CloakBrowser-only and fail closed when the Agent is unavailable
+- repository guards must keep the removed directory, `RUNTIME_URL` forwarding layer, port `3101` service and `duokai-runtime` deployment definition absent

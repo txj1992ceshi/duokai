@@ -1,0 +1,54 @@
+name: Desktop Release Policy
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/desktop-release.yml'
+      - '.github/workflows/desktop-release-policy.yml'
+      - 'apps/duokai2/electron-builder.release.config.cjs'
+      - 'apps/duokai2/package.json'
+      - 'apps/duokai2/scripts/validate-desktop-release-version.mjs'
+      - 'apps/duokai2/scripts/validate-desktop-release-version.test.mjs'
+      - 'apps/duokai2/docs/desktop-release-runbook.md'
+      - 'deploy/desktop-release-policy.test.mjs'
+      - 'deploy/rollback-rehearsal.test.mjs'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/desktop-release.yml'
+      - '.github/workflows/desktop-release-policy.yml'
+      - 'apps/duokai2/electron-builder.release.config.cjs'
+      - 'apps/duokai2/package.json'
+      - 'apps/duokai2/scripts/validate-desktop-release-version.mjs'
+      - 'apps/duokai2/scripts/validate-desktop-release-version.test.mjs'
+      - 'apps/duokai2/docs/desktop-release-runbook.md'
+      - 'deploy/desktop-release-policy.test.mjs'
+      - 'deploy/rollback-rehearsal.test.mjs'
+  workflow_dispatch:
+
+jobs:
+  policy:
+    name: desktop-release-policy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate desktop release freeze contract
+        run: |
+          node --test deploy/desktop-release-policy.test.mjs
+          node --test deploy/rollback-rehearsal.test.mjs
+          node --test apps/duokai2/scripts/validate-desktop-release-version.test.mjs
+
+      - name: Prove current published version cannot be overwritten
+        run: |
+          if node apps/duokai2/scripts/validate-desktop-release-version.mjs 3.6.8 v3.6.8; then
+            echo 'Current v3.6.8 must not pass the monotonic release gate.' >&2
+            exit 1
+          fi

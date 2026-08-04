@@ -5,6 +5,7 @@ import tls from 'node:tls'
 import type { Duplex } from 'node:stream'
 import type { EgressPathType, ProxyRecord } from '../../src/shared/types'
 import type { EgressPathCandidate, ParentProxyConfig } from './egressPaths'
+import { ReferenceCountedAsyncResourcePool } from './referenceCountedAsyncResource.ts'
 
 type PlaywrightProxyConfig = {
   server: string
@@ -21,11 +22,35 @@ type UpstreamProxyTarget = {
 }
 
 type BridgeEntry = {
-  key: string
   server: http.Server
   port: number
   upstream: UpstreamProxyTarget
   egressPathType: EgressPathType
+  sockets: Set<net.Socket>
+  closing: Promise<void> | null
+}
+
+export type LaunchProxyResolution = {
+  config: PlaywrightProxyConfig | null
+  bridgeActive: boolean
+  detail: string
+  egressPathType: EgressPathType
+}
+
+export interface LaunchProxyLease extends LaunchProxyResolution {
+  release(): Promise<void>
+}
+
+export interface ProxyBridgeDiagnostics {
+  activeBridgeCount: number
+  totalLeaseCount: number
+  bridges: Array<{
+    port: number
+    leaseCount: number
+    socketCount: number
+    egressPathType: EgressPathType
+    closing: boolean
+  }>
 }
 
 type TargetRequestInfo = {
@@ -36,7 +61,45 @@ type TargetRequestInfo = {
   path: string
 }
 
-const bridgeCache = new Map<string, Promise<BridgeEntry>>()
+const bridgePool = new ReferenceCountedAsyncResourcePool<BridgeEntry>()
+const legacyPinnedLeases = new Map<string, { release(): Promise<void>; bridge: BridgeEntry }>()
+
+async function closeBridge(entry: BridgeEntry): Promise<void> {
+  if (entry.closing) {
+    return await entry.closing
+  }
+  entry.closing = new Promise<void>((resolve) => {
+    for (const socket of entry.sockets) {
+      socket.destroy()
+    }
+    entry.sockets.clear()
+    if (!entry.server.listening) {
+      resolve()
+      return
+    }
+    entry.server.close(() => resolve())
+  })
+  return await entry.closing
+}
+
+function toLaunchProxyResolution(
+  bridge: BridgeEntry,
+  proxy: ProxyRecord,
+  egressPath?: EgressPathCandidate,
+): LaunchProxyResolution {
+  return {
+    config: {
+      server: `http://127.0.0.1:${bridge.port}`,
+    },
+    bridgeActive: true,
+    detail:
+      `via local proxy bridge http://127.0.0.1:${bridge.port} -> ${proxy.type}://${proxy.host}:${proxy.port}` +
+      (egressPath?.parentProxy
+        ? ` via ${egressPath.type} parent proxy ${egressPath.parentProxy.protocol}://${egressPath.parentProxy.host}:${egressPath.parentProxy.port}`
+        : ''),
+    egressPathType: bridge.egressPathType,
+  }
+}
 
 function buildBridgeKey(proxy: ProxyRecord, egressPath?: EgressPathCandidate): string {
   return `${proxy.type}://${proxy.host}:${proxy.port}|${proxy.username || ''}|${proxy.password || ''}|${egressPath?.type || 'direct'}|${egressPath?.parentProxy?.rawUrl || ''}`
@@ -536,55 +599,98 @@ async function createBridge(
     throw new Error('Failed to determine local proxy bridge port')
   }
 
+  const sockets = new Set<net.Socket>()
+  server.on('connection', (socket) => {
+    sockets.add(socket)
+    socket.once('close', () => sockets.delete(socket))
+  })
+
   return {
-    key: buildBridgeKey(proxy, egressPath),
     server,
     port: address.port,
     upstream,
     egressPathType: egressPath?.type || 'direct',
+    sockets,
+    closing: null,
+  }
+}
+
+function directResolution(egressPath?: EgressPathCandidate): LaunchProxyResolution {
+  return {
+    config: null,
+    bridgeActive: false,
+    detail: '',
+    egressPathType: egressPath?.type || 'direct',
+  }
+}
+
+export async function acquireLaunchProxy(
+  proxy: ProxyRecord | null,
+  options: { egressPath?: EgressPathCandidate } = {},
+): Promise<LaunchProxyLease> {
+  if (!proxy) {
+    return {
+      ...directResolution(options.egressPath),
+      release: async () => undefined,
+    }
+  }
+
+  const key = buildBridgeKey(proxy, options.egressPath)
+  const lease = await bridgePool.acquire(
+    key,
+    () => createBridge(proxy, options.egressPath),
+    closeBridge,
+  )
+  if (lease.resource.closing) {
+    await lease.release()
+    throw new Error('Local proxy bridge is already closing')
+  }
+  return {
+    ...toLaunchProxyResolution(lease.resource, proxy, options.egressPath),
+    release: lease.release,
   }
 }
 
 export async function resolveLaunchProxy(
   proxy: ProxyRecord | null,
   options: { egressPath?: EgressPathCandidate } = {},
-): Promise<{
-  config: PlaywrightProxyConfig | null
-  bridgeActive: boolean
-  detail: string
-  egressPathType: EgressPathType
-}> {
+): Promise<LaunchProxyResolution> {
   if (!proxy) {
-    return {
-      config: null,
-      bridgeActive: false,
-      detail: '',
-      egressPathType: options.egressPath?.type || 'direct',
-    }
+    return directResolution(options.egressPath)
   }
-
   const key = buildBridgeKey(proxy, options.egressPath)
-  if (!bridgeCache.has(key)) {
-    bridgeCache.set(
+  let pinned = legacyPinnedLeases.get(key)
+  if (!pinned) {
+    const lease = await bridgePool.acquire(
       key,
-      createBridge(proxy, options.egressPath).catch((error) => {
-        bridgeCache.delete(key)
-        throw error
-      }),
+      () => createBridge(proxy, options.egressPath),
+      closeBridge,
     )
+    pinned = { release: lease.release, bridge: lease.resource }
+    legacyPinnedLeases.set(key, pinned)
   }
+  return toLaunchProxyResolution(pinned.bridge, proxy, options.egressPath)
+}
 
-  const bridge = await bridgeCache.get(key)!
+export async function closeAllProxyBridges(): Promise<void> {
+  const pinned = [...legacyPinnedLeases.values()]
+  legacyPinnedLeases.clear()
+  await Promise.all(pinned.map((entry) => entry.release().catch(() => undefined)))
+  await bridgePool.closeAll()
+}
+
+export async function getProxyBridgeDiagnostics(): Promise<ProxyBridgeDiagnostics> {
+  const entries = await bridgePool.inspect()
+  const bridges = entries.map((entry) => ({
+    port: entry.resource.port,
+    leaseCount: entry.referenceCount,
+    socketCount: entry.resource.sockets.size,
+    egressPathType: entry.resource.egressPathType,
+    closing: Boolean(entry.resource.closing),
+  }))
   return {
-    config: {
-      server: `http://127.0.0.1:${bridge.port}`,
-    },
-    bridgeActive: true,
-    detail:
-      `via local proxy bridge http://127.0.0.1:${bridge.port} -> ${proxy.type}://${proxy.host}:${proxy.port}` +
-      (options.egressPath?.parentProxy
-        ? ` via ${options.egressPath.type} parent proxy ${options.egressPath.parentProxy.protocol}://${options.egressPath.parentProxy.host}:${options.egressPath.parentProxy.port}`
-        : ''),
-    egressPathType: bridge.egressPathType,
+    activeBridgeCount: bridges.length,
+    totalLeaseCount: bridges.reduce((total, bridge) => total + bridge.leaseCount, 0),
+    bridges,
   }
 }

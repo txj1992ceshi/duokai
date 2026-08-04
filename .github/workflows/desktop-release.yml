@@ -3,13 +3,25 @@ name: Desktop Release
 on:
   workflow_dispatch:
     inputs:
+      expected_sha:
+        description: 'Exact 40-character SHA currently at origin/main.'
+        required: true
+        type: string
       release_tag:
-        description: 'Optional release tag. Leave blank to use v + apps/duokai2 package version.'
-        required: false
-        default: ''
+        description: 'Must equal v + apps/duokai2 package version.'
+        required: true
+        type: string
+      confirmation:
+        description: 'Type CREATE_SIGNED_DESKTOP_DRAFT to authorize a signed draft build.'
+        required: true
+        type: string
 
 permissions:
   contents: write
+
+concurrency:
+  group: desktop-release-${{ github.event.inputs.release_tag }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -20,19 +32,22 @@ jobs:
           - platform: mac
             runner: macos-latest
             artifact_name: duokai2-mac-release
-            build_command: npm run build:mac
+            build_command: npm run build:mac:release
           - platform: win
             runner: windows-latest
             artifact_name: duokai2-win-release
-            build_command: npm run build:win
+            build_command: npm run build:win:release
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
         working-directory: apps/duokai2
 
     steps:
-      - name: Checkout
+      - name: Checkout exact main candidate
         uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -41,28 +56,150 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
-      - name: Resolve desktop version
+      - name: Validate immutable release candidate
         id: desktop-version
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          PACKAGE_VERSION=$(node -p "require('./package.json').version")
-          EXPECTED_TAG="v${PACKAGE_VERSION}"
-          if [ -n "${{ github.event.inputs.release_tag }}" ] && [ "${{ github.event.inputs.release_tag }}" != "${EXPECTED_TAG}" ]; then
-            echo "release_tag must match package version exactly: ${EXPECTED_TAG}" >&2
+          set -euo pipefail
+          if [ "${{ github.event.inputs.confirmation }}" != "CREATE_SIGNED_DESKTOP_DRAFT" ]; then
+            echo "confirmation must be exactly CREATE_SIGNED_DESKTOP_DRAFT" >&2
             exit 1
           fi
-          RELEASE_TAG="${EXPECTED_TAG}"
-          echo "package_version=${PACKAGE_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          EXPECTED_SHA="${{ github.event.inputs.expected_sha }}"
+          if [[ ! "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "expected_sha must be an exact lowercase 40-character Git SHA" >&2
+            exit 1
+          fi
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            echo "origin/main moved: expected $EXPECTED_SHA, checked out $ACTUAL_SHA" >&2
+            exit 1
+          fi
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          EXPECTED_TAG="v${PACKAGE_VERSION}"
+          if [ "${{ github.event.inputs.release_tag }}" != "$EXPECTED_TAG" ]; then
+            echo "release_tag must match package version exactly: $EXPECTED_TAG" >&2
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$EXPECTED_TAG" >/dev/null 2>&1; then
+            echo "Git tag $EXPECTED_TAG already exists; release tags are immutable." >&2
+            exit 1
+          fi
+          if gh release view "$EXPECTED_TAG" >/dev/null 2>&1; then
+            echo "GitHub release $EXPECTED_TAG already exists; existing releases and assets are immutable." >&2
+            exit 1
+          fi
+          LATEST_TAG=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name' 2>/dev/null || true)
+          node scripts/validate-desktop-release-version.mjs "$PACKAGE_VERSION" "$LATEST_TAG"
+          echo "package_version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$EXPECTED_TAG" >> "$GITHUB_OUTPUT"
+          echo "release_sha=$ACTUAL_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Require macOS signing and notarization credentials
+        if: matrix.platform == 'mac'
+        shell: bash
+        env:
+          MACOS_CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
+          MACOS_CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          for name in MACOS_CSC_LINK MACOS_CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!name:-}" ]; then
+              echo "$name is required for a signed and notarized macOS release." >&2
+              exit 1
+            fi
+          done
+
+      - name: Require Windows signing credentials
+        if: matrix.platform == 'win'
+        shell: pwsh
+        env:
+          WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CSC_LINK)) {
+            throw 'WINDOWS_CSC_LINK is required for a signed Windows release.'
+          }
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CSC_KEY_PASSWORD)) {
+            throw 'WINDOWS_CSC_KEY_PASSWORD is required for a signed Windows release.'
+          }
 
       - name: Install dependencies
         run: npm install
 
-      - name: Install Chromium
-        run: npm run install:chromium
+      - name: Validate release boundaries
+        run: |
+          npm run test:cloak-single-engine
+          npm run test:cloak-runtime
+          npm run lint
 
-      - name: Build desktop package
+      - name: Build signed desktop package
+        env:
+          CSC_LINK: ${{ matrix.platform == 'mac' && secrets.MACOS_CSC_LINK || secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ matrix.platform == 'mac' && secrets.MACOS_CSC_KEY_PASSWORD || secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ matrix.platform == 'mac' && secrets.APPLE_ID || '' }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ matrix.platform == 'mac' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ matrix.platform == 'mac' && secrets.APPLE_TEAM_ID || '' }}
         run: ${{ matrix.build_command }}
+
+      - name: Verify macOS signature and notarization
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH=$(find release -type d -name 'Duokai.app' -print -quit)
+          test -n "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          codesign --display --verbose=4 "$APP_PATH"
+          spctl --assess --type execute --verbose=4 "$APP_PATH"
+          xcrun stapler validate "$APP_PATH"
+          DMG_COUNT=0
+          while IFS= read -r -d '' file; do
+            DMG_COUNT=$((DMG_COUNT + 1))
+            xcrun stapler validate "$file"
+            spctl --assess --type open --context context:primary-signature --verbose=4 "$file"
+          done < <(find release -type f -name '*.dmg' -print0)
+          test "$DMG_COUNT" -gt 0
+
+      - name: Verify Windows Authenticode signatures
+        if: matrix.platform == 'win'
+        shell: pwsh
+        run: |
+          $executables = Get-ChildItem -Path release -Recurse -File |
+            Where-Object { $_.Extension -eq '.exe' }
+          if (-not $executables) {
+            throw 'No Windows executables were produced.'
+          }
+          foreach ($file in $executables) {
+            $signature = Get-AuthenticodeSignature -FilePath $file.FullName
+            if ($signature.Status -ne 'Valid') {
+              throw "Invalid Authenticode signature for $($file.FullName): $($signature.Status)"
+            }
+          }
+          $zip = Get-ChildItem -Path release -Recurse -File |
+            Where-Object { $_.Extension -eq '.zip' } |
+            Select-Object -First 1
+          if (-not $zip) {
+            throw 'Windows ZIP package was not produced.'
+          }
+          $expanded = Join-Path $env:RUNNER_TEMP 'duokai-signed-zip'
+          Expand-Archive -Path $zip.FullName -DestinationPath $expanded -Force
+          $zipExecutables = Get-ChildItem -Path $expanded -Recurse -File |
+            Where-Object { $_.Extension -eq '.exe' }
+          if (-not $zipExecutables) {
+            throw 'Windows ZIP contains no executable to verify.'
+          }
+          foreach ($file in $zipExecutables) {
+            $signature = Get-AuthenticodeSignature -FilePath $file.FullName
+            if ($signature.Status -ne 'Valid') {
+              throw "Invalid ZIP Authenticode signature for $($file.FullName): $($signature.Status)"
+            }
+          }
 
       - name: Collect release assets (macOS)
         if: matrix.platform == 'mac'
@@ -75,7 +212,6 @@ jobs:
           done
           ls release-assets | grep "${{ steps.desktop-version.outputs.package_version }}"
           test -f "release-assets/latest-mac.yml"
-          ls -la release-assets
 
       - name: Collect release assets (Windows)
         if: matrix.platform == 'win'
@@ -90,91 +226,84 @@ jobs:
           if (-not (Get-ChildItem release-assets | Where-Object { $_.Name -like "*${{ steps.desktop-version.outputs.package_version }}*" })) {
             throw "Release assets do not match package version ${{ steps.desktop-version.outputs.package_version }}"
           }
-          if (-not (Test-Path "release-assets/latest.yml")) {
-            throw "latest.yml not found in release assets"
+          if (-not (Test-Path 'release-assets/latest.yml')) {
+            throw 'latest.yml not found in release assets'
           }
-          Get-ChildItem release-assets
 
-      - name: Upload build artifacts
+      - name: Generate platform checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          SUM_FILE="SHA256SUMS-${{ matrix.platform }}"
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS-*' -print0 | sort -z | xargs -0 shasum -a 256 > "$SUM_FILE"
+          shasum -a 256 -c "$SUM_FILE"
+
+      - name: Upload verified build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
           path: apps/duokai2/release-assets/*
           if-no-files-found: error
 
-  release:
+  draft:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout exact main candidate
         uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
         with:
-          node-version: 22
+          ref: main
+          fetch-depth: 0
 
-      - name: Resolve release tag
+      - name: Revalidate immutable release candidate
         id: desktop-version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          EXPECTED_SHA="${{ github.event.inputs.expected_sha }}"
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
           PACKAGE_VERSION=$(node -p "require('./apps/duokai2/package.json').version")
           EXPECTED_TAG="v${PACKAGE_VERSION}"
-          if [ -n "${{ github.event.inputs.release_tag }}" ] && [ "${{ github.event.inputs.release_tag }}" != "${EXPECTED_TAG}" ]; then
-            echo "release_tag must match package version exactly: ${EXPECTED_TAG}" >&2
+          test "${{ github.event.inputs.release_tag }}" = "$EXPECTED_TAG"
+          if git ls-remote --exit-code --tags origin "refs/tags/$EXPECTED_TAG" >/dev/null 2>&1; then
+            echo "Git tag $EXPECTED_TAG already exists; refusing to replace it." >&2
             exit 1
           fi
-          RELEASE_TAG="${EXPECTED_TAG}"
-          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          if gh release view "$EXPECTED_TAG" >/dev/null 2>&1; then
+            echo "GitHub release $EXPECTED_TAG already exists; refusing to replace assets." >&2
+            exit 1
+          fi
+          LATEST_TAG=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name' 2>/dev/null || true)
+          node apps/duokai2/scripts/validate-desktop-release-version.mjs "$PACKAGE_VERSION" "$LATEST_TAG"
+          echo "release_tag=$EXPECTED_TAG" >> "$GITHUB_OUTPUT"
+          echo "release_sha=$ACTUAL_SHA" >> "$GITHUB_OUTPUT"
 
-      - name: Download matrix artifacts
+      - name: Download verified matrix artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: duokai2-*-release
           path: release-assets
           merge-multiple: true
 
-      - name: Delete existing release assets for tag
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const tag = '${{ steps.desktop-version.outputs.release_tag }}'
-            let release
-            try {
-              const response = await github.rest.repos.getReleaseByTag({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                tag,
-              })
-              release = response.data
-            } catch (error) {
-              if (error.status === 404) {
-                core.info(`No existing release found for ${tag}; skipping asset cleanup.`)
-                return
-              }
-              throw error
-            }
+      - name: Verify aggregate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          find release-assets -maxdepth 1 -type f ! -name RELEASE-SHA256SUMS -print0 | sort -z | xargs -0 shasum -a 256 > release-assets/RELEASE-SHA256SUMS
+          shasum -a 256 -c release-assets/RELEASE-SHA256SUMS
 
-            if (!Array.isArray(release.assets) || release.assets.length === 0) {
-              core.info(`Release ${tag} has no existing assets to delete.`)
-              return
-            }
-
-            core.info(`Deleting ${release.assets.length} existing assets from release ${tag}.`)
-            for (const asset of release.assets) {
-              core.info(`Deleting asset: ${asset.name}`)
-              await github.rest.repos.deleteReleaseAsset({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                asset_id: asset.id,
-              })
-            }
-
-      - name: Publish GitHub release
+      - name: Create immutable signed draft release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.desktop-version.outputs.release_tag }}
+          target_commitish: ${{ steps.desktop-version.outputs.release_sha }}
           name: Duokai2 ${{ steps.desktop-version.outputs.release_tag }}
-          draft: false
+          draft: true
           prerelease: false
-          make_latest: true
+          make_latest: false
+          fail_on_unmatched_files: true
           files: release-assets/*

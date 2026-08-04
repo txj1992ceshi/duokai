@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
@@ -10,9 +10,13 @@ const outputDir = process.env.SMOKE_OUTPUT_DIR
   : path.join(os.tmpdir(), 'duokai2-smoke-artifacts')
 const logPath = path.join(outputDir, 'desktop-main.log')
 const resultPath = path.join(outputDir, 'smoke-result.json')
+const packagedDirectory = path.join(cwd, 'release', 'win-unpacked')
 const packagedExecutable =
-  process.platform === 'win32'
-    ? path.join(cwd, 'release', 'win-unpacked', 'Duokai2.exe')
+  process.platform === 'win32' && existsSync(packagedDirectory)
+    ? readdirSync(packagedDirectory, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.exe'))
+        .map((entry) => path.join(packagedDirectory, entry.name))
+        .sort((left, right) => left.localeCompare(right))[0] ?? null
     : null
 
 mkdirSync(outputDir, { recursive: true })
@@ -25,7 +29,12 @@ const electronBinary = path.join(
   process.platform === 'win32' ? 'electron.cmd' : 'electron',
 )
 
-const child = packagedExecutable && existsSync(packagedExecutable)
+if (process.platform === 'win32' && !packagedExecutable) {
+  console.error(`Packaged Windows executable not found under ${packagedDirectory}`)
+  process.exit(1)
+}
+
+const child = process.platform === 'win32'
   ? spawn(packagedExecutable, [], {
       cwd: path.dirname(packagedExecutable),
       env: {
@@ -33,30 +42,21 @@ const child = packagedExecutable && existsSync(packagedExecutable)
         CI: '1',
         SMOKE_TEST: '1',
         SMOKE_OUTPUT_DIR: outputDir,
+        SMOKE_USER_DATA_DIR: path.join(outputDir, 'user-data'),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
-  : process.platform === 'win32'
-    ? spawn('cmd.exe', ['/d', '/s', '/c', `"${electronBinary}" .`], {
-        cwd,
-        env: {
-          ...process.env,
-          CI: '1',
-          SMOKE_TEST: '1',
-          SMOKE_OUTPUT_DIR: outputDir,
-        },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      })
-    : spawn(electronBinary, ['.'], {
-        cwd,
-        env: {
-          ...process.env,
-          CI: '1',
-          SMOKE_TEST: '1',
-          SMOKE_OUTPUT_DIR: outputDir,
-        },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      })
+  : spawn(electronBinary, ['.'], {
+      cwd,
+      env: {
+        ...process.env,
+        CI: '1',
+        SMOKE_TEST: '1',
+        SMOKE_OUTPUT_DIR: outputDir,
+        SMOKE_USER_DATA_DIR: path.join(outputDir, 'user-data'),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
 
 child.stdout.on('data', (chunk) => {
   writeFileSync(logPath, chunk, { flag: 'a' })

@@ -1,4 +1,9 @@
-import type { DeviceProfile, EnvironmentPurpose, FingerprintConfig } from '../shared/types'
+import type {
+  CloakPilotProfileStatus,
+  DeviceProfile,
+  EnvironmentPurpose,
+  FingerprintConfig,
+} from '../shared/types'
 
 export type ProfileFormState = {
   name: string
@@ -21,6 +26,7 @@ export type EnvironmentListItem = {
   identity: string
   locale: string
   hardware: string
+  cloakPilot: CloakPilotProfileStatus
   sync?: {
     label: string
     detail: string

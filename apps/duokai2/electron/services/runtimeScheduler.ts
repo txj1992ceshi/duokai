@@ -5,6 +5,7 @@ export interface SchedulerDeps {
   getMaxActiveProfiles: () => number
   getLaunchRetries: () => number
   getRunningCount: () => number
+  isRunning: (profileId: string) => boolean
   onStart: (profileId: string) => Promise<void>
   onStatusChange: (profileId: string, status: RuntimeStatus) => Promise<void>
   onError: (profileId: string, error: unknown) => Promise<void>
@@ -106,6 +107,10 @@ export class RuntimeScheduler {
       await this.deps.onStatusChange(profileId, 'starting')
       await this.deps.onStart(profileId)
       this.launchRetryCounts.delete(profileId)
+      if (this.cancelledLaunches.has(profileId) || !this.deps.isRunning(profileId)) {
+        await this.deps.onStatusChange(profileId, 'stopped')
+        return
+      }
       await this.deps.onStatusChange(profileId, 'running')
     } catch (error) {
       if (error instanceof Error && error.message === 'Launch cancelled') {
