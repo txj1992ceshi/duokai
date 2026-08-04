@@ -19,8 +19,8 @@ import {
   type CloakSnapshotSigningKeyProvider,
 } from './cloakBrowserSnapshotSignature.ts'
 
-export const CLOAK_CANARY_REHEARSAL_SCHEMA_VERSION = 1
-export const CLOAK_CANARY_AUTHORIZATION_SCHEMA_VERSION = 1
+export const CLOAK_CANARY_REHEARSAL_SCHEMA_VERSION = 2
+export const CLOAK_CANARY_AUTHORIZATION_SCHEMA_VERSION = 2
 export const CLOAK_CANARY_AUTHORIZATION_ALGORITHM = 'HMAC-SHA256' as const
 
 export type CloakCanaryRehearsalStage = 'observe' | 'promote-enforce'
@@ -33,10 +33,9 @@ export interface CloakCanaryRehearsalPolicy {
   authorizationTtlMs: number
 }
 
-export interface CloakCanaryApprovalDeclaration {
-  operatorId: string
-  reviewerId: string
-  approvedAt: string
+export interface CloakCanaryOwnerConfirmation {
+  ownerId: string
+  confirmedAt: string
 }
 
 export interface CloakCanaryRehearsalRequest {
@@ -45,7 +44,7 @@ export interface CloakCanaryRehearsalRequest {
   profileId: string
   rolloutId: string
   batchId: string
-  approval?: CloakCanaryApprovalDeclaration
+  ownerConfirmation?: CloakCanaryOwnerConfirmation
 }
 
 export interface CloakCanaryRuntimeState {
@@ -88,7 +87,7 @@ export interface CloakCanaryRehearsalReport {
   targetControlHash: string
   generatedAt: string
   expiresAt: string
-  approval: CloakCanaryApprovalDeclaration | null
+  ownerConfirmation: CloakCanaryOwnerConfirmation | null
   observation: CloakCanaryObservationSummary
   checks: CloakCanaryRehearsalCheck[]
   targetControl: CloakRolloutControlConfig | null
@@ -277,11 +276,10 @@ export function evaluateCloakCanaryRehearsal(input: {
     profileId,
     now,
   )
-  const approval = request.approval
+  const ownerConfirmation = request.ownerConfirmation
     ? {
-        operatorId: concreteId(request.approval.operatorId),
-        reviewerId: concreteId(request.approval.reviewerId),
-        approvedAt: validIso(request.approval.approvedAt),
+        ownerId: concreteId(request.ownerConfirmation.ownerId),
+        confirmedAt: validIso(request.ownerConfirmation.confirmedAt),
       }
     : null
 
@@ -387,26 +385,23 @@ export function evaluateCloakCanaryRehearsal(input: {
       'The latest observe outcome must be successful.',
     )
     check(
-      'approval.present',
-      Boolean(approval?.operatorId && approval.reviewerId && approval.approvedAt),
-      'Operator, reviewer and approval time are required.',
+      'owner_confirmation.present',
+      Boolean(ownerConfirmation?.ownerId && ownerConfirmation.confirmedAt),
+      'Project owner identity and explicit confirmation time are required.',
     )
-    check(
-      'approval.separation',
-      Boolean(approval && approval.operatorId !== approval.reviewerId),
-      'Operator and reviewer must be distinct declarations.',
-    )
-    const approvedAt = approval?.approvedAt ? Date.parse(approval.approvedAt) : Number.NaN
+    const confirmedAt = ownerConfirmation?.confirmedAt
+      ? Date.parse(ownerConfirmation.confirmedAt)
+      : Number.NaN
     const latestOutcomeAt = observation.latestOutcomeAt
       ? Date.parse(observation.latestOutcomeAt)
       : Number.NaN
     check(
-      'approval.after_evidence',
-      Number.isFinite(approvedAt) &&
+      'owner_confirmation.after_evidence',
+      Number.isFinite(confirmedAt) &&
         Number.isFinite(latestOutcomeAt) &&
-        approvedAt >= latestOutcomeAt &&
-        approvedAt <= now.getTime(),
-      'Approval must occur after the latest observe evidence and not in the future.',
+        confirmedAt >= latestOutcomeAt &&
+        confirmedAt <= now.getTime(),
+      'Owner confirmation must occur after the latest observe evidence and not in the future.',
     )
   }
 
@@ -440,7 +435,7 @@ export function evaluateCloakCanaryRehearsal(input: {
     targetControlHash,
     generatedAt,
     expiresAt: new Date(now.getTime() + policy.authorizationTtlMs).toISOString(),
-    approval,
+    ownerConfirmation,
     observation,
     checks,
     targetControl,

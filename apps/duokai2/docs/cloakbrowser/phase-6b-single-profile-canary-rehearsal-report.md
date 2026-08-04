@@ -6,6 +6,8 @@
 - 前置阶段：Phase 6A 已完成
 - 结论：完成；本阶段仅建立离线、不可直接上线的单 Profile canary 演练与晋级授权能力。
 
+> 治理更新（2026-08-04）：项目已正式切换为单一项目所有者模式。当前实现使用 schema v2 的 `ownerConfirmation`，由项目所有者在真实 Observe 证据满足后显式确认；不再要求 operator/reviewer 为两个不同的人。本文中原始 schema v1 的历史哈希和测试结果仅作为当时证据保留。
+
 ## 1. 本阶段目标
 
 Phase 6B 将 Phase 6A 已具备的 Pilot 白名单、`off / observe / enforce` 控制面、批次、健康熔断和停机开关，收敛为一套可审计的单 Profile canary 演练门禁。
@@ -53,7 +55,7 @@ Phase 6B 将 Phase 6A 已具备的 Pilot 白名单、`off / observe / enforce` �
 - 固定 CloakBrowser 二进制 SHA256；
 - 预生成目标 `enforce` control 哈希；
 - 报告生成时间和短时失效时间；
-- operator / reviewer 审批声明。
+- 项目所有者身份与显式确认时间。
 
 ### 2.2 Fail-closed 门禁
 
@@ -79,7 +81,7 @@ Phase 6B 将 Phase 6A 已具备的 Pilot 白名单、`off / observe / enforce` �
 - 观察证据覆盖最低持续时间；
 - 最新样本足够新鲜；
 - 最新结果必须成功；
-- operator 与 reviewer 声明均存在且必须是不同标识；
+- 项目所有者身份与显式确认时间均存在；
 - 审批时间必须晚于最新观察证据，且不得来自未来。
 
 任一检查失败时，报告不可签名，也不会产生可用的晋级授权。
@@ -97,10 +99,10 @@ Phase 6B 将 Phase 6A 已具备的 Pilot 白名单、`off / observe / enforce` �
 
 该签名不证明：
 
-- operator 或 reviewer 的远程身份；
-- 两个人确实完成了外部身份认证；
+- 项目所有者的远程身份；
+- 显式确认来自何种外部身份认证渠道；
 - 已获得真实生产发布许可；
-- 可以绕过下一阶段的显式人工授权。
+- 可以绕过下一阶段的项目所有者显式确认。
 
 ### 2.4 测试和 smoke
 
@@ -221,7 +223,7 @@ Phase 6B 完成。
 - 单 Profile / 单批次约束；
 - observe 证据质量；
 - 停机和 admission 状态；
-- 双人审批声明；
+- 项目所有者显式确认；
 - 固定二进制身份；
 - 精确目标 control 哈希；
 - 短时授权收据完整性。
@@ -232,7 +234,7 @@ Phase 6B 完成。
 
 1. 明确指定一个可丢弃、可回滚的专用 Profile；
 2. 对该 Profile 数据和正式控制文件完成备份；
-3. 指定真实 operator 和 reviewer，并在外部流程中确认身份；
+3. 由项目所有者在外部流程中显式确认身份、目标 Profile 和本次晋级；
 4. 固化启动前检查、停止命令和回滚步骤；
 5. 确认停机开关可由独立路径触发；
 6. 先运行 observe，再基于真实证据生成短时晋级授权；

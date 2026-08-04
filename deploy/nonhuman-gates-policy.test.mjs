@@ -11,6 +11,10 @@ const connectivity = read('.github/workflows/production-connectivity.yml')
 const deployPolicy = read('.github/workflows/deploy-policy.yml')
 const agentContract = read('.github/workflows/agent-contract.yml')
 const releasePolicy = read('.github/workflows/desktop-release-policy.yml')
+const canaryRehearsal = read('apps/duokai2/electron/services/cloakBrowserCanaryRehearsal.ts')
+const releaseRunbook = read('apps/duokai2/docs/desktop-release-runbook.md')
+const deployRunbook = read('deploy/README.md')
+const singleOwnerGovernance = read('docs/single-owner-governance.md')
 
 test('candidate closure is PR-aware, exact-head and evidence-backed', () => {
   assert.match(candidate, /^\s{2}pull_request:\s*$/m)
@@ -30,6 +34,7 @@ test('candidate closure is PR-aware, exact-head and evidence-backed', () => {
   assert.match(candidate, /duokai2-windows-smoke-artifacts/)
   assert.match(candidate, /duokai2-windows-test-package/)
   assert.match(candidate, /unresolved review thread/)
+  assert.doesNotMatch(candidate, /REVIEW_REQUIRED|reviewDecision|requiredApprovingReviewCount/)
   assert.match(candidate, /name:\s*candidate-closure/)
 })
 
@@ -52,4 +57,22 @@ test('required policy jobs have stable unique check names', () => {
   assert.match(deployPolicy, /nonhuman-gates-policy\.test\.mjs/)
   assert.match(deployPolicy, /candidate-closure\.yml/)
   assert.match(deployPolicy, /production-connectivity\.yml/)
+})
+
+test('single-owner governance is explicit and dual-person gates do not return', () => {
+  assert.match(canaryRehearsal, /ownerConfirmation/)
+  assert.match(canaryRehearsal, /owner_confirmation\.present/)
+  assert.match(canaryRehearsal, /owner_confirmation\.after_evidence/)
+  assert.doesNotMatch(canaryRehearsal, /operatorId|reviewerId|approval\.separation/)
+
+  assert.match(singleOwnerGovernance, /one project owner/i)
+  assert.match(singleOwnerGovernance, /at least 3 successful Observe samples/)
+  assert.match(singleOwnerGovernance, /at least 30 minutes of Observe coverage/)
+  assert.match(singleOwnerGovernance, /zero failed samples/)
+  assert.match(singleOwnerGovernance, /latest evidence no older than 30 minutes/)
+
+  for (const document of [releaseRunbook, deployRunbook]) {
+    assert.match(document, /project owner|项目所有者/i)
+    assert.doesNotMatch(document, /independent approval|独立 reviewer|双人审批/i)
+  }
 })

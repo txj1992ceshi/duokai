@@ -106,10 +106,9 @@ function request(
     profileId: PROFILE_ID,
     rolloutId: ROLLOUT_ID,
     batchId: BATCH_ID,
-    approval: {
-      operatorId: 'operator-a',
-      reviewerId: 'reviewer-b',
-      approvedAt: '2026-07-28T05:50:00.000Z',
+    ownerConfirmation: {
+      ownerId: 'project-owner',
+      confirmedAt: '2026-07-28T05:50:00.000Z',
     },
     ...patch,
   }
@@ -152,7 +151,7 @@ test('observe rehearsal is ready without changing control or requiring health sa
     const fixture = await loadFixture(directory)
     const report = evaluateCloakCanaryRehearsal({
       ...fixture,
-      request: request({ stage: 'observe', approval: undefined }),
+      request: request({ stage: 'observe', ownerConfirmation: undefined }),
       now: NOW,
     })
 
@@ -229,7 +228,7 @@ test('kill switches and multi-profile batches fail closed', async () => {
   })
 })
 
-test('promotion requires bounded successful observation evidence and separated approval', async () => {
+test('promotion requires bounded successful observation evidence and explicit owner confirmation', async () => {
   await withTempDirectory(async (directory) => {
     const fixture = await loadFixture(directory, { outcomes: successOutcomes() })
     const report = evaluateCloakCanaryRehearsal({
@@ -249,18 +248,12 @@ test('promotion requires bounded successful observation evidence and separated a
   })
 })
 
-test('insufficient evidence and same-person approval block promotion', async () => {
+test('insufficient evidence and missing owner confirmation block promotion', async () => {
   await withTempDirectory(async (directory) => {
     const fixture = await loadFixture(directory, { outcomes: successOutcomes().slice(0, 2) })
     const report = evaluateCloakCanaryRehearsal({
       ...fixture,
-      request: request({
-        approval: {
-          operatorId: 'same-person',
-          reviewerId: 'same-person',
-          approvedAt: '2026-07-28T05:50:00.000Z',
-        },
-      }),
+      request: request({ ownerConfirmation: undefined }),
       now: NOW,
     })
 
@@ -270,7 +263,7 @@ test('insufficient evidence and same-person approval block promotion', async () 
       false,
     )
     assert.equal(
-      report.checks.find((entry) => entry.code === 'approval.separation')?.passed,
+      report.checks.find((entry) => entry.code === 'owner_confirmation.present')?.passed,
       false,
     )
   })
@@ -290,10 +283,9 @@ test('failed or stale latest evidence blocks enforce promotion', async () => {
     const report = evaluateCloakCanaryRehearsal({
       ...fixture,
       request: request({
-        approval: {
-          operatorId: 'operator-a',
-          reviewerId: 'reviewer-b',
-          approvedAt: '2026-07-28T05:50:00.000Z',
+        ownerConfirmation: {
+          ownerId: 'project-owner',
+          confirmedAt: '2026-07-28T05:50:00.000Z',
         },
       }),
       policy: { maximumLatestSampleAgeMs: 5 * 60 * 1000 },

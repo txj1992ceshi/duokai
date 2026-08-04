@@ -72,8 +72,8 @@ PM2 清单中不应出现 `duokai-runtime`，主机上也不应因为部署流�
 ## 合并、部署与 Profile rollout 冻结规则
 
 1. 合并方式固定为 **merge commit**，保留完整提交审计链；不删除功能分支，直到服务器部署和回滚窗口关闭。
-2. 独立 reviewer 批准和 release director 授权之前，不得合并。
-3. 合并后仍不得自动部署；生产人员必须对精确 `main` SHA 单独授权。
+2. 精确候选 SHA 的全部强制机器检查通过，并由唯一项目所有者显式确认之前，不得合并；不要求第二名 reviewer。
+3. 合并后仍不得自动部署；项目所有者必须对精确 `main` SHA 单独显式授权。
 4. 服务器部署可以先于 Profile rollout，但部署完成后所有 Profile 必须继续保持 Pilot 空白名单、`rollout=off`，并维持全局 kill switch；不得借服务器部署顺带启用 Profile。
 5. Profile rollout 必须按 Observe → 单 Profile Enforce → 小批次 → 全量迁移的独立门禁推进。
 
@@ -83,10 +83,10 @@ PM2 清单中不应出现 `duokai-runtime`，主机上也不应因为部署流�
 
 推荐流程：
 
-1. release director 宣布回滚并指定独立 rollback owner；
+1. 项目所有者显式宣布回滚，记录受影响 SHA、回滚理由和执行责任；
 2. 以当前 `origin/main` 创建回滚分支；
 3. 对引入问题的 merge commit 执行 `git revert -m 1 <merge-sha>`；
-4. 为 revert 提交创建 PR，完成自动检查与独立批准；
+4. 为 revert 提交创建 PR，完成全部自动检查并由项目所有者确认精确 head SHA；
 5. 合并回滚 PR 后，记录新的 `origin/main` SHA；
 6. 手动触发 `Deploy Vultr`，将新的回滚 SHA 同时作为 `expected_sha`；
 7. 重复 API/Admin/Frontend 健康检查，确认 PM2 中不存在 `duokai-runtime`；

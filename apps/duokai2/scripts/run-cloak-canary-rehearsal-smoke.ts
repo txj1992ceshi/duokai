@@ -97,10 +97,9 @@ try {
       profileId,
       rolloutId,
       batchId,
-      approval: {
-        operatorId: 'offline-operator',
-        reviewerId: 'offline-reviewer',
-        approvedAt: '2026-07-28T05:50:00.000Z',
+      ownerConfirmation: {
+        ownerId: 'offline-project-owner',
+        confirmedAt: '2026-07-28T05:50:00.000Z',
       },
     },
     pilotConfig: await readCloakPilotLocalConfig(pilotPath),

@@ -4,9 +4,9 @@
 
 This runbook controls formal macOS and Windows releases. Test packages, unsigned artifacts and CI smoke outputs are not release candidates.
 
-## Required roles and credentials
+## Single-owner authorization and credentials
 
-A release requires a distinct release director and rollback owner. The execution agent, code author and repository owner cannot silently substitute for an independent approval required by the release plan.
+This repository is maintained by one project owner. A formal release requires the project owner to explicitly confirm the exact candidate SHA, release scope, signing operation, verification evidence and rollback plan. No second reviewer, distinct release director or separate rollback owner is required. Machine gates, signing verification, immutable release rules and rollback readiness remain mandatory.
 
 Required GitHub Actions secrets:
 
@@ -22,11 +22,11 @@ Do not paste credential values into issues, PR comments, logs, evidence director
 
 ## Candidate preparation
 
-1. Merge the reviewed PR with a merge commit after the exact latest head has an independent approval.
+1. Merge with a merge commit only after the exact latest head passes every required machine gate and the project owner explicitly confirms that exact SHA.
 2. Complete the exact-SHA production deployment and health checks separately; server deployment must not enable Profile rollout.
 3. Keep Pilot disabled and rollout `off` until Phase 9 promotion gates pass.
 4. Increase `apps/duokai2/package.json` to a stable semantic version higher than the latest published desktop release. The current `v3.6.8` tag and release are immutable and must never be replaced.
-5. Create a release PR containing only the reviewed version/update metadata changes. Complete automated checks and independent approval.
+5. Create a release PR containing only the version/update metadata changes. Complete all automated checks and record the project owner's explicit confirmation for the exact head.
 
 ## Signed draft creation
 
@@ -42,7 +42,7 @@ The workflow creates a **Draft** only. It does not mark the draft latest and doe
 
 ## Draft verification
 
-Before publication, the release director and rollback owner record:
+Before publication, the project owner records:
 
 - draft URL and target commit;
 - macOS DMG/ZIP and Windows installer/ZIP SHA256 values;
@@ -54,7 +54,7 @@ Before publication, the release director and rollback owner record:
 - Pilot empty allowlist, rollout `off` and kill-switch state after installation;
 - the rollback decision window and named responders.
 
-Only the release director may publish the verified draft through GitHub. Publication is a distinct human action; do not automate it from the build workflow.
+Only the project owner may publish the verified draft through GitHub. Publication is a distinct, explicit owner action; do not automate it from the build workflow.
 
 ## Release immutability
 
@@ -66,7 +66,7 @@ Desktop auto-update is monotonic. Clients must not be forced to downgrade to an 
 
 For a source or server regression:
 
-1. name the release director and rollback owner;
+1. record the project owner's explicit rollback decision and the exact affected SHA;
 2. revert the responsible merge commit in a reviewed PR;
 3. merge the revert and deploy the exact resulting `main` SHA using the manual production workflow;
 4. repeat server health checks and preserve Profile rollout in fail-closed state.
@@ -78,7 +78,7 @@ For a shipped desktop regression:
 3. increment to a **higher semantic version** than the bad release;
 4. create and independently verify a new signed Draft using the full workflow;
 5. test upgrade from both the previous good version and the bad version;
-6. publish only after the release director authorizes the new corrective release;
+6. publish only after the project owner explicitly authorizes the exact corrective release;
 7. preserve the bad release evidence and mark it affected; do not delete or replace its assets.
 
-If signing credentials, notarization, Authenticode verification, updater tests, release director approval or rollback ownership are unavailable, the formal release remains NO-GO.
+If signing credentials, notarization, Authenticode verification, updater tests, explicit project-owner confirmation or a recorded rollback plan are unavailable, the formal release remains NO-GO.

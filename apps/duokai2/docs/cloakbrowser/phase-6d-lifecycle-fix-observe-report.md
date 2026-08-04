@@ -269,7 +269,7 @@ trusted 后继续观察超过 60 秒。观察期间：
 - **Phase 6D Observe：PASS**
 - **Enforce：NO-GO**
 
-暂不允许晋级 enforce，原因是当前只有 1 条新的真实成功样本，仍未满足 rollout health policy 的最少 5 样本，也没有完成更长时间窗口和双人审批。下一步应继续从单 Profile observe 累积独立成功启动，达到健康策略要求后再进行人工审查；不得直接切换 enforce。
+暂不允许晋级 enforce，原因是当前只有 1 条新的真实成功样本，仍未满足 rollout health policy 的最少 5 样本，也没有完成更长时间窗口和项目所有者显式确认。下一步应继续从单 Profile observe 累积独立成功启动，达到健康策略要求后再由项目所有者基于真实证据确认；不得直接切换 enforce。
 
 ## 9. 证据位置
 
