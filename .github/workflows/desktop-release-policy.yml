@@ -10,6 +10,10 @@ on:
       - 'apps/duokai2/scripts/validate-desktop-release-version.mjs'
       - 'apps/duokai2/scripts/validate-desktop-release-version.test.mjs'
       - 'apps/duokai2/docs/desktop-release-runbook.md'
+      - 'packages/ui/package.json'
+      - 'packages/ui/src/components/**'
+      - 'packages/ui/src/styles.css'
+      - 'packages/ui/src/styles.test.mjs'
       - 'deploy/desktop-release-policy.test.mjs'
       - 'deploy/rollback-rehearsal.test.mjs'
   push:
@@ -23,6 +27,10 @@ on:
       - 'apps/duokai2/scripts/validate-desktop-release-version.mjs'
       - 'apps/duokai2/scripts/validate-desktop-release-version.test.mjs'
       - 'apps/duokai2/docs/desktop-release-runbook.md'
+      - 'packages/ui/package.json'
+      - 'packages/ui/src/components/**'
+      - 'packages/ui/src/styles.css'
+      - 'packages/ui/src/styles.test.mjs'
       - 'deploy/desktop-release-policy.test.mjs'
       - 'deploy/rollback-rehearsal.test.mjs'
   workflow_dispatch:
@@ -45,6 +53,7 @@ jobs:
           node --test deploy/desktop-release-policy.test.mjs
           node --test deploy/rollback-rehearsal.test.mjs
           node --test apps/duokai2/scripts/validate-desktop-release-version.test.mjs
+          npm test --workspace @duokai/ui
 
       - name: Prove current published version cannot be overwritten
         run: |
