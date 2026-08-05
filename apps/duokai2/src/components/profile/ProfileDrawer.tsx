@@ -19,8 +19,6 @@ import {
 import type { Dictionary } from '../../i18n'
 import { SUPPORTED_ENVIRONMENT_LANGUAGES } from '../../shared/environmentLanguages'
 import { COMMON_TIMEZONE_OPTIONS } from '../../shared/timezones'
-import { assignStableHardwareFingerprint } from '../../shared/hardwareProfiles'
-import { buildDesktopUserAgent } from '../../lib/desktop-profile-presets'
 import type { EnvironmentPurpose, ProxyRecord } from '../../shared/types'
 import type { ProfileFormState } from '../../lib/desktop-types'
 
@@ -30,11 +28,6 @@ const PURPOSE_OPTIONS: Array<{ value: EnvironmentPurpose; zh: string; en: string
   { value: 'register', zh: '注册环境', en: 'Register' },
 ]
 
-const OPERATING_SYSTEM_OPTIONS = [
-  { value: 'macOS', zh: 'macOS', en: 'macOS' },
-  { value: 'Windows', zh: 'Windows', en: 'Windows' },
-  { value: 'Linux', zh: 'Linux', en: 'Linux' },
-] as const
 
 export function ProfileDrawer({
   open,
@@ -87,7 +80,14 @@ export function ProfileDrawer({
         },
         environmentPurpose: '用途标签',
         environmentPurposeHint: '仅用于分类与提醒，不会自动改变当前环境的启动参数、指纹或网络设置。',
-        operatingSystem: '操作系统',
+        machineIdentity: '机器身份：自动生成（推荐）',
+        systemFamilyPolicy: '系统家族：与当前电脑兼容',
+        deviceProfilePolicy: '设备画像：每个环境独立生成',
+        regionPolicy: '地区信息：跟随代理出口',
+        stabilityPolicy: '身份稳定性：创建后固定',
+        identityLocked: '当前环境的机器身份已固定。平台选择不会再修改系统、浏览器版本或硬件画像。',
+        identityDraft: '创建前可以换一套画像；保存后将固定，不会随启动变化。',
+        operatingSystem: '系统家族',
         chromeVersion: 'Chrome 版本',
         windowSize: '窗口尺寸',
         cpuAndMemory: 'CPU / 内存',
@@ -106,9 +106,9 @@ export function ProfileDrawer({
         geolocation: '地理位置',
         autoResolved: '由代理 IP 自动解析',
         manualMode: '手动模式',
-        quickFingerprint: '硬件画像重抽',
-        quickFingerprintDescription: '为当前环境生成一套新的稳定硬件画像，不影响细节扰动规则',
-        randomize: '重抽画像',
+        quickFingerprint: '自动机器身份',
+        quickFingerprintDescription: '由设备模板成套生成，并与当前电脑系统家族保持兼容',
+        randomize: '换一套草稿画像',
         platform: '平台',
         selectPlatform: '请选择',
         custom: '自定义',
@@ -138,7 +138,14 @@ export function ProfileDrawer({
         environmentPurpose: 'Purpose label',
         environmentPurposeHint:
           'Used for classification and reminders only. It does not automatically change launch settings, fingerprints, or network behavior.',
-        operatingSystem: 'Operating system',
+        machineIdentity: 'Machine identity: Auto-generated (Recommended)',
+        systemFamilyPolicy: 'System family: Compatible with this computer',
+        deviceProfilePolicy: 'Device profile: Independently generated per environment',
+        regionPolicy: 'Region: Follows the proxy egress',
+        stabilityPolicy: 'Identity stability: Fixed after creation',
+        identityLocked: 'This environment identity is fixed. Platform presets no longer change its OS, browser version, or hardware profile.',
+        identityDraft: 'You may choose another profile before creation. It becomes fixed after saving.',
+        operatingSystem: 'System family',
         chromeVersion: 'Chrome version',
         windowSize: 'Window size',
         cpuAndMemory: 'CPU / Memory',
@@ -157,9 +164,9 @@ export function ProfileDrawer({
         geolocation: 'Geolocation',
         autoResolved: 'Resolved automatically from the proxy IP',
         manualMode: 'Manual mode',
-        quickFingerprint: 'Hardware identity refresh',
-        quickFingerprintDescription: 'Generate a new stable hardware identity for this environment without changing runtime noise rules',
-        randomize: 'Refresh identity',
+        quickFingerprint: 'Automatic machine identity',
+        quickFingerprintDescription: 'Generated as a coherent device template compatible with this computer',
+        randomize: 'Choose another draft',
         platform: 'Platform',
         selectPlatform: 'Select',
         custom: 'Custom',
@@ -262,6 +269,18 @@ export function ProfileDrawer({
         <ScrollArea className="min-h-0 flex-1 px-5 py-4">
           <Tabs value={activeTab} onValueChange={(value) => onTabChange(value as typeof activeTab)}>
             <TabsContent value="hardware" className="space-y-4">
+              <div className="rounded-2xl border border-blue-100 bg-blue-50/70 p-4">
+                <div className="text-sm font-semibold text-slate-900">{copy.machineIdentity}</div>
+                <div className="mt-3 grid gap-2 text-sm text-slate-700">
+                  <div>{copy.systemFamilyPolicy}</div>
+                  <div>{copy.deviceProfilePolicy}</div>
+                  <div>{copy.regionPolicy}</div>
+                  <div>{copy.stabilityPolicy}</div>
+                </div>
+                <div className="mt-3 text-xs text-slate-500">
+                  {selectedProfileId ? copy.identityLocked : copy.identityDraft}
+                </div>
+              </div>
               <label className="block space-y-2">
                 <span className="text-sm font-medium text-slate-700">{copy.environmentPurpose}</span>
                 <Select
@@ -315,66 +334,11 @@ export function ProfileDrawer({
               <div className="grid grid-cols-2 gap-4">
                 <label className="block space-y-2">
                   <span className="text-sm font-medium text-slate-700">{copy.operatingSystem}</span>
-                  <Select
-                    value={profileForm.fingerprintConfig.advanced.operatingSystem}
-                    onChange={(event) =>
-                      setProfileForm((current) => {
-                        const nextOperatingSystem = event.target.value
-                        const currentSeed =
-                          current.fingerprintConfig.runtimeMetadata.hardwareSeed || `manual-os-${crypto.randomUUID()}`
-                        return {
-                          ...current,
-                          fingerprintConfig: assignStableHardwareFingerprint(
-                            {
-                              ...current.fingerprintConfig,
-                              advanced: {
-                                ...current.fingerprintConfig.advanced,
-                                operatingSystem: nextOperatingSystem,
-                              },
-                              runtimeMetadata: {
-                                ...current.fingerprintConfig.runtimeMetadata,
-                                hardwareSeed: currentSeed,
-                              },
-                            },
-                            currentSeed,
-                            {
-                              forceRegenerate: true,
-                              seed: currentSeed,
-                            },
-                          ),
-                        }
-                      })
-                    }
-                  >
-                    {OPERATING_SYSTEM_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {isZh ? option.zh : option.en}
-                      </option>
-                    ))}
-                  </Select>
+                  <Input value={profileForm.fingerprintConfig.advanced.operatingSystem} readOnly />
                 </label>
                 <label className="block space-y-2">
                   <span className="text-sm font-medium text-slate-700">{copy.chromeVersion}</span>
-                  <Input
-                    value={profileForm.fingerprintConfig.advanced.browserVersion}
-                    onChange={(event) =>
-                      setProfileForm((current) => ({
-                        ...current,
-                        fingerprintConfig: {
-                          ...current.fingerprintConfig,
-                          userAgent: buildDesktopUserAgent(
-                            current.fingerprintConfig.advanced.operatingSystem,
-                            event.target.value,
-                          ),
-                          advanced: {
-                            ...current.fingerprintConfig.advanced,
-                            browserKernelVersion: event.target.value,
-                            browserVersion: event.target.value,
-                          },
-                        },
-                      }))
-                    }
-                  />
+                  <Input value={profileForm.fingerprintConfig.advanced.browserVersion} readOnly />
                 </label>
               </div>
               <div className="grid grid-cols-2 gap-4">
@@ -382,77 +346,20 @@ export function ProfileDrawer({
                   <span className="text-sm font-medium text-slate-700">{copy.windowSize}</span>
                   <Input
                     value={`${profileForm.fingerprintConfig.advanced.windowWidth}x${profileForm.fingerprintConfig.advanced.windowHeight}`}
-                    onChange={(event) => {
-                      const [widthText, heightText] = event.target.value.split(/x|×/i).map((part) => part.trim())
-                      setProfileForm((current) => ({
-                        ...current,
-                        fingerprintConfig: {
-                          ...current.fingerprintConfig,
-                          advanced: {
-                            ...current.fingerprintConfig.advanced,
-                            windowWidth: Number(widthText) || current.fingerprintConfig.advanced.windowWidth,
-                            windowHeight: Number(heightText) || current.fingerprintConfig.advanced.windowHeight,
-                          },
-                        },
-                      }))
-                    }}
+                    readOnly
                   />
                 </label>
                 <label className="block space-y-2">
                   <span className="text-sm font-medium text-slate-700">{copy.cpuAndMemory}</span>
                   <div className="grid grid-cols-2 gap-2">
-                    <Input
-                      type="number"
-                      value={profileForm.fingerprintConfig.advanced.cpuCores}
-                      onChange={(event) =>
-                        setProfileForm((current) => ({
-                          ...current,
-                          fingerprintConfig: {
-                            ...current.fingerprintConfig,
-                            advanced: {
-                              ...current.fingerprintConfig.advanced,
-                              cpuCores: Number(event.target.value) || current.fingerprintConfig.advanced.cpuCores,
-                            },
-                          },
-                        }))
-                      }
-                    />
-                    <Input
-                      type="number"
-                      value={profileForm.fingerprintConfig.advanced.memoryGb}
-                      onChange={(event) =>
-                        setProfileForm((current) => ({
-                          ...current,
-                          fingerprintConfig: {
-                            ...current.fingerprintConfig,
-                            advanced: {
-                              ...current.fingerprintConfig.advanced,
-                              memoryGb: Number(event.target.value) || current.fingerprintConfig.advanced.memoryGb,
-                            },
-                          },
-                        }))
-                      }
-                    />
+                    <Input value={`${profileForm.fingerprintConfig.advanced.cpuCores} CPU`} readOnly />
+                    <Input value={`${profileForm.fingerprintConfig.advanced.memoryGb} GB`} readOnly />
                   </div>
                 </label>
               </div>
               <label className="block space-y-2">
                 <span className="text-sm font-medium text-slate-700">{copy.webglRenderer}</span>
-                <Input
-                  value={profileForm.fingerprintConfig.advanced.webglRenderer}
-                  onChange={(event) =>
-                    setProfileForm((current) => ({
-                      ...current,
-                      fingerprintConfig: {
-                        ...current.fingerprintConfig,
-                        advanced: {
-                          ...current.fingerprintConfig.advanced,
-                          webglRenderer: event.target.value,
-                        },
-                      },
-                    }))
-                  }
-                />
+                <Input value={profileForm.fingerprintConfig.advanced.webglRenderer} readOnly />
               </label>
             </TabsContent>
 
@@ -698,9 +605,11 @@ export function ProfileDrawer({
                   <div className="text-sm font-medium text-slate-800">{copy.quickFingerprint}</div>
                   <div className="text-xs text-slate-500">{copy.quickFingerprintDescription}</div>
                 </div>
-                <Button variant="secondary" size="sm" onClick={onRandomizeFingerprint}>
-                  {copy.randomize}
-                </Button>
+                {!selectedProfileId ? (
+                  <Button variant="secondary" size="sm" onClick={onRandomizeFingerprint}>
+                    {copy.randomize}
+                  </Button>
+                ) : null}
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <label className="block space-y-2">
@@ -794,19 +703,7 @@ export function ProfileDrawer({
               ) : null}
               <label className="block space-y-2">
                 <span className="text-sm font-medium text-slate-700">{t.profiles.userAgent}</span>
-                <Textarea
-                  rows={4}
-                  value={profileForm.fingerprintConfig.userAgent}
-                  onChange={(event) =>
-                    setProfileForm((current) => ({
-                      ...current,
-                      fingerprintConfig: {
-                        ...current.fingerprintConfig,
-                        userAgent: event.target.value,
-                      },
-                    }))
-                  }
-                />
+                <Textarea rows={4} value={profileForm.fingerprintConfig.userAgent} readOnly />
               </label>
               <div className="grid grid-cols-2 gap-4">
                 <label className="block space-y-2">
@@ -951,37 +848,15 @@ export function ProfileDrawer({
                   <span className="text-sm font-medium text-slate-700">{copy.deviceName}</span>
                   <Input
                     value={profileForm.fingerprintConfig.advanced.deviceName}
-                    onChange={(event) =>
-                      setProfileForm((current) => ({
-                        ...current,
-                        fingerprintConfig: {
-                          ...current.fingerprintConfig,
-                          advanced: {
-                            ...current.fingerprintConfig.advanced,
-                            deviceName: event.target.value,
-                          },
-                        },
-                      }))
-                    }
-                  />
+                    readOnly
+                />
                 </label>
                 <label className="block space-y-2">
                   <span className="text-sm font-medium text-slate-700">Host IP</span>
                   <Input
                     value={profileForm.fingerprintConfig.advanced.hostIp}
-                    onChange={(event) =>
-                      setProfileForm((current) => ({
-                        ...current,
-                        fingerprintConfig: {
-                          ...current.fingerprintConfig,
-                          advanced: {
-                            ...current.fingerprintConfig.advanced,
-                            hostIp: event.target.value,
-                          },
-                        },
-                      }))
-                    }
-                  />
+                    readOnly
+                />
                 </label>
               </div>
               <div className="grid grid-cols-2 gap-4">
@@ -989,19 +864,8 @@ export function ProfileDrawer({
                   <span className="text-sm font-medium text-slate-700">MAC</span>
                   <Input
                     value={profileForm.fingerprintConfig.advanced.macAddress}
-                    onChange={(event) =>
-                      setProfileForm((current) => ({
-                        ...current,
-                        fingerprintConfig: {
-                          ...current.fingerprintConfig,
-                          advanced: {
-                            ...current.fingerprintConfig.advanced,
-                            macAddress: event.target.value,
-                          },
-                        },
-                      }))
-                    }
-                  />
+                    readOnly
+                />
                 </label>
                 <label className="block space-y-2">
                   <span className="text-sm font-medium text-slate-700">{copy.launchArgs}</span>

@@ -11,6 +11,32 @@ export interface SchedulerDeps {
   onError: (profileId: string, error: unknown) => Promise<void>
 }
 
+export class NonRetryableLaunchError extends Error {
+  readonly retryable = false
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = 'NonRetryableLaunchError'
+  }
+}
+
+export function isRetryableLaunchError(error: unknown): boolean {
+  const visited = new Set<unknown>()
+  let current: unknown = error
+  for (let depth = 0; depth < 12 && current && !visited.has(current); depth += 1) {
+    visited.add(current)
+    if (typeof current === 'object' && current !== null) {
+      if ((current as { retryable?: unknown }).retryable === false) {
+        return false
+      }
+      current = (current as { cause?: unknown }).cause
+      continue
+    }
+    break
+  }
+  return true
+}
+
 export class RuntimeScheduler {
   private readonly launchQueue: string[] = []
   private readonly queuedProfileIds = new Set<string>()
@@ -116,6 +142,13 @@ export class RuntimeScheduler {
       if (error instanceof Error && error.message === 'Launch cancelled') {
         this.launchRetryCounts.delete(profileId)
         await this.deps.onStatusChange(profileId, 'stopped')
+        return
+      }
+
+      if (!isRetryableLaunchError(error)) {
+        this.launchRetryCounts.delete(profileId)
+        await this.deps.onStatusChange(profileId, 'error')
+        await this.deps.onError(profileId, error)
         return
       }
 

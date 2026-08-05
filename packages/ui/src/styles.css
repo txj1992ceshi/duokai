@@ -27,8 +27,23 @@
   --duokai-scrollbar-track: rgba(148, 163, 184, 0.08);
   --duokai-scrollbar-thumb: rgba(100, 116, 139, 0.28);
   --duokai-scrollbar-thumb-hover: rgba(100, 116, 139, 0.44);
-}
 
+  /* Shared geometry tokens retain the original component dimensions and
+     remain safe when no explicit UI scale attribute has been applied. */
+  --duokai-ui-scale: 1;
+  --duokai-layout-scale: var(--duokai-ui-scale);
+  --duokai-font-scale: var(--duokai-ui-scale);
+  --duokai-card-padding: calc(24px * var(--duokai-layout-scale));
+  --duokai-control-height-sm: calc(36px * var(--duokai-layout-scale));
+  --duokai-control-height-md: calc(40px * var(--duokai-layout-scale));
+  --duokai-control-height-lg: calc(44px * var(--duokai-layout-scale));
+  --duokai-control-px-sm: calc(12px * var(--duokai-layout-scale));
+  --duokai-control-px-md: calc(16px * var(--duokai-layout-scale));
+  --duokai-control-px-lg: calc(20px * var(--duokai-layout-scale));
+  --duokai-radius-sm: calc(12px * var(--duokai-layout-scale));
+  --duokai-radius-md: calc(16px * var(--duokai-layout-scale));
+  --duokai-radius-xl: calc(28px * var(--duokai-layout-scale));
+}
 
 :root[data-ui-scale='100'] { --duokai-ui-scale: 1; }
 :root[data-ui-scale='95'] { --duokai-ui-scale: 0.95; }

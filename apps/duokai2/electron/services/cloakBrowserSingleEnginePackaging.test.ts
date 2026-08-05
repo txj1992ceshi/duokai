@@ -35,6 +35,54 @@ test('desktop package pins only the CloakBrowser engine contract', () => {
   assert.equal(packageJson.build?.mac?.signIgnore, undefined)
 })
 
+test('authenticated renderer keeps React and Sonner on one runtime', () => {
+  const desktopPackage = JSON.parse(read('package.json')) as {
+    scripts?: Record<string, string>
+    dependencies?: Record<string, string>
+  }
+  const uiPackage = JSON.parse(readRepo('packages/ui/package.json')) as {
+    dependencies?: Record<string, string>
+    peerDependencies?: Record<string, string>
+  }
+  const viteConfig = read('vite.config.ts')
+  const bundleVerifier = read('scripts/verify-renderer-react-singleton.mjs')
+  const rendererEntry = read('src/main.tsx')
+  const errorBoundary = read('src/components/RendererErrorBoundary.tsx')
+
+  assert.equal(desktopPackage.dependencies?.sonner, '^2.0.3')
+  assert.equal(uiPackage.dependencies?.sonner, undefined)
+  assert.equal(uiPackage.peerDependencies?.sonner, '^2.0.3')
+  assert.match(viteConfig, /dedupe:\s*\[['"]react['"],\s*['"]react-dom['"]\]/)
+  assert.match(viteConfig, /createRequire\(import\.meta\.url\)/)
+  assert.match(viteConfig, /require\.resolve\(['"]react['"]\)/)
+  assert.match(viteConfig, /require\.resolve\(['"]react-dom['"]\)/)
+  assert.match(viteConfig, /includes\(['"]\/node_modules\/['"]\)\s*\?\s*['"]vendor['"]/)
+  assert.doesNotMatch(viteConfig, /vendor-(?:react|i18n|misc|motion|ui)/)
+  assert.match(bundleVerifier, /react\.transitional\.element/)
+  assert.match(bundleVerifier, /data-sonner-toaster/)
+  assert.match(bundleVerifier, /reactRuntimeFiles\.length !== 1/)
+  assert.match(bundleVerifier, /sonnerFiles\.length === 0/)
+  assert.match(rendererEntry, /<RendererErrorBoundary>/)
+  assert.match(errorBoundary, /getDerivedStateFromError/)
+  assert.match(errorBoundary, /界面加载失败/)
+  assert.match(errorBoundary, /window\.location\.reload\(\)/)
+
+  for (const scriptName of [
+    'build',
+    'build:dir',
+    'build:mac',
+    'build:win',
+    'build:mac:release',
+    'build:win:release',
+  ]) {
+    assert.match(
+      desktopPackage.scripts?.[scriptName] ?? '',
+      /vite build && npm run verify:renderer-bundle &&/,
+      scriptName,
+    )
+  }
+})
+
 test('production launch and proxy preflight contain no ordinary Chromium fallback', () => {
   const main = read('electron/main.ts')
   const runtime = read('electron/services/runtime.ts')
@@ -74,12 +122,17 @@ test('distribution assets and user-facing guidance forbid legacy fallback', () =
   assert.equal(existsSync(resolve(appRoot, 'scripts/prepare-playwright-browsers.mjs')), false)
 
   const readme = read('README.md')
-  const profileActions = read('src/hooks/useProfileActions.ts')
+  const pilotConfig = read('electron/services/cloakBrowserPilotConfig.ts')
+  const environmentRow = read('src/components/environment/EnvironmentRow.tsx')
+  const preload = read('electron/preload.ts')
+  const ipc = read('src/shared/ipc.ts')
   const translations = read('src/i18n.ts')
 
   assert.doesNotMatch(readme, /install:chromium|- `Playwright Chromium`/i)
-  assert.doesNotMatch(profileActions, /legacy browser path|原浏览器链路/i)
-  assert.match(profileActions, /Single-engine mode blocks future launches/)
+  assert.match(pilotConfig, /defaultEnabled: true/)
+  assert.doesNotMatch(environmentRow, /启用 Cloak Pilot|关闭 Cloak Pilot|Enable Cloak Pilot|Disable Cloak Pilot/)
+  assert.doesNotMatch(preload, /cloakPilot\.setProfileEnabled/)
+  assert.doesNotMatch(ipc, /setProfileEnabled/)
   assert.match(translations, /CloakBrowser/)
 })
 

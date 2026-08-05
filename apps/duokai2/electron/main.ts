@@ -47,6 +47,7 @@ import {
   createProxyPayload,
   createTemplatePayload,
   syncFingerprintConfigWithWorkspaceEnvironment,
+  syncWorkspaceWithFingerprintConfig,
 } from './services/factories'
 import {
   CloudPhoneProviderRegistry,
@@ -91,12 +92,13 @@ import {
 import { evaluateCloakPilotEligibility } from './services/cloakBrowserPilotGate'
 import { evaluateCloakClientHintsCoherence } from './services/cloakBrowserClientHints'
 import {
+  CLOAK_PILOT_LOCAL_CONFIG_SCHEMA_VERSION,
   buildCloakPilotRuntimeProfile,
   evaluateCloakPilotLocalEligibility,
   getCloakPilotLocalConfigPath,
   getDefaultCloakPilotCacheDir,
   readCloakPilotLocalConfig,
-  setCloakPilotProfileEnabled,
+  writeCloakPilotLocalConfigAtomic,
   type CloakPilotLocalEligibility,
   type LoadedCloakPilotLocalConfig,
 } from './services/cloakBrowserPilotConfig'
@@ -124,7 +126,11 @@ import {
   CLOAK_PILOT_BROWSER_VERSION,
 } from './services/cloakBrowserInstallPreflight'
 import { listEgressPathCandidates } from './services/egressPaths'
-import { RuntimeScheduler } from './services/runtimeScheduler'
+import {
+  NonRetryableLaunchError,
+  RuntimeScheduler,
+} from './services/runtimeScheduler'
+import { applyStorageStateWithoutVisibleNavigation } from './services/browserStorageRestore'
 import { convergeClosedRuntimeContext } from './services/runtimeContextLifecycle'
 import {
   assertAllProfileRuntimesInactiveForMutation,
@@ -3101,7 +3107,6 @@ const CAPABILITIES: DesktopRuntimeInfo['capabilities'] = [
   'proxies.delete',
   'proxies.test',
   'cloakPilot.getStatus',
-  'cloakPilot.setProfileEnabled',
   'runtime.launch',
   'runtime.stop',
   'runtime.open-platform',
@@ -3447,13 +3452,19 @@ function requireDatabase(): DatabaseService {
 
 function migrateStableHardwareFingerprintsOnStartup(): void {
   const database = requireDatabase()
+  const hostOperatingSystem =
+    process.platform === 'darwin' ? 'macOS' : process.platform === 'win32' ? 'Windows' : 'Linux'
 
   for (const profile of database.listProfiles()) {
-    if (!shouldMigrateStableHardwareFingerprint(profile.fingerprintConfig)) {
+    if (!shouldMigrateStableHardwareFingerprint(profile.fingerprintConfig, hostOperatingSystem)) {
       continue
     }
-    const fingerprintConfig = assignStableHardwareFingerprint(profile.fingerprintConfig, profile.id)
-    database.updateProfile({
+    const previous = profile.fingerprintConfig
+    const fingerprintConfig = assignStableHardwareFingerprint(previous, profile.id, {
+      hostOperatingSystem,
+      enforceHostCompatibility: true,
+    })
+    const migrated = database.updateProfile({
       id: profile.id,
       name: profile.name,
       proxyId: profile.proxyId,
@@ -3462,7 +3473,24 @@ function migrateStableHardwareFingerprintsOnStartup(): void {
       notes: profile.notes,
       environmentPurpose: profile.environmentPurpose,
       fingerprintConfig,
-      workspace: profile.workspace,
+      workspace: syncWorkspaceWithFingerprintConfig(profile.workspace, fingerprintConfig),
+    })
+    audit('hardware_identity_migrated', {
+      profileId: profile.id,
+      source: previous.runtimeMetadata.hardwareProfileSource || 'legacy',
+      previousVersion: previous.runtimeMetadata.hardwareProfileVersion || '',
+      nextVersion: fingerprintConfig.runtimeMetadata.hardwareProfileVersion,
+      previousOperatingSystem: previous.advanced.operatingSystem,
+      nextOperatingSystem: fingerprintConfig.advanced.operatingSystem,
+      previousTemplateId: previous.runtimeMetadata.hardwareTemplateId || '',
+      nextTemplateId: fingerprintConfig.runtimeMetadata.hardwareTemplateId || '',
+      seedPreserved:
+        Boolean(previous.runtimeMetadata.hardwareSeed) &&
+        previous.runtimeMetadata.hardwareSeed === fingerprintConfig.runtimeMetadata.hardwareSeed,
+      identityChanged:
+        previous.runtimeMetadata.hardwareTemplateId !== fingerprintConfig.runtimeMetadata.hardwareTemplateId ||
+        previous.advanced.operatingSystem !== fingerprintConfig.advanced.operatingSystem,
+      workspaceResolution: migrated.workspace?.resolvedEnvironment.resolution || '',
     })
   }
 
@@ -4925,6 +4953,17 @@ function detectDesktopHostEnvironment(): string {
   return 'Windows'
 }
 
+function detectDesktopHostPlatformVersion(): string {
+  if (process.platform !== 'darwin') {
+    return ''
+  }
+  const getSystemVersion = (
+    process as NodeJS.Process & { getSystemVersion?: () => string }
+  ).getSystemVersion
+  const version = typeof getSystemVersion === 'function' ? getSystemVersion.call(process).trim() : ''
+  return /^\d+(?:\.\d+){1,3}$/.test(version) ? version : ''
+}
+
 function buildConfigFingerprintHash(profile: ProfileRecord): string {
   return hashStructuredPayload({
     environmentPurpose: profile.environmentPurpose,
@@ -5002,46 +5041,37 @@ async function syncProfileLaunchTrustToControlPlane(profile: ProfileRecord): Pro
 async function applyStorageStateToContext(
   context: BrowserContext,
   stateJson: BrowserStorageState | null,
+  options: {
+    restoreOrigins: boolean
+    visiblePage: Page
+  },
 ): Promise<void> {
-  if (!stateJson) {
-    return
-  }
-  await context.clearCookies()
-  if (Array.isArray(stateJson.cookies) && stateJson.cookies.length > 0) {
-    await context.addCookies(stateJson.cookies as unknown as Parameters<BrowserContext['addCookies']>[0])
-  }
-  if (!Array.isArray(stateJson.origins) || stateJson.origins.length === 0) {
-    return
-  }
-
-  const page = context.pages()[0] ?? (await context.newPage())
-  for (const originState of stateJson.origins) {
-    if (!originState?.origin || !Array.isArray(originState.localStorage) || originState.localStorage.length === 0) {
-      continue
-    }
-    try {
-      await page.goto(originState.origin, { waitUntil: 'domcontentloaded', timeout: 15000 })
-      await page.evaluate((entries: Array<{ name: string; value: string }>) => {
-        const storage = (globalThis as unknown as {
-          localStorage: {
-            clear(): void
-            setItem(name: string, value: string): void
-          }
-        }).localStorage
-        storage.clear()
-        for (const entry of entries) {
-          storage.setItem(entry.name, entry.value)
-        }
-      }, originState.localStorage)
-    } catch (error) {
-      logEvent(
-        'warn',
-        'runtime',
-        `Failed applying localStorage for ${originState.origin}: ${error instanceof Error ? error.message : String(error)}`,
-        null,
-      )
-    }
-  }
+  const result = await applyStorageStateWithoutVisibleNavigation<
+    Parameters<BrowserContext['addCookies']>[0][number],
+    Page
+  >(
+    context,
+    stateJson,
+    {
+      restoreOrigins: options.restoreOrigins,
+      visiblePage: options.visiblePage,
+      onWarning: ({ origin, message }) => {
+        logEvent(
+          'warn',
+          'runtime',
+          `Failed applying localStorage for ${origin}: ${message}`,
+          null,
+        )
+      },
+    },
+  )
+  audit('storage_state_restored_without_visible_navigation', {
+    restoredOrigins: result.restoredOrigins,
+    restoredEntries: result.restoredEntries,
+    skippedOrigins: result.skippedOrigins,
+    helperPageCreated: result.helperPageCreated,
+    warningCount: result.warnings.length,
+  })
 }
 
 function clearProfileStorageSyncTimer(profileId: string): void {
@@ -5072,6 +5102,7 @@ async function uploadProfileStorageStateToControlPlane(
     version: 0,
     updatedAt: '',
     cloudRecordExists: false,
+    contentUpdated: false,
     ...overrides,
   })
   if (!getDesktopAuthState().authenticated) {
@@ -5342,6 +5373,7 @@ async function downloadProfileStorageStateFromControlPlane(
     version: 0,
     updatedAt: '',
     cloudRecordExists: false,
+    contentUpdated: false,
     ...overrides,
   })
   if (!getDesktopAuthState().authenticated) {
@@ -5436,6 +5468,7 @@ async function downloadProfileStorageStateFromControlPlane(
       version: remoteState.version,
       updatedAt,
       cloudRecordExists: true,
+      contentUpdated: true,
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -6510,7 +6543,9 @@ function buildLegacyCloakPilotEligibility(
     enabled: true,
     reason: 'enabled',
     profileId: profile.id,
+    defaultEnabled: false,
     enabledProfileIds: legacy.allowlistedProfileIds,
+    disabledProfileIds: [],
     configHash,
     configUpdatedAt: '',
     cacheDir:
@@ -6537,7 +6572,9 @@ async function resolveCloakPilotLocalEligibility(
     enabled: false,
     reason: 'profile_not_enabled',
     profileId: profile.id,
+    defaultEnabled: false,
     enabledProfileIds: [],
+    disabledProfileIds: [],
     configHash: createHash('sha256').update('invalid-cloak-pilot-config').digest('hex'),
     configUpdatedAt: '',
     cacheDir: getDefaultCloakPilotCacheDir(),
@@ -6793,7 +6830,9 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
           },
           cloakPilotEligibility,
         )
-        throw new Error(`Cloak Pilot rollout gate blocked launch: ${rolloutDecision.reason}.`)
+        throw new NonRetryableLaunchError(
+          `Cloak Pilot rollout gate blocked launch: ${rolloutDecision.reason}.`,
+        )
       }
     }
     updateCloakPilotStatus(
@@ -6816,9 +6855,11 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       reason: cloakPilotEligibility.reason,
       configHash: cloakPilotEligibility.configHash,
       configUpdatedAt: cloakPilotEligibility.configUpdatedAt,
-      source: loadedCloakPilotConfig?.config.enabledProfileIds.includes(profileId)
-        ? 'local-config'
-        : 'environment-gate',
+      source: loadedCloakPilotConfig?.config.defaultEnabled
+        ? 'local-default'
+        : loadedCloakPilotConfig?.config.enabledProfileIds.includes(profileId)
+          ? 'local-explicit'
+          : 'environment-gate',
     })
     if (!cloakPilotEnabled) {
       const blockMessage =
@@ -6830,7 +6871,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
         configHash: cloakPilotEligibility.configHash,
         fallbackEngine: 'forbidden',
       })
-      throw new Error(blockMessage)
+      throw new NonRetryableLaunchError(blockMessage)
     }
     const configFingerprintHash = buildConfigFingerprintHash(profile)
     const proxyFingerprintHash = buildProxyFingerprintHash(profile, proxy)
@@ -6843,7 +6884,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       launchRetryCount: scheduler.getRetryCounts()[profileId] ?? 0,
     })
     if (validation.level === 'block') {
-      throw new Error(validation.messages.join(' '))
+      throw new NonRetryableLaunchError(validation.messages.join(' '))
     }
 
     audit('full_check_start', { profileId })
@@ -6896,7 +6937,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       lastRegistrationRiskFactors: registrationRisk.factors,
     })
     if (readinessValidation.level === 'block') {
-      throw new Error(readinessValidation.messages.join(' '))
+      throw new NonRetryableLaunchError(readinessValidation.messages.join(' '))
     }
 
     if (scheduler.isCancelled(profileId)) {
@@ -6928,9 +6969,16 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
         !fingerprint.commonSettings.hardwareAcceleration,
       )
     const userDataDir = workspaceLaunch.userDataDir
+    const hadPersistentLocalStorage = existsSync(
+      path.join(userDataDir, 'Default', 'Local Storage', 'leveldb', 'CURRENT'),
+    )
     mkdirSync(userDataDir, { recursive: true })
+    let storageStateContentUpdated = false
     await runNonBlockingSyncSideEffect(profileId, 'storageState', async () => {
-      await downloadProfileStorageStateFromControlPlane(profileId, { reason: 'startup' })
+      const result = await downloadProfileStorageStateFromControlPlane(profileId, {
+        reason: 'startup',
+      })
+      storageStateContentUpdated = result.contentUpdated
     })
     const runtimeHost = await runtimeHostManager.startEnvironment(profileId, userDataDir, getSettings())
     audit('runtime_host_ready', {
@@ -6941,7 +6989,9 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     })
 
     if (cloakPilotEnabled) {
-      const pilotRuntimeProfile = buildCloakPilotRuntimeProfile(profile, cloakPilotEligibility)
+      const pilotRuntimeProfile = buildCloakPilotRuntimeProfile(profile, cloakPilotEligibility, {
+        runtimePlatformVersion: detectDesktopHostPlatformVersion(),
+      })
       const pilotProfile = pilotRuntimeProfile.profile
       const pilotFingerprint = pilotProfile.fingerprintConfig
       const pilotStartupUrl =
@@ -7082,6 +7132,10 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
           await applyStorageStateToContext(
             pilotContext,
             await readProfileStorageStateFromDisk(profileId),
+            {
+              restoreOrigins: storageStateContentUpdated || !hadPersistentLocalStorage,
+              visiblePage: pilotPage,
+            },
           )
           pilotStartupNavigation = await navigateToStartupUrl(
             pilotPage,
@@ -7216,7 +7270,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
               mismatches: clientHintsCoherence.mismatches,
               observed: observed.clientHints,
             })
-            throw new Error(
+            throw new NonRetryableLaunchError(
               `Cloak UA Client Hints coherence failed: ${clientHintsCoherence.mismatches.join('; ')}`,
             )
           }
@@ -8299,7 +8353,13 @@ async function prepareSmokeCloakControls(profileId: string): Promise<{
   const batchId = 'ci-smoke-single-profile'
   const now = new Date()
 
-  loadedCloakPilotConfig = await setCloakPilotProfileEnabled(pilotPath, profileId, true, now)
+  loadedCloakPilotConfig = await writeCloakPilotLocalConfigAtomic(pilotPath, {
+    schemaVersion: CLOAK_PILOT_LOCAL_CONFIG_SCHEMA_VERSION,
+    defaultEnabled: false,
+    enabledProfileIds: [profileId],
+    disabledProfileIds: [],
+    updatedAt: now.toISOString(),
+  })
   await writeCloakRolloutControlAtomic(controlPath, {
     ...createDefaultCloakRolloutControl(),
     mode: 'observe',
@@ -8339,12 +8399,13 @@ async function prepareSmokeCloakControls(profileId: string): Promise<{
         outcomes: [],
         updatedAt: cleanupAt.toISOString(),
       })
-      loadedCloakPilotConfig = await setCloakPilotProfileEnabled(
-        pilotPath,
-        profileId,
-        false,
-        cleanupAt,
-      )
+      loadedCloakPilotConfig = await writeCloakPilotLocalConfigAtomic(pilotPath, {
+        schemaVersion: CLOAK_PILOT_LOCAL_CONFIG_SCHEMA_VERSION,
+        defaultEnabled: true,
+        enabledProfileIds: [],
+        disabledProfileIds: [],
+        updatedAt: cleanupAt.toISOString(),
+      })
       runtimeCloakPilotStatuses.delete(profileId)
       cloakRolloutGovernor = null
     },
@@ -9276,49 +9337,6 @@ async function registerIpcHandlers(): Promise<void> {
     await refreshCloakPilotLocalConfig()
     return baseCloakPilotStatus(profile)
   })
-  ipcMain.handle(
-    'cloakPilot.setProfileEnabled',
-    async (_event, profileIdInput: string, enabledInput: boolean) => {
-      const profileId = String(profileIdInput || '').trim()
-      const profile = requireDatabase().getProfileById(profileId)
-      if (!profile) throw new Error('Profile not found')
-      if (
-        runtimeContexts.has(profileId) ||
-        scheduler.getQueuedIds().includes(profileId) ||
-        scheduler.getStartingIds().includes(profileId)
-      ) {
-        throw new Error('Stop the environment before changing Cloak Pilot eligibility.')
-      }
-      loadedCloakPilotConfig = await setCloakPilotProfileEnabled(
-        cloakPilotConfigFilePath(),
-        profileId,
-        Boolean(enabledInput),
-      )
-      cloakPilotConfigError = ''
-      runtimeCloakPilotStatuses.delete(profileId)
-      const eligibility = evaluateCloakPilotLocalEligibility(profileId, loadedCloakPilotConfig)
-      const status = updateCloakPilotStatus(
-        profile,
-        {
-          enabled: eligibility.enabled,
-          state: eligibility.enabled ? 'unverified' : 'disabled',
-          reason: eligibility.reason,
-          effectiveBrowserVersion: eligibility.enabled ? eligibility.browserVersion : '',
-          snapshotId: '',
-          lastError: '',
-        },
-        eligibility,
-      )
-      audit('cloak_pilot_local_config_updated', {
-        profileId,
-        enabled: status.enabled,
-        configHash: eligibility.configHash,
-        configUpdatedAt: eligibility.configUpdatedAt,
-      })
-      return status
-    },
-  )
-
   ipcMain.handle('runtime.launch', async (_event, profileId: string) => performRuntimeLaunch(profileId))
   ipcMain.handle('runtime.stop', async (_event, profileId: string) => {
     ensureWritable('runtime.stop')
@@ -9628,7 +9646,9 @@ async function bootstrap(): Promise<void> {
   await refreshCloakPilotLocalConfig()
   traceStartup('cloak_pilot_config_loaded', {
     exists: loadedCloakPilotConfig?.exists ?? false,
+    defaultEnabled: loadedCloakPilotConfig?.config.defaultEnabled ?? false,
     enabledProfileCount: loadedCloakPilotConfig?.config.enabledProfileIds.length ?? 0,
+    disabledProfileCount: loadedCloakPilotConfig?.config.disabledProfileIds.length ?? 0,
     error: cloakPilotConfigError,
   })
   db = new DatabaseService(app)

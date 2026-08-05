@@ -132,8 +132,6 @@ const api: DesktopApi = {
   },
   cloakPilot: {
     getStatus: (profileId: string) => ipcRenderer.invoke('cloakPilot.getStatus', profileId),
-    setProfileEnabled: (profileId: string, enabled: boolean) =>
-      ipcRenderer.invoke('cloakPilot.setProfileEnabled', profileId, enabled),
   },
   runtime: {
     launch: (profileId: string) => ipcRenderer.invoke('runtime.launch', profileId),

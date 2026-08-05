@@ -1,3 +1,6 @@
+const { execFileSync } = require('node:child_process')
+const path = require('node:path')
+
 const pkg = require('./package.json')
 const REPO_OWNER = 'txj1992ceshi'
 const REPO_NAME = 'duokai'
@@ -36,10 +39,37 @@ function resolveProductName(version) {
 const baseBuild = pkg.build ?? {}
 const normalizedVersion = parseVersion(pkg.version)
 const productName = resolveProductName(pkg.version)
+const baseAfterPack = baseBuild.afterPack
+
+async function afterPack(context) {
+  if (typeof baseAfterPack === 'function') {
+    await baseAfterPack(context)
+  }
+  if (
+    process.env.DUOKAI_ADHOC_SIGN !== '1' ||
+    context.electronPlatformName !== 'darwin'
+  ) {
+    return
+  }
+
+  const appPath = path.join(
+    context.appOutDir,
+    `${context.packager.appInfo.productFilename}.app`,
+  )
+  execFileSync('/usr/bin/codesign', [
+    '--force',
+    '--deep',
+    '--sign',
+    '-',
+    '--timestamp=none',
+    appPath,
+  ], { stdio: 'inherit' })
+}
 
 module.exports = {
   ...baseBuild,
   productName,
+  afterPack,
   publish:
     baseBuild.publish ?? [
       {

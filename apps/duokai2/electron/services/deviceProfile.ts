@@ -9,6 +9,7 @@ import type {
   SimpleFingerprintMode,
 } from '../../src/shared/types'
 import { resolveFontBaseline } from './desktopRealism.ts'
+import { CLOAK_BROWSER_MAJOR } from '../../src/shared/cloakBrowserVersion.ts'
 
 export const DEVICE_PROFILE_VERSION = 1
 export const DEFAULT_ENVIRONMENT_PURPOSE: EnvironmentPurpose = 'operation'
@@ -67,7 +68,7 @@ function resolveOperatingSystem(config: FingerprintConfig): string {
 function resolveBrowserVersion(config: FingerprintConfig): string {
   const configured = String(config.advanced.browserVersion || '').trim()
   const inferred = inferBrowserVersionFromUserAgent(config.userAgent)
-  return configured || inferred || '147'
+  return configured || inferred || CLOAK_BROWSER_MAJOR
 }
 
 function resolvePlatformValue(config: FingerprintConfig, operatingSystem: string): string {

@@ -44,7 +44,7 @@ test('buildPlatformSmokeProfileInput applies platform preset and proxy to linked
   assert.equal(payload.environmentPurpose, 'register')
   assert.equal(payload.fingerprintConfig.basicSettings.platform, 'linkedin')
   assert.equal(payload.fingerprintConfig.webrtcMode, 'proxy-aware')
-  assert.equal(payload.fingerprintConfig.advanced.browserVersion, '146')
+  assert.equal(payload.fingerprintConfig.advanced.browserVersion, '145')
   assert.equal(payload.fingerprintConfig.proxySettings.proxyMode, 'custom')
   assert.equal(payload.tags.includes('linkedin'), true)
 })

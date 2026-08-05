@@ -296,8 +296,10 @@ export function evaluateCloakCanaryRehearsal(input: {
   check(
     'pilot.single_profile',
     eligibility.enabled &&
+      !input.pilotConfig.config.defaultEnabled &&
       input.pilotConfig.config.enabledProfileIds.length === 1 &&
-      input.pilotConfig.config.enabledProfileIds[0] === profileId,
+      input.pilotConfig.config.enabledProfileIds[0] === profileId &&
+      input.pilotConfig.config.disabledProfileIds.length === 0,
     'Exactly the rehearsal Profile may be enabled in the Pilot config.',
   )
   check('rollout.control_exists', input.rolloutControl.exists, 'An explicit rollout control is required.')
