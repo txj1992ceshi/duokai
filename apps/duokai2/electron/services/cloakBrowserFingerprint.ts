@@ -23,6 +23,7 @@ export type CloakFingerprintMappingErrorCode =
   | 'invalid_network_identity'
 
 export class CloakFingerprintMappingError extends Error {
+  readonly retryable = false
   readonly code: CloakFingerprintMappingErrorCode
 
   constructor(code: CloakFingerprintMappingErrorCode, message: string) {

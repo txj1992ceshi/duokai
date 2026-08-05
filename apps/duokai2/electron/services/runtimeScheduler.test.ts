@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { RuntimeScheduler, type RuntimeStatus } from './runtimeScheduler.ts'
+import {
+  NonRetryableLaunchError,
+  RuntimeScheduler,
+  type RuntimeStatus,
+} from './runtimeScheduler.ts'
 
 async function waitFor(
   predicate: () => boolean,
@@ -19,13 +23,14 @@ async function waitFor(
 function schedulerFixture(input: {
   onStart(profileId: string): Promise<void>
   isRunning(profileId: string): boolean
+  launchRetries?: number
 }) {
   const statuses: RuntimeStatus[] = []
   const errors: unknown[] = []
   const scheduler = new RuntimeScheduler({
     getMaxConcurrentStarts: () => 1,
     getMaxActiveProfiles: () => 1,
-    getLaunchRetries: () => 0,
+    getLaunchRetries: () => input.launchRetries ?? 0,
     getRunningCount: () => 0,
     isRunning: input.isRunning,
     onStart: input.onStart,
@@ -67,6 +72,67 @@ test('scheduler converges to stopped when launch returns without an active conte
   assert.deepEqual(statuses, ['queued', 'starting', 'stopped'])
   assert.equal(statuses.includes('running'), false)
   assert.deepEqual(errors, [])
+})
+
+test('scheduler fails fast for deterministic launch errors without reopening the browser', async () => {
+  let starts = 0
+  const { scheduler, statuses, errors } = schedulerFixture({
+    launchRetries: 3,
+    onStart: async () => {
+      starts += 1
+      throw new NonRetryableLaunchError('UA Client Hints coherence failed')
+    },
+    isRunning: () => false,
+  })
+
+  assert.equal(scheduler.enqueue('profile-1'), true)
+  await waitFor(() => statuses.at(-1) === 'error')
+
+  assert.equal(starts, 1)
+  assert.deepEqual(statuses, ['queued', 'starting', 'error'])
+  assert.equal(errors.length, 1)
+  assert.deepEqual(scheduler.getRetryCounts(), {})
+})
+
+test('scheduler follows wrapped causes and still fails deterministic launch errors once', async () => {
+  let starts = 0
+  const { scheduler, statuses, errors } = schedulerFixture({
+    launchRetries: 3,
+    onStart: async () => {
+      starts += 1
+      throw new Error('production transaction failed', {
+        cause: new Error('startup verification failed', {
+          cause: new NonRetryableLaunchError('UA Client Hints coherence failed'),
+        }),
+      })
+    },
+    isRunning: () => false,
+  })
+
+  assert.equal(scheduler.enqueue('profile-1'), true)
+  await waitFor(() => statuses.at(-1) === 'error')
+
+  assert.equal(starts, 1)
+  assert.equal(errors.length, 1)
+})
+
+test('scheduler preserves bounded retries for transient launch errors', async () => {
+  let starts = 0
+  const { scheduler, statuses, errors } = schedulerFixture({
+    launchRetries: 2,
+    onStart: async () => {
+      starts += 1
+      throw new Error('temporary network timeout')
+    },
+    isRunning: () => false,
+  })
+
+  assert.equal(scheduler.enqueue('profile-1'), true)
+  await waitFor(() => statuses.at(-1) === 'error')
+
+  assert.equal(starts, 3)
+  assert.equal(statuses.filter((status) => status === 'queued').length, 3)
+  assert.equal(errors.length, 1)
 })
 
 test('scheduler cannot publish running after cancellation during an in-flight launch', async () => {

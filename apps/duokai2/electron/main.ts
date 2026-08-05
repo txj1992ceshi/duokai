@@ -126,7 +126,11 @@ import {
   CLOAK_PILOT_BROWSER_VERSION,
 } from './services/cloakBrowserInstallPreflight'
 import { listEgressPathCandidates } from './services/egressPaths'
-import { RuntimeScheduler } from './services/runtimeScheduler'
+import {
+  NonRetryableLaunchError,
+  RuntimeScheduler,
+} from './services/runtimeScheduler'
+import { applyStorageStateWithoutVisibleNavigation } from './services/browserStorageRestore'
 import { convergeClosedRuntimeContext } from './services/runtimeContextLifecycle'
 import {
   assertAllProfileRuntimesInactiveForMutation,
@@ -4949,6 +4953,17 @@ function detectDesktopHostEnvironment(): string {
   return 'Windows'
 }
 
+function detectDesktopHostPlatformVersion(): string {
+  if (process.platform !== 'darwin') {
+    return ''
+  }
+  const getSystemVersion = (
+    process as NodeJS.Process & { getSystemVersion?: () => string }
+  ).getSystemVersion
+  const version = typeof getSystemVersion === 'function' ? getSystemVersion.call(process).trim() : ''
+  return /^\d+(?:\.\d+){1,3}$/.test(version) ? version : ''
+}
+
 function buildConfigFingerprintHash(profile: ProfileRecord): string {
   return hashStructuredPayload({
     environmentPurpose: profile.environmentPurpose,
@@ -5026,46 +5041,37 @@ async function syncProfileLaunchTrustToControlPlane(profile: ProfileRecord): Pro
 async function applyStorageStateToContext(
   context: BrowserContext,
   stateJson: BrowserStorageState | null,
+  options: {
+    restoreOrigins: boolean
+    visiblePage: Page
+  },
 ): Promise<void> {
-  if (!stateJson) {
-    return
-  }
-  await context.clearCookies()
-  if (Array.isArray(stateJson.cookies) && stateJson.cookies.length > 0) {
-    await context.addCookies(stateJson.cookies as unknown as Parameters<BrowserContext['addCookies']>[0])
-  }
-  if (!Array.isArray(stateJson.origins) || stateJson.origins.length === 0) {
-    return
-  }
-
-  const page = context.pages()[0] ?? (await context.newPage())
-  for (const originState of stateJson.origins) {
-    if (!originState?.origin || !Array.isArray(originState.localStorage) || originState.localStorage.length === 0) {
-      continue
-    }
-    try {
-      await page.goto(originState.origin, { waitUntil: 'domcontentloaded', timeout: 15000 })
-      await page.evaluate((entries: Array<{ name: string; value: string }>) => {
-        const storage = (globalThis as unknown as {
-          localStorage: {
-            clear(): void
-            setItem(name: string, value: string): void
-          }
-        }).localStorage
-        storage.clear()
-        for (const entry of entries) {
-          storage.setItem(entry.name, entry.value)
-        }
-      }, originState.localStorage)
-    } catch (error) {
-      logEvent(
-        'warn',
-        'runtime',
-        `Failed applying localStorage for ${originState.origin}: ${error instanceof Error ? error.message : String(error)}`,
-        null,
-      )
-    }
-  }
+  const result = await applyStorageStateWithoutVisibleNavigation<
+    Parameters<BrowserContext['addCookies']>[0][number],
+    Page
+  >(
+    context,
+    stateJson,
+    {
+      restoreOrigins: options.restoreOrigins,
+      visiblePage: options.visiblePage,
+      onWarning: ({ origin, message }) => {
+        logEvent(
+          'warn',
+          'runtime',
+          `Failed applying localStorage for ${origin}: ${message}`,
+          null,
+        )
+      },
+    },
+  )
+  audit('storage_state_restored_without_visible_navigation', {
+    restoredOrigins: result.restoredOrigins,
+    restoredEntries: result.restoredEntries,
+    skippedOrigins: result.skippedOrigins,
+    helperPageCreated: result.helperPageCreated,
+    warningCount: result.warnings.length,
+  })
 }
 
 function clearProfileStorageSyncTimer(profileId: string): void {
@@ -5096,6 +5102,7 @@ async function uploadProfileStorageStateToControlPlane(
     version: 0,
     updatedAt: '',
     cloudRecordExists: false,
+    contentUpdated: false,
     ...overrides,
   })
   if (!getDesktopAuthState().authenticated) {
@@ -5366,6 +5373,7 @@ async function downloadProfileStorageStateFromControlPlane(
     version: 0,
     updatedAt: '',
     cloudRecordExists: false,
+    contentUpdated: false,
     ...overrides,
   })
   if (!getDesktopAuthState().authenticated) {
@@ -5460,6 +5468,7 @@ async function downloadProfileStorageStateFromControlPlane(
       version: remoteState.version,
       updatedAt,
       cloudRecordExists: true,
+      contentUpdated: true,
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -6821,7 +6830,9 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
           },
           cloakPilotEligibility,
         )
-        throw new Error(`Cloak Pilot rollout gate blocked launch: ${rolloutDecision.reason}.`)
+        throw new NonRetryableLaunchError(
+          `Cloak Pilot rollout gate blocked launch: ${rolloutDecision.reason}.`,
+        )
       }
     }
     updateCloakPilotStatus(
@@ -6860,7 +6871,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
         configHash: cloakPilotEligibility.configHash,
         fallbackEngine: 'forbidden',
       })
-      throw new Error(blockMessage)
+      throw new NonRetryableLaunchError(blockMessage)
     }
     const configFingerprintHash = buildConfigFingerprintHash(profile)
     const proxyFingerprintHash = buildProxyFingerprintHash(profile, proxy)
@@ -6873,7 +6884,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       launchRetryCount: scheduler.getRetryCounts()[profileId] ?? 0,
     })
     if (validation.level === 'block') {
-      throw new Error(validation.messages.join(' '))
+      throw new NonRetryableLaunchError(validation.messages.join(' '))
     }
 
     audit('full_check_start', { profileId })
@@ -6926,7 +6937,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
       lastRegistrationRiskFactors: registrationRisk.factors,
     })
     if (readinessValidation.level === 'block') {
-      throw new Error(readinessValidation.messages.join(' '))
+      throw new NonRetryableLaunchError(readinessValidation.messages.join(' '))
     }
 
     if (scheduler.isCancelled(profileId)) {
@@ -6958,9 +6969,16 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
         !fingerprint.commonSettings.hardwareAcceleration,
       )
     const userDataDir = workspaceLaunch.userDataDir
+    const hadPersistentLocalStorage = existsSync(
+      path.join(userDataDir, 'Default', 'Local Storage', 'leveldb', 'CURRENT'),
+    )
     mkdirSync(userDataDir, { recursive: true })
+    let storageStateContentUpdated = false
     await runNonBlockingSyncSideEffect(profileId, 'storageState', async () => {
-      await downloadProfileStorageStateFromControlPlane(profileId, { reason: 'startup' })
+      const result = await downloadProfileStorageStateFromControlPlane(profileId, {
+        reason: 'startup',
+      })
+      storageStateContentUpdated = result.contentUpdated
     })
     const runtimeHost = await runtimeHostManager.startEnvironment(profileId, userDataDir, getSettings())
     audit('runtime_host_ready', {
@@ -6971,7 +6989,9 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
     })
 
     if (cloakPilotEnabled) {
-      const pilotRuntimeProfile = buildCloakPilotRuntimeProfile(profile, cloakPilotEligibility)
+      const pilotRuntimeProfile = buildCloakPilotRuntimeProfile(profile, cloakPilotEligibility, {
+        runtimePlatformVersion: detectDesktopHostPlatformVersion(),
+      })
       const pilotProfile = pilotRuntimeProfile.profile
       const pilotFingerprint = pilotProfile.fingerprintConfig
       const pilotStartupUrl =
@@ -7112,6 +7132,10 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
           await applyStorageStateToContext(
             pilotContext,
             await readProfileStorageStateFromDisk(profileId),
+            {
+              restoreOrigins: storageStateContentUpdated || !hadPersistentLocalStorage,
+              visiblePage: pilotPage,
+            },
           )
           pilotStartupNavigation = await navigateToStartupUrl(
             pilotPage,
@@ -7246,7 +7270,7 @@ async function launchRuntimeNow(profileId: string): Promise<void> {
               mismatches: clientHintsCoherence.mismatches,
               observed: observed.clientHints,
             })
-            throw new Error(
+            throw new NonRetryableLaunchError(
               `Cloak UA Client Hints coherence failed: ${clientHintsCoherence.mismatches.join('; ')}`,
             )
           }

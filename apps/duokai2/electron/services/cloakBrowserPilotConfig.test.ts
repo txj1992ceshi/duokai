@@ -189,6 +189,55 @@ test('runtime overlay aligns 147 to fixed Cloak 145 without mutating the stored 
   })
 })
 
+test('runtime overlay separates the frozen macOS UA token from the real UA-CH platform version', async () => {
+  await withTempDirectory(async (directory) => {
+    const profile = createProfile('profile-macos-platform-version')
+    profile.fingerprintConfig.advanced.operatingSystemVersion = '10.15.7'
+    const original = structuredClone(profile)
+    const filePath = path.join(directory, 'pilot-config.json')
+    const loaded = await setCloakPilotProfileEnabled(filePath, profile.id, true)
+    const eligibility = evaluateCloakPilotLocalEligibility(profile.id, loaded)
+    const result = buildCloakPilotRuntimeProfile(profile, eligibility, {
+      runtimePlatformVersion: '15.2.0',
+    })
+
+    assert.deepEqual(profile, original)
+    assert.match(result.profile.fingerprintConfig.userAgent, /Mac OS X 10_15_7/)
+    assert.equal(result.profile.fingerprintConfig.advanced.operatingSystemVersion, '15.2.0')
+    assert.equal(
+      result.compatibility.modifiedFields.includes(
+        'fingerprintConfig.advanced.operatingSystemVersion',
+      ),
+      true,
+    )
+    assert.equal(
+      result.compatibility.compatibilityWarnings.some((warning) =>
+        warning.includes('UA Client Hints platformVersion'),
+      ),
+      true,
+    )
+    validateCloakPilotCompatibilityReceipt(result.compatibility)
+  })
+})
+
+test('runtime overlay rejects malformed host platform versions', async () => {
+  await withTempDirectory(async (directory) => {
+    const profile = createProfile('profile-invalid-platform-version')
+    const filePath = path.join(directory, 'pilot-config.json')
+    const loaded = await setCloakPilotProfileEnabled(filePath, profile.id, true)
+    const eligibility = evaluateCloakPilotLocalEligibility(profile.id, loaded)
+
+    assert.throws(
+      () =>
+        buildCloakPilotRuntimeProfile(profile, eligibility, {
+          runtimePlatformVersion: 'macOS 15',
+        }),
+      (error: unknown) =>
+        error instanceof CloakPilotLocalConfigError && error.code === 'invalid_config',
+    )
+  })
+})
+
 test('runtime overlay aligns a partial legacy noise policy without mutating the stored Profile', async () => {
   await withTempDirectory(async (directory) => {
     const profile = createProfile('profile-partial-noise')

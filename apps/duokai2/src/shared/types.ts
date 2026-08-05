@@ -254,6 +254,7 @@ export interface StorageStateSyncResult {
   version: number
   updatedAt: string
   cloudRecordExists: boolean
+  contentUpdated: boolean
 }
 
 export interface ProfileBasicSettings {

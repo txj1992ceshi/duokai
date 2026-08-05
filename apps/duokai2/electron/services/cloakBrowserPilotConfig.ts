@@ -79,6 +79,7 @@ export interface CloakPilotCompatibilityReceipt {
 }
 
 export class CloakPilotLocalConfigError extends Error {
+  readonly retryable = false
   readonly code:
     | 'invalid_path'
     | 'invalid_permissions'
@@ -419,6 +420,7 @@ function workspaceTemplateFingerprintHash(
 export function buildCloakPilotRuntimeProfile(
   profile: ProfileRecord,
   eligibility: CloakPilotLocalEligibility,
+  options: { runtimePlatformVersion?: string } = {},
 ): { profile: ProfileRecord; compatibility: CloakPilotCompatibilityReceipt } {
   if (!eligibility.enabled || profile.id !== eligibility.profileId) {
     throw new CloakPilotLocalConfigError(
@@ -460,6 +462,17 @@ export function buildCloakPilotRuntimeProfile(
         'Legacy partial off/custom Canvas, WebGL image, AudioContext and ClientRects modes were aligned in memory to Cloak seed-derived native noise; the stored Profile was not modified.',
       ]
     : []
+  const runtimePlatformVersion = String(options.runtimePlatformVersion || '').trim()
+  const macosRuntimePlatformVersion =
+    profile.fingerprintConfig.advanced.operatingSystem === 'macOS' && runtimePlatformVersion
+      ? runtimePlatformVersion
+      : ''
+  if (macosRuntimePlatformVersion && !/^\d+(?:\.\d+){1,3}$/.test(macosRuntimePlatformVersion)) {
+    throw new CloakPilotLocalConfigError(
+      'invalid_config',
+      `Cloak Pilot received an invalid macOS runtime platform version: ${macosRuntimePlatformVersion}`,
+    )
+  }
   const modifiedFields = [
     'fingerprintConfig.advanced.browserKernel',
     'fingerprintConfig.advanced.browserKernelVersion',
@@ -469,6 +482,16 @@ export function buildCloakPilotRuntimeProfile(
     'deviceProfile.browserVersion',
     'deviceProfile.userAgent',
   ]
+  if (
+    macosRuntimePlatformVersion &&
+    macosRuntimePlatformVersion !==
+      String(profile.fingerprintConfig.advanced.operatingSystemVersion || '').trim()
+  ) {
+    modifiedFields.push('fingerprintConfig.advanced.operatingSystemVersion')
+    compatibilityWarnings.push(
+      'The reduced macOS User-Agent remains frozen at Mac OS X 10_15_7, while UA Client Hints platformVersion is aligned at runtime to the actual host macOS version.',
+    )
+  }
   if (partialNoisePolicy) {
     const noiseFields = [
       ['canvas', 'fingerprintConfig.advanced.canvasMode'],
@@ -517,6 +540,9 @@ export function buildCloakPilotRuntimeProfile(
         browserKernel: 'chrome',
         browserKernelVersion: CLOAK_PILOT_BROWSER_VERSION,
         browserVersion: CLOAK_PILOT_BROWSER_VERSION,
+        ...(macosRuntimePlatformVersion
+          ? { operatingSystemVersion: macosRuntimePlatformVersion }
+          : {}),
         ...(partialNoisePolicy
           ? {
               canvasMode: effectiveNoiseModes.canvas as typeof profile.fingerprintConfig.advanced.canvasMode,
