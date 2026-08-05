@@ -47,6 +47,7 @@ import {
   createProxyPayload,
   createTemplatePayload,
   syncFingerprintConfigWithWorkspaceEnvironment,
+  syncWorkspaceWithFingerprintConfig,
 } from './services/factories'
 import {
   CloudPhoneProviderRegistry,
@@ -3447,13 +3448,19 @@ function requireDatabase(): DatabaseService {
 
 function migrateStableHardwareFingerprintsOnStartup(): void {
   const database = requireDatabase()
+  const hostOperatingSystem =
+    process.platform === 'darwin' ? 'macOS' : process.platform === 'win32' ? 'Windows' : 'Linux'
 
   for (const profile of database.listProfiles()) {
-    if (!shouldMigrateStableHardwareFingerprint(profile.fingerprintConfig)) {
+    if (!shouldMigrateStableHardwareFingerprint(profile.fingerprintConfig, hostOperatingSystem)) {
       continue
     }
-    const fingerprintConfig = assignStableHardwareFingerprint(profile.fingerprintConfig, profile.id)
-    database.updateProfile({
+    const previous = profile.fingerprintConfig
+    const fingerprintConfig = assignStableHardwareFingerprint(previous, profile.id, {
+      hostOperatingSystem,
+      enforceHostCompatibility: true,
+    })
+    const migrated = database.updateProfile({
       id: profile.id,
       name: profile.name,
       proxyId: profile.proxyId,
@@ -3462,7 +3469,24 @@ function migrateStableHardwareFingerprintsOnStartup(): void {
       notes: profile.notes,
       environmentPurpose: profile.environmentPurpose,
       fingerprintConfig,
-      workspace: profile.workspace,
+      workspace: syncWorkspaceWithFingerprintConfig(profile.workspace, fingerprintConfig),
+    })
+    audit('hardware_identity_migrated', {
+      profileId: profile.id,
+      source: previous.runtimeMetadata.hardwareProfileSource || 'legacy',
+      previousVersion: previous.runtimeMetadata.hardwareProfileVersion || '',
+      nextVersion: fingerprintConfig.runtimeMetadata.hardwareProfileVersion,
+      previousOperatingSystem: previous.advanced.operatingSystem,
+      nextOperatingSystem: fingerprintConfig.advanced.operatingSystem,
+      previousTemplateId: previous.runtimeMetadata.hardwareTemplateId || '',
+      nextTemplateId: fingerprintConfig.runtimeMetadata.hardwareTemplateId || '',
+      seedPreserved:
+        Boolean(previous.runtimeMetadata.hardwareSeed) &&
+        previous.runtimeMetadata.hardwareSeed === fingerprintConfig.runtimeMetadata.hardwareSeed,
+      identityChanged:
+        previous.runtimeMetadata.hardwareTemplateId !== fingerprintConfig.runtimeMetadata.hardwareTemplateId ||
+        previous.advanced.operatingSystem !== fingerprintConfig.advanced.operatingSystem,
+      workspaceResolution: migrated.workspace?.resolvedEnvironment.resolution || '',
     })
   }
 

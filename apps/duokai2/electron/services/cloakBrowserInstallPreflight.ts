@@ -2,6 +2,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import type { CloakBrowserBinaryDescriptor } from './cloakBrowserIdentity.ts'
+import { CLOAK_BROWSER_VERSION } from '../../src/shared/cloakBrowserVersion.ts'
 import {
   assertCloakBinaryReady,
   computeBinarySha256,
@@ -15,7 +16,7 @@ import {
   type CloakBrowserModuleLike,
 } from './cloakBrowserRuntime.ts'
 
-export const CLOAK_PILOT_BROWSER_VERSION = '145.0.7632.109.2'
+export const CLOAK_PILOT_BROWSER_VERSION = CLOAK_BROWSER_VERSION
 export const CLOAK_PILOT_BINARY_SHA256_BY_HOST = {
   'darwin-arm64': '79ddf7e7a7be8087319390ed79266387f6499b8a2e45ccfbaa724d7e7fff6b79',
   'win32-x64': 'bf558d54d929dc7719e9a20463500f77ad18f09ba446949acfdf5766034a526f',

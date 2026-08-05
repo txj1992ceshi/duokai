@@ -5,6 +5,7 @@ import { createDefaultFingerprint } from './factories.ts'
 import {
   HARDWARE_CATALOG_VERSION,
   assignStableHardwareFingerprint,
+  isHardwareIdentityCompatibleWithHost,
   sanitizeTemplateHardwareFingerprint,
   shouldMigrateStableHardwareFingerprint,
   STABLE_HARDWARE_PROFILE_VERSION,
@@ -35,13 +36,14 @@ test('assignStableHardwareFingerprint differs across profile ids', () => {
 test('generated hardware profiles only emit current-stable-nearby browser majors', () => {
   const generated = assignStableHardwareFingerprint(createDefaultFingerprint(), 'profile-browser-major')
 
-  assert.equal(new Set(['146', '147']).has(generated.advanced.browserVersion), true)
+  assert.equal(generated.advanced.browserVersion, '145')
   assert.equal(generated.advanced.browserKernelVersion, generated.advanced.browserVersion)
   assert.match(generated.userAgent, new RegExp(`Chrome/${generated.advanced.browserVersion}\\.0\\.0\\.0`))
 })
 
 test('macOS hardware profiles keep macOS-compatible renderers', () => {
   const macFingerprint = createDefaultFingerprint()
+  macFingerprint.advanced.operatingSystem = 'macOS'
   const generated = assignStableHardwareFingerprint(macFingerprint, 'profile-mac')
 
   assert.equal(generated.advanced.operatingSystem, 'macOS')
@@ -51,6 +53,7 @@ test('macOS hardware profiles keep macOS-compatible renderers', () => {
 
 test('macOS hardware profiles use realistic cpu and memory pairings', () => {
   const macFingerprint = createDefaultFingerprint()
+  macFingerprint.advanced.operatingSystem = 'macOS'
   const generated = assignStableHardwareFingerprint(macFingerprint, 'profile-mac-realistic')
   const pairing = `${generated.advanced.cpuCores}/${generated.advanced.memoryGb}`
   const supportedPairings = new Set(['8/8', '8/16', '8/24', '11/18', '11/36', '12/18', '12/36'])
@@ -61,6 +64,7 @@ test('macOS hardware profiles use realistic cpu and memory pairings', () => {
 
 test('macOS hardware profiles use mac-style device names', () => {
   const macFingerprint = createDefaultFingerprint()
+  macFingerprint.advanced.operatingSystem = 'macOS'
   const generated = assignStableHardwareFingerprint(macFingerprint, 'profile-mac-device-name')
 
   assert.equal(generated.advanced.operatingSystem, 'macOS')
@@ -69,6 +73,7 @@ test('macOS hardware profiles use mac-style device names', () => {
 
 test('macOS Air templates never emit Pro-only resolutions', () => {
   const macFingerprint = createDefaultFingerprint()
+  macFingerprint.advanced.operatingSystem = 'macOS'
   const generated = assignStableHardwareFingerprint(macFingerprint, 'profile-mac-air-resolution', {
     forceRegenerate: true,
     seed: 'mac-air-template-seed',
@@ -143,4 +148,72 @@ test('sanitizeTemplateHardwareFingerprint marks template source without fixing h
 test('legacy defaults are marked for migration', () => {
   const fingerprint = createDefaultFingerprint()
   assert.equal(shouldMigrateStableHardwareFingerprint(fingerprint), true)
+})
+
+test('new generated identities obey the explicit host system family', () => {
+  const fingerprint = createDefaultFingerprint()
+  fingerprint.advanced.operatingSystem = 'Windows'
+
+  const generated = assignStableHardwareFingerprint(fingerprint, 'profile-host-mac', {
+    forceRegenerate: true,
+    seed: 'profile-host-mac',
+    hostOperatingSystem: 'macOS',
+    enforceHostCompatibility: true,
+  })
+
+  assert.equal(generated.advanced.operatingSystem, 'macOS')
+  assert.match(generated.userAgent, /Macintosh/)
+  assert.match(generated.advanced.webglRenderer, /Apple|Metal/i)
+})
+
+test('legacy generated identity migrates once to the host family with the same seed', () => {
+  const fingerprint = createDefaultFingerprint()
+  fingerprint.advanced.operatingSystem = 'Windows'
+  const oldGenerated = assignStableHardwareFingerprint(fingerprint, 'legacy-win-profile', {
+    forceRegenerate: true,
+    seed: 'stable-legacy-seed',
+    hostOperatingSystem: 'Windows',
+    enforceHostCompatibility: true,
+  })
+  oldGenerated.runtimeMetadata.hardwareProfileVersion = 'desktop-hw-v2'
+  oldGenerated.runtimeMetadata.hardwareCatalogVersion = 'hw-catalog-v1'
+
+  assert.equal(shouldMigrateStableHardwareFingerprint(oldGenerated, 'macOS'), true)
+  const migrated = assignStableHardwareFingerprint(oldGenerated, 'legacy-win-profile', {
+    hostOperatingSystem: 'macOS',
+    enforceHostCompatibility: true,
+  })
+
+  assert.equal(migrated.advanced.operatingSystem, 'macOS')
+  assert.equal(migrated.runtimeMetadata.hardwareSeed, 'stable-legacy-seed')
+  assert.equal(migrated.runtimeMetadata.hardwareProfileVersion, STABLE_HARDWARE_PROFILE_VERSION)
+  assert.equal(migrated.runtimeMetadata.hardwareCatalogVersion, HARDWARE_CATALOG_VERSION)
+  assert.equal(isHardwareIdentityCompatibleWithHost(migrated, 'macOS'), true)
+  assert.equal(shouldMigrateStableHardwareFingerprint(migrated, 'macOS'), false)
+
+  const secondPass = assignStableHardwareFingerprint(migrated, 'legacy-win-profile', {
+    hostOperatingSystem: 'macOS',
+    enforceHostCompatibility: true,
+  })
+  assert.deepEqual(secondPass, migrated)
+})
+
+test('current generated identity is locked instead of silently rotating on another host', () => {
+  const fingerprint = createDefaultFingerprint()
+  fingerprint.advanced.operatingSystem = 'Windows'
+  const locked = assignStableHardwareFingerprint(fingerprint, 'locked-windows-profile', {
+    forceRegenerate: true,
+    seed: 'locked-windows-seed',
+    hostOperatingSystem: 'Windows',
+    enforceHostCompatibility: true,
+  })
+
+  const evaluatedOnMac = assignStableHardwareFingerprint(locked, 'locked-windows-profile', {
+    hostOperatingSystem: 'macOS',
+    enforceHostCompatibility: true,
+  })
+
+  assert.deepEqual(evaluatedOnMac, locked)
+  assert.equal(isHardwareIdentityCompatibleWithHost(evaluatedOnMac, 'macOS'), false)
+  assert.equal(shouldMigrateStableHardwareFingerprint(evaluatedOnMac, 'macOS'), false)
 })

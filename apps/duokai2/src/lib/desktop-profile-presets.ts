@@ -4,6 +4,7 @@ import {
   DEFAULT_ENVIRONMENT_LANGUAGE,
   normalizeEnvironmentLanguage,
 } from '../shared/environmentLanguages'
+import { CLOAK_BROWSER_MAJOR } from '../shared/cloakBrowserVersion'
 import {
   assignStableHardwareFingerprint,
   randomizeStableHardwareFingerprint,
@@ -74,34 +75,6 @@ const ENVIRONMENT_PURPOSE_PRESETS: Record<
   },
 }
 
-const PLATFORM_TEMPLATE_PRESETS: Record<
-  'linkedin' | 'tiktok',
-  {
-    recommendedPurpose: EnvironmentPurpose
-    summaryZh: string
-    summaryEn: string
-    strategyZh: string
-    strategyEn: string
-  }
-> = {
-  linkedin: {
-    recommendedPurpose: 'register',
-    summaryZh: '更保守的办公桌面画像，适合注册与资料完善。',
-    summaryEn: 'Conservative office-style desktop profile suited for registration and profile completion.',
-    strategyZh: 'LinkedIn 建议一号一 IP、低频注册、优先办公型桌面画像，并避免随机化与清缓存。',
-    strategyEn:
-      'LinkedIn favors one-account-per-IP, low-frequency registration, office-style desktop fingerprints, and avoiding randomization or cache wipes.',
-  },
-  tiktok: {
-    recommendedPurpose: 'nurture',
-    summaryZh: '偏内容消费与日常运营的桌面画像，适合养号和长期使用。',
-    summaryEn: 'Content-oriented desktop profile suited for nurture and long-term operation.',
-    strategyZh: 'TikTok 更重视地区一致性、媒体能力与长期会话连续性，适合先养号再进入日常运营。',
-    strategyEn:
-      'TikTok cares more about regional consistency, media capabilities, and long-lived sessions, so nurturing before daily operation is preferred.',
-  },
-}
-
 function resolveLocalizedText(
   locale: LocaleCode | string,
   zh: string,
@@ -125,7 +98,7 @@ export function detectRendererOperatingSystem(): string {
 }
 
 export function buildDesktopUserAgent(operatingSystem: string, browserVersion: string): string {
-  const majorVersion = String(browserVersion || '147').trim() || '147'
+  const majorVersion = String(browserVersion || CLOAK_BROWSER_MAJOR).trim() || CLOAK_BROWSER_MAJOR
   const os = operatingSystem.toLowerCase()
   if (os.includes('mac')) {
     return `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${majorVersion}.0.0.0 Safari/537.36`
@@ -144,7 +117,7 @@ function resolvePlatformStartupUrl(platform: string, customPlatformUrl: string):
 }
 
 function syncBrowserIdentity(config: FingerprintConfig): FingerprintConfig {
-  const browserVersion = String(config.advanced.browserVersion || '').trim() || '147'
+  const browserVersion = String(config.advanced.browserVersion || '').trim() || CLOAK_BROWSER_MAJOR
   return {
     ...config,
     userAgent: buildDesktopUserAgent(config.advanced.operatingSystem, browserVersion),
@@ -287,7 +260,7 @@ export function getLifecycleStageSummary(
 }
 
 export const defaultFingerprint: FingerprintConfig = {
-  userAgent: buildDesktopUserAgent(detectRendererOperatingSystem(), '147'),
+  userAgent: buildDesktopUserAgent(detectRendererOperatingSystem(), CLOAK_BROWSER_MAJOR),
   language: DEFAULT_ENVIRONMENT_LANGUAGE,
   timezone: '',
   resolution: '1440x900',
@@ -328,11 +301,11 @@ export const defaultFingerprint: FingerprintConfig = {
   },
   advanced: {
     browserKernel: 'chrome',
-    browserKernelVersion: '147',
+    browserKernelVersion: CLOAK_BROWSER_MAJOR,
     deviceMode: 'desktop',
     operatingSystem: detectRendererOperatingSystem(),
     operatingSystemVersion: '',
-    browserVersion: '147',
+    browserVersion: CLOAK_BROWSER_MAJOR,
     autoLanguageFromIp: true,
     autoInterfaceLanguageFromIp: true,
     interfaceLanguage: '',
@@ -435,7 +408,7 @@ export const defaultFingerprint: FingerprintConfig = {
 }
 
 export function randomDesktopFingerprint(current: FingerprintConfig): FingerprintConfig {
-  return randomizeStableHardwareFingerprint(current)
+  return randomizeStableHardwareFingerprint(current, detectRendererOperatingSystem())
 }
 
 export function normalizeTags(value: string): string[] {
@@ -480,7 +453,7 @@ export function applyPlatformPresetToForm(
     }
   }
 
-  const baseFingerprint = {
+  const baseFingerprint: FingerprintConfig = {
     ...fingerprintConfig,
     basicSettings: {
       ...fingerprintConfig.basicSettings,
@@ -490,138 +463,46 @@ export function applyPlatformPresetToForm(
     },
   }
 
-  if (platform === 'linkedin') {
-    const browserVersion = '146'
-    const operatingSystem = 'Windows'
-    const preset: { environmentPurpose: EnvironmentPurpose; fingerprintConfig: FingerprintConfig } =
-      {
-        environmentPurpose: PLATFORM_TEMPLATE_PRESETS.linkedin.recommendedPurpose,
-        fingerprintConfig: {
-          ...syncBrowserIdentity({
-            ...baseFingerprint,
-            advanced: {
-              ...baseFingerprint.advanced,
-              browserVersion,
-              operatingSystem,
-            },
-          }),
-          commonSettings: {
-            ...baseFingerprint.commonSettings,
-            pageMode: 'local',
-            blockImages: false,
-            syncTabs: false,
-            syncCookies: true,
-            clearCacheOnLaunch: false,
-            randomizeFingerprintOnLaunch: false,
-            allowChromeLogin: false,
-            memorySaver: true,
-          },
-          advanced: {
-            ...baseFingerprint.advanced,
-            deviceMode: 'desktop',
-            operatingSystem,
-            browserKernelVersion: browserVersion,
-            browserVersion,
-            autoLanguageFromIp: true,
-            autoInterfaceLanguageFromIp: true,
-            autoTimezoneFromIp: true,
-            autoGeolocationFromIp: true,
-            geolocationPermission: 'allow',
-            windowWidth: 1440,
-            windowHeight: 900,
-            resolutionMode: 'system',
-            fontMode: 'system',
-            canvasMode: 'custom',
-            webglImageMode: 'custom',
-            webglMetadataMode: 'custom',
-            webglVendor: 'Google Inc. (Intel)',
-            webglRenderer:
-              'ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)',
-            audioContextMode: 'custom',
-            mediaDevicesMode: 'custom',
-            speechVoicesMode: 'custom',
-            clientRectsMode: 'off',
-            cpuMode: 'system',
-            cpuCores: 8,
-            memoryGb: 8,
-          },
-          resolution: '1440x900',
-          webrtcMode: 'proxy-aware',
-        },
-      }
-    return {
-      environmentPurpose,
-      fingerprintConfig: preset.fingerprintConfig,
-    }
+  if (platform !== 'linkedin' && platform !== 'tiktok') {
+    return { fingerprintConfig: baseFingerprint, environmentPurpose }
   }
 
-  if (platform === 'tiktok') {
-    const browserVersion = '147'
-    const operatingSystem = 'Windows'
-    const preset: { environmentPurpose: EnvironmentPurpose; fingerprintConfig: FingerprintConfig } =
-      {
-        environmentPurpose: PLATFORM_TEMPLATE_PRESETS.tiktok.recommendedPurpose,
-        fingerprintConfig: {
-          ...syncBrowserIdentity({
-            ...baseFingerprint,
-            advanced: {
-              ...baseFingerprint.advanced,
-              browserVersion,
-              operatingSystem,
-            },
-          }),
-          commonSettings: {
-            ...baseFingerprint.commonSettings,
-            pageMode: 'local',
-            blockImages: false,
-            syncTabs: true,
-            syncCookies: true,
-            clearCacheOnLaunch: false,
-            randomizeFingerprintOnLaunch: false,
-            memorySaver: false,
-          },
-          advanced: {
-            ...baseFingerprint.advanced,
-            deviceMode: 'desktop',
-            operatingSystem,
-            browserKernelVersion: browserVersion,
-            browserVersion,
-            autoLanguageFromIp: true,
-            autoInterfaceLanguageFromIp: true,
-            autoTimezoneFromIp: true,
-            autoGeolocationFromIp: true,
-            geolocationPermission: 'allow',
-            windowWidth: 1600,
-            windowHeight: 900,
-            resolutionMode: 'system',
-            fontMode: 'system',
-            canvasMode: 'custom',
-            webglImageMode: 'custom',
-            webglMetadataMode: 'custom',
-            webglVendor: 'Google Inc. (Intel)',
-            webglRenderer:
-              'ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)',
-            audioContextMode: 'custom',
-            mediaDevicesMode: 'custom',
-            speechVoicesMode: 'custom',
-            clientRectsMode: 'off',
-            cpuMode: 'system',
-            cpuCores: 8,
-            memoryGb: 8,
-          },
-          resolution: '1600x900',
-          webrtcMode: 'proxy-aware',
-        },
-      }
-    return {
-      environmentPurpose,
-      fingerprintConfig: preset.fingerprintConfig,
-    }
-  }
-
+  const isLinkedIn = platform === 'linkedin'
   return {
-    fingerprintConfig: baseFingerprint,
     environmentPurpose,
+    fingerprintConfig: {
+      ...baseFingerprint,
+      commonSettings: {
+        ...baseFingerprint.commonSettings,
+        pageMode: 'local',
+        blockImages: false,
+        syncTabs: !isLinkedIn,
+        syncCookies: true,
+        clearCacheOnLaunch: false,
+        randomizeFingerprintOnLaunch: false,
+        allowChromeLogin: false,
+        memorySaver: isLinkedIn,
+      },
+      advanced: {
+        ...baseFingerprint.advanced,
+        deviceMode: 'desktop',
+        autoLanguageFromIp: true,
+        autoInterfaceLanguageFromIp: true,
+        autoTimezoneFromIp: true,
+        autoGeolocationFromIp: true,
+        geolocationPermission: 'allow',
+        resolutionMode: 'system',
+        fontMode: 'system',
+        canvasMode: 'custom',
+        webglImageMode: 'custom',
+        webglMetadataMode: 'custom',
+        audioContextMode: 'custom',
+        mediaDevicesMode: 'custom',
+        speechVoicesMode: 'custom',
+        clientRectsMode: 'off',
+      },
+      webrtcMode: 'proxy-aware',
+    },
   }
 }
 
@@ -657,6 +538,8 @@ export function emptyProfile(
       {
         forceRegenerate: true,
         seed: draftId,
+        hostOperatingSystem: detectRendererOperatingSystem(),
+        enforceHostCompatibility: true,
       },
     ),
   }

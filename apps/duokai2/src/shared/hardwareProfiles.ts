@@ -1,11 +1,12 @@
 import type { FingerprintConfig } from './types'
+import { CLOAK_BROWSER_MAJOR } from './cloakBrowserVersion.ts'
 
-export const STABLE_HARDWARE_PROFILE_VERSION = 'desktop-hw-v2'
-export const HARDWARE_CATALOG_VERSION = 'hw-catalog-v1'
+export const STABLE_HARDWARE_PROFILE_VERSION = 'desktop-hw-v3'
+export const HARDWARE_CATALOG_VERSION = 'hw-catalog-v2'
 
 type HardwareProfileSource = NonNullable<FingerprintConfig['runtimeMetadata']['hardwareProfileSource']>
 
-type DevicePlatform = 'Windows' | 'macOS'
+export type DevicePlatform = 'Windows' | 'macOS'
 type DeviceTemplateFamily = 'mac_air' | 'mac_pro' | 'win_business' | 'win_home' | 'win_performance'
 type DeviceNameStyle = 'mac_air' | 'mac_pro' | 'windows_laptop' | 'windows_desktop'
 
@@ -56,7 +57,22 @@ type GeneratedHardwareFingerprint = {
 
 const MAX_TEMPLATE_RETRIES = 12
 const DEFAULT_TEMPLATE_ID = 'mac_air_m2_13'
-const CURRENT_BROWSER_MAJORS = ['146', '147'] as const
+const CURRENT_BROWSER_MAJORS = [CLOAK_BROWSER_MAJOR] as const
+
+export function normalizeHardwareHostPlatform(value: string | null | undefined): DevicePlatform | null {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (normalized.includes('mac') || normalized === 'darwin') {
+    return 'macOS'
+  }
+  if (normalized.includes('win')) {
+    return 'Windows'
+  }
+  return null
+}
+
+function inferConfiguredPlatform(config: FingerprintConfig): DevicePlatform | null {
+  return normalizeHardwareHostPlatform(config.advanced.operatingSystem)
+}
 
 const LEGACY_DEFAULT_HARDWARE = {
   deviceName: 'DESKTOP-U09K1H5',
@@ -595,6 +611,31 @@ function findTemplateById(templateId: string): DeviceTemplate | null {
   return DEVICE_TEMPLATES.find((template) => template.id === templateId) ?? null
 }
 
+function findTemplateVariant(config: FingerprintConfig): {
+  template: DeviceTemplate
+  variant: DeviceTemplateVariant
+} | null {
+  const template = findTemplateById(config.runtimeMetadata.hardwareTemplateId)
+  const variant = template?.variants.find((item) => item.id === config.runtimeMetadata.hardwareVariantId)
+  if (!template || !variant || !isValidHardwareTemplateVariant(template, variant)) {
+    return null
+  }
+  return { template, variant }
+}
+
+export function isHardwareIdentityCompatibleWithHost(
+  config: FingerprintConfig,
+  hostOperatingSystem: string | null | undefined,
+): boolean {
+  const hostPlatform = normalizeHardwareHostPlatform(hostOperatingSystem)
+  if (!hostPlatform) {
+    return true
+  }
+  const generatedTemplate = findTemplateVariant(config)?.template
+  const identityPlatform = generatedTemplate?.platform ?? inferConfiguredPlatform(config)
+  return identityPlatform === hostPlatform
+}
+
 function isMacAirTemplate(templateId: string): boolean {
   return templateId.startsWith('mac_air_')
 }
@@ -775,32 +816,55 @@ export function assignStableHardwareFingerprint(
   options?: {
     forceRegenerate?: boolean
     seed?: string
+    hostOperatingSystem?: string
+    enforceHostCompatibility?: boolean
   },
 ): FingerprintConfig {
   const currentSource = config.runtimeMetadata.hardwareProfileSource
-  const hasStableGeneratedProfile =
-    currentSource === 'generated' &&
+  const existingGenerated = currentSource === 'generated' ? findTemplateVariant(config) : null
+  const hasCurrentStableGeneratedProfile =
+    Boolean(existingGenerated) &&
     config.runtimeMetadata.hardwareProfileVersion === STABLE_HARDWARE_PROFILE_VERSION &&
-    config.runtimeMetadata.hardwareCatalogVersion === HARDWARE_CATALOG_VERSION &&
-    !isMeaningfullyEmpty(config.runtimeMetadata.hardwareTemplateId) &&
-    !isMeaningfullyEmpty(config.runtimeMetadata.hardwareVariantId)
+    config.runtimeMetadata.hardwareCatalogVersion === HARDWARE_CATALOG_VERSION
 
   if (!options?.forceRegenerate) {
     if (currentSource === 'manual') {
       return markHardwareProfile(config, 'manual', profileId, config.runtimeMetadata.hardwareSeed || `manual:${profileId}`)
     }
-    if (hasStableGeneratedProfile) {
+    // v3 identities are locked after creation. A different host must not silently rotate them.
+    if (hasCurrentStableGeneratedProfile) {
       return config
     }
-    if (!isLegacyDefaultHardwareIdentity(config) && !needsGeneratedHardwareIdentity(config) && currentSource !== 'template') {
+    if (existingGenerated) {
+      const hostPlatform = normalizeHardwareHostPlatform(options?.hostOperatingSystem)
+      const shouldRepairLegacyHostMismatch =
+        Boolean(options?.enforceHostCompatibility && hostPlatform) &&
+        existingGenerated.template.platform !== hostPlatform
+      if (!shouldRepairLegacyHostMismatch) {
+        return {
+          ...config,
+          runtimeMetadata: {
+            ...config.runtimeMetadata,
+            hardwareProfileVersion: STABLE_HARDWARE_PROFILE_VERSION,
+            hardwareCatalogVersion: HARDWARE_CATALOG_VERSION,
+          },
+        }
+      }
+      // Old generated identities get one deterministic host-compatible migration, using the same seed.
+    } else if (!isLegacyDefaultHardwareIdentity(config) && !needsGeneratedHardwareIdentity(config) && currentSource !== 'template') {
       return markHardwareProfile(config, 'manual', profileId, `manual:${profileId}`)
     }
   }
 
   const seedValue = options?.seed || config.runtimeMetadata.hardwareSeed || profileId
+  const hostPlatform = normalizeHardwareHostPlatform(options?.hostOperatingSystem)
+  const preferredOperatingSystem =
+    options?.enforceHostCompatibility && hostPlatform
+      ? hostPlatform
+      : config.advanced.operatingSystem
   const generated = buildStableHardwareFingerprint(
     seedValue,
-    config.advanced.operatingSystem,
+    preferredOperatingSystem,
     String(config.advanced.browserVersion || '').trim() || undefined,
   )
 
@@ -808,6 +872,10 @@ export function assignStableHardwareFingerprint(
     ...config,
     userAgent: generated.userAgent,
     resolution: generated.resolution,
+    commonSettings: {
+      ...config.commonSettings,
+      randomizeFingerprintOnLaunch: false,
+    },
     advanced: {
       ...config.advanced,
       operatingSystem: generated.operatingSystem,
@@ -815,6 +883,7 @@ export function assignStableHardwareFingerprint(
       browserVersion: generated.browserVersion,
       windowWidth: generated.width,
       windowHeight: generated.height,
+      resolutionMode: 'system',
       webglMetadataMode: 'custom',
       webglVendor: generated.webglVendor,
       webglRenderer: generated.webglRenderer,
@@ -839,11 +908,16 @@ export function assignStableHardwareFingerprint(
   }
 }
 
-export function randomizeStableHardwareFingerprint(config: FingerprintConfig): FingerprintConfig {
-  const seed = `manual-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+export function randomizeStableHardwareFingerprint(
+  config: FingerprintConfig,
+  hostOperatingSystem?: string,
+): FingerprintConfig {
+  const seed = `draft-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
   return assignStableHardwareFingerprint(config, seed, {
     forceRegenerate: true,
     seed,
+    hostOperatingSystem,
+    enforceHostCompatibility: true,
   })
 }
 
@@ -863,22 +937,33 @@ export function sanitizeTemplateHardwareFingerprint(config: FingerprintConfig): 
   }
 }
 
-export function shouldMigrateStableHardwareFingerprint(config: FingerprintConfig): boolean {
+export function shouldMigrateStableHardwareFingerprint(
+  config: FingerprintConfig,
+  hostOperatingSystem?: string,
+): boolean {
   if (config.runtimeMetadata.hardwareProfileSource === 'manual') {
     return false
   }
 
-  if (config.runtimeMetadata.hardwareProfileVersion === STABLE_HARDWARE_PROFILE_VERSION) {
-    if (config.runtimeMetadata.hardwareCatalogVersion === HARDWARE_CATALOG_VERSION) {
-      const template = findTemplateById(config.runtimeMetadata.hardwareTemplateId)
-      const variant = template?.variants.find((item) => item.id === config.runtimeMetadata.hardwareVariantId)
-      return !(template && variant && isValidHardwareTemplateVariant(template, variant))
-    }
+  const generated = findTemplateVariant(config)
+  if (
+    generated &&
+    config.runtimeMetadata.hardwareProfileVersion === STABLE_HARDWARE_PROFILE_VERSION &&
+    config.runtimeMetadata.hardwareCatalogVersion === HARDWARE_CATALOG_VERSION
+  ) {
+    // Current identities are locked. Cross-host use is validated separately, never silently rotated.
+    return false
+  }
+
+  if (generated && config.runtimeMetadata.hardwareProfileSource === 'generated') {
+    // Upgrade metadata in place when compatible, or deterministically repair one legacy host mismatch.
+    return true
   }
 
   if (config.runtimeMetadata.hardwareProfileSource === 'generated') {
     return true
   }
 
+  void hostOperatingSystem
   return isLegacyDefaultHardwareIdentity(config) || needsGeneratedHardwareIdentity(config)
 }

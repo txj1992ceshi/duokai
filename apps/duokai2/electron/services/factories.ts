@@ -29,6 +29,7 @@ import type {
   UpdateTemplateInput,
 } from '../../src/shared/types'
 import { DEFAULT_ENVIRONMENT_LANGUAGE } from '../../src/shared/environmentLanguages.ts'
+import { CLOAK_BROWSER_MAJOR } from '../../src/shared/cloakBrowserVersion.ts'
 import {
   assignStableHardwareFingerprint,
   sanitizeTemplateHardwareFingerprint,
@@ -430,7 +431,7 @@ function detectHostOperatingSystem(): string {
 }
 
 function buildDesktopUserAgent(operatingSystem: string, browserVersion: string): string {
-  const majorVersion = String(browserVersion || '147').trim() || '147'
+  const majorVersion = String(browserVersion || CLOAK_BROWSER_MAJOR).trim() || CLOAK_BROWSER_MAJOR
   const os = operatingSystem.toLowerCase()
   if (os.includes('mac')) {
     return `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${majorVersion}.0.0.0 Safari/537.36`
@@ -442,7 +443,7 @@ function buildDesktopUserAgent(operatingSystem: string, browserVersion: string):
 }
 
 function syncBrowserIdentity(config: FingerprintConfig): FingerprintConfig {
-  const browserVersion = String(config.advanced.browserVersion || '').trim() || '147'
+  const browserVersion = String(config.advanced.browserVersion || '').trim() || CLOAK_BROWSER_MAJOR
   return {
     ...config,
     userAgent: buildDesktopUserAgent(config.advanced.operatingSystem, browserVersion),
@@ -494,11 +495,11 @@ export function createDefaultFingerprint(): FingerprintConfig {
 
   const advanced: ProfileAdvancedFingerprintSettings = {
     browserKernel: 'chrome',
-    browserKernelVersion: '147',
+    browserKernelVersion: CLOAK_BROWSER_MAJOR,
     deviceMode: 'desktop',
     operatingSystem: detectHostOperatingSystem(),
     operatingSystemVersion: '',
-    browserVersion: '147',
+    browserVersion: CLOAK_BROWSER_MAJOR,
     autoLanguageFromIp: true,
     autoInterfaceLanguageFromIp: true,
     interfaceLanguage: '',
@@ -636,117 +637,44 @@ export function applyPlatformTemplate(
     }
   }
 
-  if (preset.key === 'linkedin') {
-    const browserVersion = '146'
-    const operatingSystem = 'Windows'
-    return {
-      recommendedPurpose: preset.recommendedPurpose,
-      fingerprint: {
-        ...syncBrowserIdentity({
-          ...fingerprint,
-          advanced: {
-            ...fingerprint.advanced,
-            browserVersion,
-            operatingSystem,
-          },
-        }),
-        basicSettings: {
-          ...fingerprint.basicSettings,
-          platform: 'linkedin',
-        },
-        commonSettings: {
-          ...fingerprint.commonSettings,
-          pageMode: 'local',
-          blockImages: false,
-          syncTabs: false,
-          memorySaver: true,
-        },
-        advanced: {
-          ...fingerprint.advanced,
-          deviceMode: 'desktop',
-          operatingSystem,
-          browserKernelVersion: browserVersion,
-          browserVersion,
-          autoLanguageFromIp: true,
-          autoInterfaceLanguageFromIp: true,
-          autoTimezoneFromIp: true,
-          autoGeolocationFromIp: true,
-          geolocationPermission: 'allow',
-          windowWidth: 1440,
-          windowHeight: 900,
-          resolutionMode: 'system',
-          fontMode: 'system',
-          canvasMode: 'custom',
-          webglImageMode: 'custom',
-          webglMetadataMode: 'custom',
-          webglVendor: 'Google Inc. (Intel)',
-          webglRenderer: 'ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)',
-          audioContextMode: 'custom',
-          mediaDevicesMode: 'custom',
-          speechVoicesMode: 'custom',
-          clientRectsMode: 'off',
-          cpuMode: 'system',
-          cpuCores: 8,
-          memoryGb: 8,
-        },
-        resolution: '1440x900',
-        webrtcMode: 'proxy-aware',
-      },
-    }
-  }
-
-  const browserVersion = '147'
-  const operatingSystem = 'Windows'
+  const isLinkedIn = preset.key === 'linkedin'
   return {
     recommendedPurpose: preset.recommendedPurpose,
     fingerprint: {
-      ...syncBrowserIdentity({
-        ...fingerprint,
-        advanced: {
-          ...fingerprint.advanced,
-          browserVersion,
-          operatingSystem,
-        },
-      }),
+      ...fingerprint,
       basicSettings: {
         ...fingerprint.basicSettings,
-        platform: 'tiktok',
+        platform: preset.key,
       },
       commonSettings: {
         ...fingerprint.commonSettings,
         pageMode: 'local',
         blockImages: false,
-        memorySaver: false,
+        syncTabs: !isLinkedIn,
+        syncCookies: true,
+        clearCacheOnLaunch: false,
+        randomizeFingerprintOnLaunch: false,
+        allowChromeLogin: false,
+        memorySaver: isLinkedIn,
       },
       advanced: {
         ...fingerprint.advanced,
         deviceMode: 'desktop',
-        operatingSystem,
-        browserKernelVersion: browserVersion,
-        browserVersion,
         autoLanguageFromIp: true,
         autoInterfaceLanguageFromIp: true,
         autoTimezoneFromIp: true,
         autoGeolocationFromIp: true,
         geolocationPermission: 'allow',
-        windowWidth: 1600,
-        windowHeight: 900,
         resolutionMode: 'system',
         fontMode: 'system',
         canvasMode: 'custom',
         webglImageMode: 'custom',
         webglMetadataMode: 'custom',
-        webglVendor: 'Google Inc. (Intel)',
-        webglRenderer: 'ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)',
         audioContextMode: 'custom',
         mediaDevicesMode: 'custom',
         speechVoicesMode: 'custom',
         clientRectsMode: 'off',
-        cpuMode: 'system',
-        cpuCores: 8,
-        memoryGb: 8,
       },
-      resolution: '1600x900',
       webrtcMode: 'proxy-aware',
     },
   }
@@ -821,11 +749,12 @@ export function createProfilePayload(
   const fingerprintConfig = assignStableHardwareFingerprint(
     normalizedFingerprint,
     id,
-    !('id' in input)
-      ? {
-          forceRegenerate: normalizedFingerprint.runtimeMetadata.hardwareProfileSource === 'template',
-        }
-      : undefined,
+    {
+      forceRegenerate:
+        !('id' in input) && normalizedFingerprint.runtimeMetadata.hardwareProfileSource === 'template',
+      hostOperatingSystem: detectHostOperatingSystem(),
+      enforceHostCompatibility: true,
+    },
   )
   return {
     id,
@@ -896,6 +825,9 @@ export function cloneName(name: string): string {
 export function cloneProfileRecordForNewId(existing: ProfileRecord, nextId: string): UpdateProfileInput {
   const fingerprintConfig = assignStableHardwareFingerprint(existing.fingerprintConfig, nextId, {
     forceRegenerate: true,
+    seed: nextId,
+    hostOperatingSystem: detectHostOperatingSystem(),
+    enforceHostCompatibility: true,
   })
   return {
     id: nextId,

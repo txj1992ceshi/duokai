@@ -14,8 +14,8 @@ import {
 test('createDefaultFingerprint uses current browser baseline and auto locale defaults', () => {
   const fingerprint = createDefaultFingerprint()
 
-  assert.equal(fingerprint.advanced.browserVersion, '147')
-  assert.equal(fingerprint.advanced.browserKernelVersion, '147')
+  assert.equal(fingerprint.advanced.browserVersion, '145')
+  assert.equal(fingerprint.advanced.browserKernelVersion, '145')
   assert.equal(fingerprint.advanced.autoInterfaceLanguageFromIp, true)
   assert.equal(fingerprint.advanced.geolocationPermission, 'allow')
   assert.equal(fingerprint.webrtcMode, 'proxy-aware')
@@ -25,14 +25,14 @@ test('createDefaultFingerprint uses current browser baseline and auto locale def
   assert.equal(fingerprint.advanced.mediaDevicesMode, 'custom')
   assert.equal(fingerprint.advanced.speechVoicesMode, 'custom')
   assert.equal(fingerprint.advanced.clientRectsMode, 'off')
-  assert.match(fingerprint.userAgent, /Chrome\/147\.0\.0\.0/)
+  assert.match(fingerprint.userAgent, /Chrome\/145\.0\.0\.0/)
 })
 
 test('emptyProfile uses current browser baseline and auto locale defaults', () => {
   const profile = emptyProfile()
 
-  assert.equal(profile.fingerprintConfig.advanced.browserVersion, '147')
-  assert.equal(profile.fingerprintConfig.advanced.browserKernelVersion, '147')
+  assert.equal(profile.fingerprintConfig.advanced.browserVersion, '145')
+  assert.equal(profile.fingerprintConfig.advanced.browserKernelVersion, '145')
   assert.equal(profile.fingerprintConfig.advanced.autoInterfaceLanguageFromIp, true)
   assert.equal(profile.fingerprintConfig.advanced.geolocationPermission, 'allow')
   assert.equal(profile.fingerprintConfig.webrtcMode, 'proxy-aware')
@@ -42,45 +42,58 @@ test('emptyProfile uses current browser baseline and auto locale defaults', () =
   assert.equal(profile.fingerprintConfig.advanced.mediaDevicesMode, 'custom')
   assert.equal(profile.fingerprintConfig.advanced.speechVoicesMode, 'custom')
   assert.equal(profile.fingerprintConfig.advanced.clientRectsMode, 'off')
-  assert.match(profile.fingerprintConfig.userAgent, /Chrome\/147\.0\.0\.0/)
+  assert.match(profile.fingerprintConfig.userAgent, /Chrome\/145\.0\.0\.0/)
 })
 
-test('applyPlatformTemplate keeps linkedin preset current and locale-linked', () => {
-  const { fingerprint } = applyPlatformTemplate(createDefaultFingerprint(), 'linkedin')
+test('applyPlatformTemplate keeps linkedin machine identity and enables region linkage', () => {
+  const source = createDefaultFingerprint()
+  source.advanced.operatingSystem = 'macOS'
+  source.advanced.browserVersion = '145'
+  source.advanced.browserKernelVersion = '145'
+  source.advanced.cpuCores = 11
+  source.advanced.memoryGb = 18
+  source.advanced.webglRenderer = 'ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Pro, Unspecified Version)'
+  source.resolution = '1728x1117'
+  const { fingerprint } = applyPlatformTemplate(source, 'linkedin')
 
-  assert.equal(fingerprint.advanced.operatingSystem, 'Windows')
-  assert.equal(fingerprint.advanced.browserVersion, '146')
-  assert.equal(fingerprint.advanced.browserKernelVersion, '146')
+  assert.equal(fingerprint.advanced.operatingSystem, source.advanced.operatingSystem)
+  assert.equal(fingerprint.advanced.browserVersion, source.advanced.browserVersion)
+  assert.equal(fingerprint.advanced.browserKernelVersion, source.advanced.browserKernelVersion)
+  assert.equal(fingerprint.advanced.cpuCores, source.advanced.cpuCores)
+  assert.equal(fingerprint.advanced.memoryGb, source.advanced.memoryGb)
+  assert.equal(fingerprint.advanced.webglRenderer, source.advanced.webglRenderer)
+  assert.equal(fingerprint.resolution, source.resolution)
   assert.equal(fingerprint.advanced.autoLanguageFromIp, true)
   assert.equal(fingerprint.advanced.autoInterfaceLanguageFromIp, true)
   assert.equal(fingerprint.advanced.autoTimezoneFromIp, true)
   assert.equal(fingerprint.advanced.autoGeolocationFromIp, true)
-  assert.equal(fingerprint.advanced.geolocationPermission, 'allow')
   assert.equal(fingerprint.webrtcMode, 'proxy-aware')
-  assert.equal(fingerprint.advanced.canvasMode, 'custom')
-  assert.equal(fingerprint.advanced.webglImageMode, 'custom')
-  assert.equal(fingerprint.advanced.audioContextMode, 'custom')
-  assert.equal(fingerprint.advanced.mediaDevicesMode, 'custom')
-  assert.equal(fingerprint.advanced.speechVoicesMode, 'custom')
-  assert.equal(fingerprint.advanced.clientRectsMode, 'off')
-  assert.match(fingerprint.userAgent, /Chrome\/146\.0\.0\.0/)
+  assert.equal(fingerprint.commonSettings.syncTabs, false)
 })
 
-test('applyPlatformTemplate keeps tiktok preset current and locale-linked', () => {
-  const { fingerprint } = applyPlatformTemplate(createDefaultFingerprint(), 'tiktok')
+test('applyPlatformTemplate keeps tiktok machine identity and enables region linkage', () => {
+  const source = createDefaultFingerprint()
+  source.advanced.operatingSystem = 'Windows'
+  source.advanced.browserVersion = '145'
+  source.advanced.browserKernelVersion = '145'
+  source.advanced.cpuCores = 6
+  source.advanced.memoryGb = 16
+  source.advanced.webglRenderer = 'ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11, D3D11)'
+  source.resolution = '1920x1200'
+  const { fingerprint } = applyPlatformTemplate(source, 'tiktok')
 
-  assert.equal(fingerprint.advanced.browserVersion, '147')
-  assert.equal(fingerprint.advanced.browserKernelVersion, '147')
+  assert.equal(fingerprint.advanced.operatingSystem, source.advanced.operatingSystem)
+  assert.equal(fingerprint.advanced.browserVersion, source.advanced.browserVersion)
+  assert.equal(fingerprint.advanced.browserKernelVersion, source.advanced.browserKernelVersion)
+  assert.equal(fingerprint.advanced.cpuCores, source.advanced.cpuCores)
+  assert.equal(fingerprint.advanced.memoryGb, source.advanced.memoryGb)
+  assert.equal(fingerprint.advanced.webglRenderer, source.advanced.webglRenderer)
+  assert.equal(fingerprint.resolution, source.resolution)
   assert.equal(fingerprint.advanced.autoInterfaceLanguageFromIp, true)
-  assert.equal(fingerprint.advanced.geolocationPermission, 'allow')
+  assert.equal(fingerprint.advanced.autoTimezoneFromIp, true)
+  assert.equal(fingerprint.advanced.autoGeolocationFromIp, true)
   assert.equal(fingerprint.webrtcMode, 'proxy-aware')
-  assert.equal(fingerprint.advanced.canvasMode, 'custom')
-  assert.equal(fingerprint.advanced.webglImageMode, 'custom')
-  assert.equal(fingerprint.advanced.audioContextMode, 'custom')
-  assert.equal(fingerprint.advanced.mediaDevicesMode, 'custom')
-  assert.equal(fingerprint.advanced.speechVoicesMode, 'custom')
-  assert.equal(fingerprint.advanced.clientRectsMode, 'off')
-  assert.match(fingerprint.userAgent, /Chrome\/147\.0\.0\.0/)
+  assert.equal(fingerprint.commonSettings.syncTabs, true)
 })
 
 test('normalizeFingerprintConfig rewrites user agent and kernel version from browser version', () => {

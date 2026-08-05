@@ -13,6 +13,7 @@ import type {
 } from '../../src/shared/types'
 import type { NetworkHealthResult } from './networkCheck'
 import { normalizeWorkspaceDescriptor } from './factories'
+import { isHardwareIdentityCompatibleWithHost } from '../../src/shared/hardwareProfiles.ts'
 
 export type ValidationLevel = 'pass' | 'warn' | 'block'
 
@@ -498,6 +499,24 @@ function hasMissingDerivedFields(profile: ProfileRecord): boolean {
   return needsTimezone || needsLanguage || needsGeo
 }
 
+function validateHardwareHostCompatibility(profile: ProfileRecord): ValidationResult {
+  const hostOperatingSystem =
+    process.platform === 'darwin' ? 'macOS' : process.platform === 'win32' ? 'Windows' : 'Linux'
+  if (isHardwareIdentityCompatibleWithHost(profile.fingerprintConfig, hostOperatingSystem)) {
+    return { level: 'pass', messages: ['机器身份与当前电脑系统家族兼容。'] }
+  }
+
+  const generated = profile.fingerprintConfig.runtimeMetadata.hardwareProfileSource === 'generated'
+  return {
+    level: generated ? 'block' : 'warn',
+    messages: [
+      generated
+        ? '该环境的固定机器身份属于另一系统家族。为避免身份漂移，本次不会自动重抽；请在原系统使用或新建当前系统环境。'
+        : '当前手动机器身份与宿主系统家族不一致，可能产生跨系统指纹矛盾。',
+    ],
+  }
+}
+
 function validatePurposeSpecificPolicies(profile: ProfileRecord): ValidationResult {
   const messages: string[] = []
   let level: ValidationLevel = 'pass'
@@ -859,6 +878,7 @@ export function validateProfileReadiness(
   const base = check
     ? combineResults(
         validateProfileForLaunch(profile, proxy),
+        validateHardwareHostCompatibility(profile),
         validatePurposeSpecificPolicies(profile),
         validatePlatformSpecificPolicies(profile),
         validateLifecyclePolicies(profile, lifecyclePolicy),
@@ -866,6 +886,7 @@ export function validateProfileReadiness(
       )
     : combineResults(
         validateProfileForLaunch(profile, proxy),
+        validateHardwareHostCompatibility(profile),
         validatePurposeSpecificPolicies(profile),
         validatePlatformSpecificPolicies(profile),
         validateLifecyclePolicies(profile, lifecyclePolicy),
